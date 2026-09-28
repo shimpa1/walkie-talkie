@@ -60,7 +60,9 @@ have them:
   your host (an internet-facing NGINX Gateway, for example). The chart creates
   an HTTPRoute; it never installs the Gateway API, a Gateway controller, or a
   Gateway.
-- A **StorageClass** for the firstmate home. The chart default is `beta3`.
+- A **StorageClass** for the firstmate home. Leave `persistence.storageClass`
+  empty to use the cluster's default StorageClass; `beta3` (Rook-Ceph) is set
+  only by the atus example.
 - A **DNS host** whose A/AAAA record points at your Gateway, and a TLS
   certificate on the Gateway for that host (or cert-manager in-namespace, see
   [TLS](#tls)).
@@ -186,7 +188,7 @@ a short-lived process.
 | `firstmate.herdrSession` | `firstmate` | Named herdr session (`HERDR_SESSION`). |
 | `walkieTalkie.image.repository` / `.tag` | `walkie-talkie` / chart version | Companion image. |
 | `walkieTalkie.port` | `8787` | Walkie-talkie port inside the container. |
-| `persistence.storageClass` | `beta3` | StorageClass for the home claim. |
+| `persistence.storageClass` | `""` (cluster default) | StorageClass for the home claim; `beta3` in the atus example. |
 | `persistence.size` | `20Gi` | Home claim size. |
 | `persistence.existingClaim` | `""` | Use a pre-created PVC instead of a claim template. |
 | `service.port` | `8787` | Service port routed by the HTTPRoute. |
@@ -233,8 +235,9 @@ scope.
 The home defaults to a `ReadWriteOnce` claim from `volumeClaimTemplates`, so it
 survives pod restarts and rescheduling within one replica. With a
 `volumeBindingMode: WaitForFirstConsumer` StorageClass, the pod schedules before
-the volume binds; with the immediate-binding `beta3` class the volume binds at
-claim time. To bring an existing firstmate home with you, create its PVC and set
+the volume binds; with the atus example's immediate-binding `beta3` class the
+volume binds at claim time. To bring an existing firstmate home with you, create
+its PVC and set
 `persistence.enabled: false` with `persistence.existingClaim`.
 
 ## Example: the atus cluster

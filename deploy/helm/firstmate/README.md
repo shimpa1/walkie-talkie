@@ -22,5 +22,6 @@ image is built from the repository-root `Dockerfile` provided by the sibling
 Docker/Compose deploy slice, which is a prerequisite (merge it first).
 
 See [`values.yaml`](values.yaml) for every setting: images, the firstmate home
-path, `storageClass` (default `beta3`), storage size, resources, `httpRoute`
-parentRefs and hostnames, TLS, and the credential Secret.
+path, `storageClass` (empty by default; the atus example sets `beta3`), storage
+size, resources, `httpRoute` parentRefs and hostnames, TLS, and the credential
+Secret.

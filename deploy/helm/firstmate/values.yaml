@@ -129,9 +129,10 @@ persistence:
   # Create a volumeClaimTemplate on the StatefulSet. When false, you must set
   # `existingClaim` (or the pod will use an emptyDir, which loses state).
   enabled: true
-  # StorageClass for the claim. The chart hardcodes nothing; beta3 is only the
-  # chart default, mirroring the atus cluster example.
-  storageClass: beta3
+  # StorageClass for the claim. Leave empty to use the cluster's default
+  # StorageClass. `beta3` is the atus cluster's Rook-Ceph class and belongs only
+  # in examples/values-atus.yaml, not the generic chart default.
+  storageClass: ""
   accessModes:
     - ReadWriteOnce
   size: 20Gi
