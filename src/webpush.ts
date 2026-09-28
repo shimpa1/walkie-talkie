@@ -104,8 +104,8 @@ function privateKeyObject(privateKey: string): KeyObject {
 
 export function isValidVapidPublicKey(value: string): boolean {
   try {
-    const raw = b64urlDecode(value);
-    return raw.length === 65 && raw[0] === 0x04;
+    publicKeyObject(value);
+    return true;
   } catch {
     return false;
   }
@@ -113,7 +113,20 @@ export function isValidVapidPublicKey(value: string): boolean {
 
 export function isValidVapidPrivateKey(value: string): boolean {
   try {
-    return b64urlDecode(value).length === 32;
+    privateKeyObject(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when the public point and private scalar are a matching P-256 pair. */
+export function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
+  if (!isValidVapidPublicKey(publicKey) || !isValidVapidPrivateKey(privateKey)) return false;
+  try {
+    const ecdh = createECDH(CURVE);
+    ecdh.setPrivateKey(b64urlDecode(privateKey));
+    return ecdh.getPublicKey().equals(b64urlDecode(publicKey));
   } catch {
     return false;
   }

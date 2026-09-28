@@ -10,8 +10,7 @@ import { describeBind, startServer } from "./server.js";
 import {
   generateVapidKeys,
   HttpPushSender,
-  isValidVapidPrivateKey,
-  isValidVapidPublicKey,
+  isValidVapidKeyPair,
   type VapidKeys,
 } from "./webpush.js";
 
@@ -28,7 +27,7 @@ function resolveVapidKeys(
   log: (line: string) => void,
 ): VapidKeys {
   if (config.vapidPublicKey !== null && config.vapidPrivateKey !== null) {
-    if (!isValidVapidPublicKey(config.vapidPublicKey) || !isValidVapidPrivateKey(config.vapidPrivateKey)) {
+    if (!isValidVapidKeyPair(config.vapidPublicKey, config.vapidPrivateKey)) {
       throw new ConfigError("the configured VAPID key pair is not a valid P-256 public/private pair");
     }
     const keys = { publicKey: config.vapidPublicKey, privateKey: config.vapidPrivateKey };
@@ -36,11 +35,7 @@ function resolveVapidKeys(
     return keys;
   }
   const stored = store.getVapid();
-  if (
-    stored !== null &&
-    isValidVapidPublicKey(stored.publicKey) &&
-    isValidVapidPrivateKey(stored.privateKey)
-  ) {
+  if (stored !== null && isValidVapidKeyPair(stored.publicKey, stored.privateKey)) {
     return stored;
   }
   const generated = generateVapidKeys();
