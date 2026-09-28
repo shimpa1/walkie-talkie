@@ -92,8 +92,9 @@ on. The web app is at `/`.
 
 The service defaults to loopback and **refuses to bind a non-loopback address**
 (such as `0.0.0.0`) unless you explicitly set
-`FM_WT_ALLOW_PUBLIC_BIND=1`. Prefer the Tailscale approach below instead of
-exposing a port.
+`FM_WT_ALLOW_PUBLIC_BIND=1`. Instead of publishing the service port directly,
+put a reverse proxy in front of it ([Deploy on a VM](#deploy-on-a-vm)) or use
+the Tailscale approach below.
 
 ## Deploy on a VM
 
@@ -280,7 +281,8 @@ needs the explicit override because the address is not loopback:
 FM_WT_HOST="$(tailscale ip -4)" FM_WT_ALLOW_PUBLIC_BIND=1 npm start
 ```
 
-Do not use Tailscale Funnel or any other public exposure.
+Do not use Tailscale Funnel. For public access over a normal domain, use
+[Deploy on a VM](#deploy-on-a-vm) instead.
 
 ## Endpoints
 
