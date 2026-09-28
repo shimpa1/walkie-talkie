@@ -40,7 +40,7 @@ path when you want a single VM.
 | `HTTPRoute` (`gateway.networking.k8s.io/v1`) | Routes the configured host to the Service through your Gateway. |
 | `Certificate` (optional) | cert-manager Certificate for clusters that terminate TLS in-namespace. |
 | `Secret` (optional) | Credentials, when you do not point at an existing Secret. |
-| `ConfigMap` | Non-secret configuration (paths, backend, session, bind, port). |
+| `ConfigMap` | Non-secret configuration (paths, session, bind, port). |
 | `ServiceAccount` | Pod identity; no API permissions are granted. |
 
 The two containers share the home volume:
