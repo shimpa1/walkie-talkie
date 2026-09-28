@@ -1,0 +1,73 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createServer, type Server } from "node:http";
+
+import type { AppConfig } from "../src/config.js";
+import { Firstmate } from "../src/firstmate.js";
+import { createRequestHandler } from "../src/server.js";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+export const REPO_ROOT = resolve(here, "..", "..");
+export const FIXTURES_DIR = resolve(REPO_ROOT, "test", "fixtures");
+export const FAKE_BIN = resolve(FIXTURES_DIR, "bin");
+export const PUBLIC_DIR = resolve(REPO_ROOT, "public");
+
+export function makeHome(): string {
+  const home = mkdtempSync(join(tmpdir(), "reach-home-"));
+  mkdirSync(join(home, "state"), { recursive: true });
+  return home;
+}
+
+export interface TestServer {
+  url: string;
+  home: string;
+  close: () => Promise<void>;
+}
+
+export async function startTestServer(options: {
+  token?: string;
+  home?: string;
+  binDir?: string;
+} = {}): Promise<TestServer> {
+  const home = options.home ?? makeHome();
+  const token = options.token ?? "test-token";
+  const binDir = options.binDir ?? FAKE_BIN;
+
+  const config: AppConfig = {
+    fmHome: home,
+    fmBin: binDir,
+    host: "127.0.0.1",
+    port: 0,
+    token,
+    publicDir: PUBLIC_DIR,
+    allowPublicBind: false,
+    configFile: null,
+  };
+  const firstmate = new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
+  const server: Server = createServer(createRequestHandler({ config, firstmate }));
+
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no address");
+  const url = `http://127.0.0.1:${address.port}`;
+
+  return {
+    url,
+    home,
+    close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())),
+  };
+}
+
+export async function getJson(
+  url: string,
+  path: string,
+  token?: string,
+): Promise<{ status: number; body: unknown }> {
+  const headers: Record<string, string> = {};
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await fetch(url + path, { headers });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null };
+}

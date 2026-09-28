@@ -1,0 +1,27 @@
+{
+  "name": "walkie-talkie",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A phone companion for firstmate: see fleet status and queue an instruction.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "walkie-talkie": "dist/src/index.js"
+  },
+  "files": [
+    "dist",
+    "public"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "test": "npm run build && node --test dist/test/",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.3"
+  }
+}

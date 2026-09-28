@@ -1,0 +1,181 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+
+export interface AppConfig {
+  fmHome: string;
+  fmBin: string;
+  host: string;
+  port: number;
+  token: string;
+  publicDir: string;
+  allowPublicBind: boolean;
+  configFile: string | null;
+}
+
+interface FileConfig {
+  fmHome?: unknown;
+  fmBin?: unknown;
+  host?: unknown;
+  port?: unknown;
+  token?: unknown;
+  publicDir?: unknown;
+  allowPublicBind?: unknown;
+}
+
+export class ConfigError extends Error {
+  override name = "ConfigError";
+}
+
+export const DEFAULT_HOST = "127.0.0.1";
+export const DEFAULT_PORT = 8787;
+export const DEFAULT_CONFIG_FILE = "walkie-talkie.config.json";
+
+export function defaultPublicDir(from: string): string {
+  return resolve(from, "public");
+}
+
+function asString(value: unknown, key: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new ConfigError(`config key ${key} must be a string`);
+  }
+  return value;
+}
+
+function asBoolean(value: unknown, key: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (value === "1" || value === "true") return true;
+  if (value === "0" || value === "false") return false;
+  throw new ConfigError(`config key ${key} must be a boolean`);
+}
+
+function readConfigFile(path: string): FileConfig {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return {};
+    throw new ConfigError(`cannot read config file ${path}: ${String(error)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new ConfigError(`config file ${path} is not valid JSON: ${String(error)}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ConfigError(`config file ${path} must contain a JSON object`);
+  }
+  return parsed as FileConfig;
+}
+
+function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new ConfigError(`FM_WT_PORT must be an integer between 0 and 65535, got ${value}`);
+  }
+  return port;
+}
+
+export interface ResolveOptions {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  publicDirFallback?: string;
+}
+
+/**
+ * Resolve configuration from a gitignored JSON file plus environment variables.
+ * Environment always wins over the file so a secret never has to be written down.
+ */
+export function resolveConfig(options: ResolveOptions = {}): AppConfig {
+  const env = options.env ?? process.env;
+  const cwd = options.cwd ?? process.cwd();
+
+  const configFileSetting = env.FM_WT_CONFIG?.trim();
+  const configFile = configFileSetting
+    ? resolve(cwd, configFileSetting)
+    : resolve(cwd, DEFAULT_CONFIG_FILE);
+  const file = readConfigFile(configFile);
+
+  const fmHomeRaw =
+    env.FM_HOME?.trim() || asString(file.fmHome, "fmHome") || join(homedir(), "firstmate");
+  if (fmHomeRaw.length === 0) throw new ConfigError("FM_HOME must not be empty");
+  const fmHome = isAbsolute(fmHomeRaw) ? fmHomeRaw : resolve(cwd, fmHomeRaw);
+
+  const fmBinRaw = env.FM_BIN?.trim() || asString(file.fmBin, "fmBin") || join(fmHome, "bin");
+  const fmBin = isAbsolute(fmBinRaw) ? fmBinRaw : resolve(cwd, fmBinRaw);
+
+  const host = env.FM_WT_HOST?.trim() || asString(file.host, "host") || DEFAULT_HOST;
+
+  const port = parsePort(env.FM_WT_PORT) ?? (file.port === undefined
+    ? DEFAULT_PORT
+    : parsePortFile(file.port));
+
+  const token = env.FM_WT_TOKEN ?? asString(file.token, "token") ?? "";
+  if (token.trim().length === 0) {
+    throw new ConfigError(
+      "FM_WT_TOKEN is required: set it in the environment or in the gitignored config file",
+    );
+  }
+
+  const publicDirRaw =
+    env.FM_WT_PUBLIC_DIR?.trim() ||
+    asString(file.publicDir, "publicDir") ||
+    options.publicDirFallback ||
+    defaultPublicDir(cwd);
+  const publicDir = isAbsolute(publicDirRaw) ? publicDirRaw : resolve(cwd, publicDirRaw);
+
+  const allowPublicBind =
+    parseFlag(env.FM_WT_ALLOW_PUBLIC_BIND) ??
+    asBoolean(file.allowPublicBind, "allowPublicBind") ??
+    false;
+
+  return { fmHome, fmBin, host, port, token, publicDir, allowPublicBind, configFile };
+}
+
+function parsePortFile(value: unknown): number {
+  if (typeof value === "number") {
+    if (Number.isInteger(value) && value >= 0 && value <= 65535) return value;
+    throw new ConfigError(`config key port must be between 0 and 65535`);
+  }
+  if (typeof value === "string") {
+    const parsed = parsePort(value);
+    if (parsed !== undefined) return parsed;
+  }
+  throw new ConfigError("config key port must be a number");
+}
+
+function parseFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (value === "1" || value.toLowerCase() === "true") return true;
+  if (value === "0" || value.toLowerCase() === "false") return false;
+  throw new ConfigError(`FM_WT_ALLOW_PUBLIC_BIND must be 0/1 or true/false, got ${value}`);
+}
+
+const LOOPBACK_HOSTS = new Set([
+  "127.0.0.1",
+  "localhost",
+  "::1",
+  "::ffff:127.0.0.1",
+]);
+
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
+}
+
+/**
+ * Return a human-readable reason the bind should be refused, or null when allowed.
+ * The service defaults to loopback and refuses a public interface unless the
+ * operator explicitly overrides it.
+ */
+export function bindRefusal(config: AppConfig): string | null {
+  if (isLoopbackHost(config.host) || config.allowPublicBind) return null;
+  return (
+    `refusing to bind ${config.host}: this would expose the service beyond the machine. ` +
+    "Set FM_WT_HOST=127.0.0.1, or set FM_WT_ALLOW_PUBLIC_BIND=1 to override deliberately."
+  );
+}

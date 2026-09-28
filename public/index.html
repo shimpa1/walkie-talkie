@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Reach" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>Reach</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">R</span>
+        <div>
+          <h1>Reach</h1>
+          <p id="home-label">firstmate companion</p>
+        </div>
+      </div>
+      <button id="refresh" class="ghost" type="button">Refresh</button>
+    </header>
+
+    <nav class="tabs" aria-label="Sections">
+      <button class="tab is-active" data-view="status" type="button">Status</button>
+      <button class="tab" data-view="compose" type="button">Compose</button>
+      <button class="tab" data-view="receipts" type="button">Receipts</button>
+      <button class="tab" data-view="settings" type="button">Settings</button>
+    </nav>
+
+    <main>
+      <section id="view-status" class="view is-active" aria-labelledby="status-heading">
+        <div class="banner" id="connection-banner" hidden></div>
+        <h2 id="status-heading" class="visually-hidden">Fleet status</h2>
+        <div id="status-meta" class="meta"></div>
+        <div id="status-body" class="cards"></div>
+      </section>
+
+      <section id="view-compose" class="view" aria-labelledby="compose-heading">
+        <h2 id="compose-heading">Send an instruction</h2>
+        <p class="hint">
+          This queues a note into firstmate's existing intake. It makes no
+          decision and changes no project.
+        </p>
+        <form id="note-form">
+          <label for="note-text" class="visually-hidden">Instruction</label>
+          <textarea id="note-text" name="text" rows="5" placeholder="What should the fleet know or do next?" required></textarea>
+          <div class="row">
+            <button id="send" type="submit">Queue instruction</button>
+            <span id="compose-status" class="hint" role="status"></span>
+          </div>
+        </form>
+        <div id="receipt-card" class="receipt" hidden></div>
+      </section>
+
+      <section id="view-receipts" class="view" aria-labelledby="receipts-heading">
+        <h2 id="receipts-heading">Receipts</h2>
+        <div id="receipts-body" class="cards"></div>
+      </section>
+
+      <section id="view-settings" class="view" aria-labelledby="settings-heading">
+        <h2 id="settings-heading">Settings</h2>
+        <p class="hint">
+          The token is stored only in this browser on this device.
+        </p>
+        <form id="settings-form">
+          <label for="token-input">Bearer token</label>
+          <input id="token-input" name="token" type="password" autocomplete="off" spellcheck="false" />
+          <div class="row">
+            <button type="submit">Save token</button>
+            <button id="clear-token" class="ghost" type="button">Forget token</button>
+            <span id="settings-status" class="hint" role="status"></span>
+          </div>
+        </form>
+        <dl class="facts">
+          <dt>Service</dt>
+          <dd id="fact-origin">—</dd>
+          <dt>Health endpoint</dt>
+          <dd><a href="/api/health">/api/health</a></dd>
+          <dt>Reachability</dt>
+          <dd>Private network only (Tailscale). No public port is opened.</dd>
+        </dl>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
