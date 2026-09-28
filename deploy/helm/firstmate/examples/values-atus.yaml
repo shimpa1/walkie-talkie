@@ -51,7 +51,7 @@ httpRoute:
       namespace: nginx-gateway
       sectionName: https-atus-wildcard
   hostnames:
-    - reach.atus.hr
+    - walkie.atus.hr
   redirect:
     enabled: true
     parentRefs:
