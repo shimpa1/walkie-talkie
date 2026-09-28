@@ -1,0 +1,30 @@
+[Unit]
+Description=walkie-talkie — firstmate phone companion
+Documentation=https://github.com/shimpa1/walkie-talkie
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the user that owns the firstmate home. Change this (and Group) to match.
+User=firstmate
+Group=firstmate
+WorkingDirectory=/opt/walkie-talkie
+# Holds FM_HOME and FM_WT_TOKEN. Keep it readable only by the service user:
+#   install -m 600 -o firstmate -g firstmate /dev/null /etc/walkie-talkie.env
+EnvironmentFile=/etc/walkie-talkie.env
+ExecStart=/usr/bin/node /opt/walkie-talkie/dist/src/index.js
+Restart=on-failure
+RestartSec=3
+
+# Modest hardening. The service only needs to exec firstmate's scripts and read
+# and write the mounted FM_HOME.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

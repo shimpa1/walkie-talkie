@@ -92,8 +92,167 @@ on. The web app is at `/`.
 
 The service defaults to loopback and **refuses to bind a non-loopback address**
 (such as `0.0.0.0`) unless you explicitly set
-`FM_WT_ALLOW_PUBLIC_BIND=1`. Prefer the Tailscale approach below instead of
-exposing a port.
+`FM_WT_ALLOW_PUBLIC_BIND=1`. Instead of publishing the service port directly,
+put a reverse proxy in front of it ([Deploy on a VM](#deploy-on-a-vm)) or use
+the Tailscale approach below.
+
+## Deploy on a VM
+
+This is the standard self-hosting path: run the service on a Linux host that
+also carries the firstmate home (`FM_HOME`), and reach it from a phone at
+`https://<domain>` behind a reverse proxy that manages TLS. A real domain and
+HTTPS matter: the installable PWA and (later) push require a secure context, and
+plain HTTP on an IP address will not do. The app is served same-origin from the
+service, so the phone loads everything from the same domain.
+
+The reverse proxy (Caddy) obtains and renews a trusted certificate for the
+domain automatically and redirects HTTP to HTTPS. The app itself is never
+published directly; only the proxy is reachable from outside.
+
+### Prerequisites
+
+- A Linux VM that already runs firstmate, with its home (for example
+  `~/firstmate` or `/home/you/firstmate`) on the same host. This project does
+  **not** install or run firstmate.
+- A domain whose `A`/`AAAA` record points at the VM's public address.
+- Ports **80** and **443** open in the firewall and reachable from the
+  internet (Caddy uses port 80 for the HTTP challenge and the redirect).
+- Either Docker with the Compose plugin, or Node.js 22+ and Caddy for the
+  systemd path below.
+
+### Option A — Docker Compose (recommended)
+
+The image bundles Node 22 plus the runtime tools the firstmate scripts need
+(`bash`, `jq`, `python3`, `git`, `curl`). `FM_HOME` is bind-mounted, so the
+service reads the existing home and queues notes straight into it.
+
+1. Install Docker and the Compose plugin, then get the repository onto the VM
+   and enter it:
+
+   ```sh
+   git clone https://github.com/shimpa1/walkie-talkie.git
+   cd walkie-talkie
+   ```
+
+2. Create your deployment env file from the example:
+
+   ```sh
+   cp .env.example .env
+   ```
+
+3. Generate the bearer token and edit `.env`:
+
+   ```sh
+   openssl rand -hex 32      # paste the output into FM_WT_TOKEN
+   ${EDITOR:-vi} .env
+   ```
+
+   Set at least:
+
+   | Setting | Meaning |
+   | --- | --- |
+   | `DOMAIN` | The domain that points at this VM, e.g. `reach.example.com` |
+   | `ACME_EMAIL` | Email for certificate expiry notices (recommended) |
+   | `FM_HOME` | Absolute path to the firstmate home on the host, e.g. `/home/you/firstmate` |
+   | `FM_WT_TOKEN` | The bearer token the phone enters under **Settings** |
+   | `PUID` / `PGID` | The uid/gid that owns `FM_HOME` (`id -u`, `id -g`) |
+
+4. Build and start:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+5. Check it and follow the certificate issuance:
+
+   ```sh
+   docker compose ps
+   docker compose logs -f caddy
+   ```
+
+   Open `https://<domain>/` on the phone, enter the token under **Settings**, and
+   add the app to the home screen.
+
+### Updating
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+`FM_HOME` and the issued certificates (`caddy_data`) persist across updates.
+
+### Option B — systemd and Caddy (no Docker)
+
+Use this when you would rather not run Docker on the host. Caddy terminates TLS
+and proxies to the service on loopback; the service itself never binds a public
+address.
+
+1. Install Node.js 22+, Caddy, and the tools firstmate needs
+   (`bash`, `jq`, `python3`, `git`, `curl`).
+
+2. Install the app under `/opt/walkie-talkie` and build it:
+
+   ```sh
+   sudo git clone https://github.com/shimpa1/walkie-talkie.git /opt/walkie-talkie
+   cd /opt/walkie-talkie
+   sudo npm ci
+   sudo npm run build
+   sudo npm prune --omit=dev
+   sudo chown -R firstmate:firstmate /opt/walkie-talkie
+   ```
+
+3. Create the environment file (mode 600, owned by the service user):
+
+   ```sh
+   sudo install -m 600 /dev/null /etc/walkie-talkie.env
+   sudo tee /etc/walkie-talkie.env >/dev/null <<'EOF'
+   FM_HOME=/home/you/firstmate
+   FM_WT_TOKEN=replace-with-a-generated-token
+   EOF
+   ```
+
+   The service keeps the default loopback bind (`127.0.0.1:8787`); Caddy reaches
+   it there.
+
+4. Install the unit and start it:
+
+   ```sh
+   sudo cp deploy/systemd/walkie-talkie.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now walkie-talkie
+   sudo systemctl status walkie-talkie
+   ```
+
+   Edit `User=`/`Group=` in the unit if the firstmate home is not owned by a
+   user named `firstmate`, and adjust `WorkingDirectory`/`ExecStart` if you
+   installed somewhere other than `/opt/walkie-talkie`.
+
+5. Install Caddy, then use the provided Caddyfile:
+
+   ```sh
+   sudo cp deploy/caddy/Caddyfile /etc/caddy/Caddyfile
+   sudo systemctl edit caddy     # add:
+   #   [Service]
+   #   Environment=DOMAIN=reach.example.com
+   #   Environment=ACME_EMAIL=you@example.com
+   sudo systemctl restart caddy
+   ```
+
+   Caddy obtains the certificate and proxies `https://<domain>/` to the service.
+
+### Security posture
+
+- **HTTPS only.** Caddy redirects HTTP to HTTPS and manages certificate renewal;
+  the service never handles TLS itself.
+- **Token-gated.** Every endpoint except `/api/health` requires the bearer token.
+  Generate it with `openssl rand -hex 32`; it is compared in constant time and
+  stored only in the phone's browser.
+- **No public app port.** In Compose the app port is only `expose`d on the
+  private network, never `ports`-published. Under systemd it binds loopback. Only
+  ports 80 and 443 face the internet.
+- **Least privilege.** The container runs as the uid/gid that owns `FM_HOME`, and
+  the systemd unit applies modest sandboxing.
 
 ## Reaching it from a phone over Tailscale
 
@@ -122,7 +281,8 @@ needs the explicit override because the address is not loopback:
 FM_WT_HOST="$(tailscale ip -4)" FM_WT_ALLOW_PUBLIC_BIND=1 npm start
 ```
 
-Do not use Tailscale Funnel or any other public exposure.
+Do not use Tailscale Funnel. For public access over a normal domain, use
+[Deploy on a VM](#deploy-on-a-vm) instead.
 
 ## Endpoints
 

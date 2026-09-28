@@ -1,0 +1,61 @@
+name: walkie-talkie
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: walkie-talkie:local
+    restart: unless-stopped
+    # Run as the host user that owns FM_HOME, so records the service queues are
+    # owned by you and stay readable and writable by firstmate. `id -u` / `id -g`.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      # firstmate home is mounted below at this path; bin/ is resolved from it.
+      FM_HOME: /fm/home
+      # Bind the container's public interface and allow it deliberately; only
+      # Caddy is published outside, the app port stays on the private network.
+      FM_WT_HOST: 0.0.0.0
+      FM_WT_PORT: "8787"
+      FM_WT_ALLOW_PUBLIC_BIND: "1"
+      FM_WT_TOKEN: "${FM_WT_TOKEN:?FM_WT_TOKEN must be set; copy .env.example to .env}"
+    volumes:
+      # The firstmate home (bin/, state/, data/, config/) must exist on the host.
+      - "${FM_HOME:?FM_HOME must point at your firstmate home; copy .env.example to .env}:/fm/home"
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - walkie-talkie
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    environment:
+      DOMAIN: "${DOMAIN:?DOMAIN must be set; copy .env.example to .env}"
+      ACME_EMAIL: "${ACME_EMAIL:-acme@example.invalid}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - walkie-talkie
+
+networks:
+  walkie-talkie:
+
+volumes:
+  caddy_data:
+  caddy_config:
