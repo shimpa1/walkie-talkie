@@ -52,6 +52,19 @@ function el(tag, className, text) {
   return node;
 }
 
+function mintRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function card(title, sub, badges) {
   const node = el("article", "card");
   const heading = el("h3");
@@ -187,7 +200,7 @@ async function submitNote(event) {
   const text = $("note-text").value.trim();
   if (!text) return;
   if (!state.pendingRequestId || state.pendingRequestText !== text) {
-    state.pendingRequestId = crypto.randomUUID();
+    state.pendingRequestId = mintRequestId();
     state.pendingRequestText = text;
   }
   const button = $("send");

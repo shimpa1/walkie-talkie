@@ -127,7 +127,12 @@ function parseJsonOutput(stdout: string): string | null {
 }
 
 function safeStaticPath(publicDir: string, pathname: string): string | null {
-  const decoded = decodeURIComponent(pathname);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
   const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
   const candidate = normalize(join(publicDir, relative));
   const root = resolve(publicDir);
