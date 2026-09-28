@@ -77,6 +77,10 @@ export class Firstmate implements FirstmateClient {
         },
       );
       if (child.stdin) {
+        child.stdin.on("error", () => {
+          // The child may exit before stdin is flushed (EPIPE). Its exit code,
+          // delivered through the execFile callback, is the authoritative result.
+        });
         child.stdin.end(stdin ?? "");
       }
     });

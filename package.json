@@ -2,6 +2,7 @@
   "name": "walkie-talkie",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "A phone companion for firstmate: see fleet status and queue an instruction.",
   "type": "module",
   "engines": {
