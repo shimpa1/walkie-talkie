@@ -143,8 +143,13 @@ helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
 ```
 
 If you omit the walkie-talkie token, the chart generates one and prints it in
-the release notes (and preserves it across upgrades). Set it explicitly for a
-token you control. Do not commit real tokens to a values file.
+the release notes. Set it explicitly for a token you control. Do not commit
+real tokens to a values file.
+
+Once created, the walkie-talkie token, GitHub token, and harness credentials are
+preserved across upgrades: you do not need to re-pass them on `helm upgrade`.
+Rotate one by passing a new value with `--set` (which replaces it and restarts
+the pod).
 
 ## Install
 
@@ -272,9 +277,10 @@ helm upgrade firstmate deploy/helm/firstmate -n firstmate -f my-values.yaml
 ```
 
 Changing the image tag rolls the StatefulSet. The home PVC is retained across
-upgrades. Changing an explicitly-set chart-created credential updates the
-Secret and restarts the pod; a chart-generated walkie-talkie token is preserved
-across upgrades.
+upgrades. Credentials the chart created are preserved across upgrades: the
+walkie-talkie token, GitHub token, and harness credentials keep their existing
+values unless you pass new ones, in which case the Secret is updated and the
+pod restarts.
 
 ## Uninstall
 

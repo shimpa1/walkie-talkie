@@ -1,18 +1,28 @@
 {{- $home := .Values.firstmate.home -}}
 {{- $secretName := include "firstmate.secretName" . -}}
 {{- $githubKey := .Values.credentials.keys.githubToken -}}
-{{- $includeGithub := and .Values.credentials.githubTokenEnabled (or .Values.credentials.existingSecret .Values.credentials.create.githubToken) -}}
+{{- $tokenKey := .Values.credentials.keys.walkieTalkieToken -}}
+{{- $includeGithub := .Values.credentials.githubTokenEnabled -}}
 {{- $harness := dict -}}
 {{- if .Values.credentials.existingSecret -}}
 {{- $harness = .Values.credentials.keys.harness -}}
 {{- else -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+{{- $includeGithub = and $includeGithub (or .Values.credentials.create.githubToken (and $existing $existing.data (index $existing.data $githubKey))) -}}
 {{- range $env, $value := .Values.credentials.create.harness -}}
 {{- $_ := set $harness $env $env -}}
 {{- end -}}
+{{- if $existing -}}
+{{- range $key := keys $existing.data | sortAlpha -}}
+{{- if and (ne $key $tokenKey) (ne $key $githubKey) -}}
+{{- if not (hasKey $harness $key) -}}
+{{- $_ := set $harness $key $key -}}
 {{- end -}}
-{{- $explicitCredentials := .Values.credentials.create.walkieTalkieToken -}}
-{{- $explicitCredentials = or $explicitCredentials .Values.credentials.create.githubToken -}}
-{{- $explicitCredentials = or $explicitCredentials (gt (len .Values.credentials.create.harness) 0) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $explicitToken := .Values.credentials.create.walkieTalkieToken -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -37,7 +47,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- if and $explicitCredentials (not .Values.credentials.existingSecret) }}
+        {{- if and $explicitToken (not .Values.credentials.existingSecret) }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
@@ -107,12 +117,12 @@ spec:
                   name: {{ $secretName }}
                   key: {{ $githubKey }}
             {{- end }}
-            {{- range $env, $key := $harness }}
+            {{- range $env := keys $harness | sortAlpha }}
             - name: {{ $env }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
-                  key: {{ $key }}
+                  key: {{ index $harness $env }}
             {{- end }}
             {{- with .Values.firstmate.extraEnv }}
             {{- toYaml . | nindent 12 }}
