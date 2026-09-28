@@ -151,6 +151,14 @@ preserved across upgrades: you do not need to re-pass them on `helm upgrade`.
 Rotate one by passing a new value with `--set` (which replaces it and restarts
 the pod).
 
+The pod restarts only when an explicitly-passed credential changes: the chart
+hashes just the `credentials.create.*` values you pass, never the
+auto-generated token or values preserved from the live Secret. Two
+consequences: stopping re-passing a credential you passed before triggers one
+extra roll (it settles afterward), and changing the live Secret out-of-band
+does not roll the pod — run
+`kubectl -n <namespace> rollout restart statefulset/<name>` to pick it up.
+
 ## Install
 
 ```sh

@@ -22,7 +22,7 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $explicitToken := .Values.credentials.create.walkieTalkieToken -}}
+{{- $explicitCredential := or .Values.credentials.create.walkieTalkieToken .Values.credentials.create.githubToken (gt (len .Values.credentials.create.harness) 0) -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -47,7 +47,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- if and $explicitToken (not .Values.credentials.existingSecret) }}
+        {{- if and $explicitCredential (not .Values.credentials.existingSecret) }}
         checksum/secret: {{ include "firstmate.secretChecksum" . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
