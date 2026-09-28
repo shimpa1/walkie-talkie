@@ -31,7 +31,9 @@ function resolveVapidKeys(
     if (!isValidVapidPublicKey(config.vapidPublicKey) || !isValidVapidPrivateKey(config.vapidPrivateKey)) {
       throw new ConfigError("the configured VAPID key pair is not a valid P-256 public/private pair");
     }
-    return { publicKey: config.vapidPublicKey, privateKey: config.vapidPrivateKey };
+    const keys = { publicKey: config.vapidPublicKey, privateKey: config.vapidPrivateKey };
+    store.setVapid(keys);
+    return keys;
   }
   const stored = store.getVapid();
   if (
