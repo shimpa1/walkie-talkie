@@ -5,12 +5,21 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import type { AppConfig } from "./config.js";
 import { bindRefusal, isLoopbackHost } from "./config.js";
 import { isAuthorized } from "./auth.js";
-import { FM_SCRIPTS, type FirstmateClient } from "./firstmate.js";
-import { isValidRequestId, MAX_INSTRUCTION_BYTES, newRequestId } from "./validate.js";
+import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
+import type { PushApi } from "./push-service.js";
+import {
+  isValidPushEndpoint,
+  isValidPushSubscription,
+  isValidRequestId,
+  MAX_INSTRUCTION_BYTES,
+  newRequestId,
+} from "./validate.js";
 
 export interface AppDeps {
   config: AppConfig;
   firstmate: FirstmateClient;
+  /** Present when push is configured; push routes answer 503 without it. */
+  push?: PushApi;
   log?: (line: string) => void;
 }
 
@@ -69,9 +78,45 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
   });
 }
 
+export const MAX_PUSH_BODY_BYTES = 8 * 1024;
+
 interface NoteBody {
   text: string;
   requestId: string;
+}
+
+/**
+ * Read a JSON object request body, responding with the proper error otherwise.
+ * Returns null when it has already answered the request.
+ */
+async function readJsonObjectBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  limit: number,
+): Promise<Record<string, unknown> | null> {
+  if (!String(req.headers["content-type"] ?? "").includes("application/json")) {
+    sendError(res, 400, "request body must be application/json");
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = await readBody(req, limit);
+  } catch {
+    sendError(res, 413, "request body too large");
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    sendError(res, 400, "request body is not valid JSON");
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    sendError(res, 400, "request body must be a JSON object");
+    return null;
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function parseNoteBody(raw: string, contentType: string): NoteBody | { error: string } {
@@ -113,17 +158,6 @@ function parseNoteBody(raw: string, contentType: string): NoteBody | { error: st
   }
 
   return { text, requestId };
-}
-
-function parseJsonOutput(stdout: string): string | null {
-  const trimmed = stdout.trim();
-  if (trimmed.length === 0) return null;
-  try {
-    JSON.parse(trimmed);
-    return trimmed;
-  } catch {
-    return null;
-  }
 }
 
 function safeStaticPath(publicDir: string, pathname: string): string | null {
@@ -193,6 +227,21 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
         return;
       }
       sendJson(res, 200, body);
+      return;
+    }
+
+    // The VAPID public key is not secret: the browser must fetch it before it
+    // can subscribe, so this one push endpoint is deliberately open.
+    if (pathname === "/api/push/config") {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        sendError(res, 405, "method not allowed");
+        return;
+      }
+      if (deps.push === undefined) {
+        sendError(res, 503, "push is not configured");
+        return;
+      }
+      sendJson(res, 200, JSON.stringify({ publicKey: deps.push.publicKey() }));
       return;
     }
 
@@ -268,6 +317,64 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
           return;
         }
         sendJson(res, 200, body);
+        return;
+      }
+
+      if (pathname === "/api/push/subscribe") {
+        if (req.method !== "POST") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.push === undefined) {
+          sendError(res, 503, "push is not configured");
+          return;
+        }
+        const body = await readJsonObjectBody(req, res, MAX_PUSH_BODY_BYTES);
+        if (body === null) return;
+        if (!isValidPushSubscription(body)) {
+          sendError(res, 400, "invalid push subscription");
+          return;
+        }
+        const result = deps.push.addSubscription({
+          endpoint: body.endpoint,
+          keys: { p256dh: body.keys.p256dh, auth: body.keys.auth },
+        });
+        sendJson(res, 200, JSON.stringify({ ok: true, replaced: result.replaced }));
+        return;
+      }
+
+      if (pathname === "/api/push/unsubscribe") {
+        if (req.method !== "POST") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.push === undefined) {
+          sendError(res, 503, "push is not configured");
+          return;
+        }
+        const body = await readJsonObjectBody(req, res, MAX_PUSH_BODY_BYTES);
+        if (body === null) return;
+        const endpoint = body.endpoint;
+        if (typeof endpoint !== "string" || !isValidPushEndpoint(endpoint)) {
+          sendError(res, 400, "invalid push endpoint");
+          return;
+        }
+        const removed = deps.push.removeSubscription(endpoint);
+        sendJson(res, 200, JSON.stringify({ removed }));
+        return;
+      }
+
+      if (pathname === "/api/push/test") {
+        if (req.method !== "POST") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.push === undefined) {
+          sendError(res, 503, "push is not configured");
+          return;
+        }
+        const summary = await deps.push.sendTest();
+        sendJson(res, 200, JSON.stringify(summary));
         return;
       }
 

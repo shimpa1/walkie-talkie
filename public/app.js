@@ -251,6 +251,128 @@ async function loadReceipts() {
   }
 }
 
+function urlBase64ToUint8Array(base64Url) {
+  const padding = "=".repeat((4 - (base64Url.length % 4)) % 4);
+  const base64 = (base64Url + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function setPushStatus(message, kind) {
+  const line = $("push-status-line");
+  line.textContent = message;
+  line.className = `hint ${kind || ""}`;
+}
+
+async function currentPushSubscription() {
+  if (!pushSupported()) return null;
+  const registration = await navigator.serviceWorker.ready;
+  return registration.pushManager.getSubscription();
+}
+
+async function refreshPushStatus() {
+  if (!pushSupported()) {
+    setPushStatus(
+      "This browser has no push support. On iOS, add the app to the Home Screen first.",
+      "bad",
+    );
+    return;
+  }
+  try {
+    const subscription = await currentPushSubscription();
+    if (subscription) {
+      setPushStatus("Notifications are enabled on this device.", "ok");
+    } else if (Notification.permission === "denied") {
+      setPushStatus("Notifications are blocked for this app in browser settings.", "bad");
+    } else {
+      setPushStatus("Notifications are not enabled on this device.", "");
+    }
+  } catch (error) {
+    setPushStatus(`Could not read push state: ${error.message}`, "bad");
+  }
+}
+
+async function enablePush() {
+  if (!state.token) {
+    setPushStatus("Save your bearer token first.", "bad");
+    return;
+  }
+  if (!pushSupported()) {
+    setPushStatus("Push is not supported here. On iOS, add the app to the Home Screen first.", "bad");
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setPushStatus("Notification permission was not granted.", "bad");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const config = await api("/api/push/config");
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(config.publicKey),
+    });
+    const json = subscription.toJSON();
+    await api("/api/push/subscribe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        endpoint: json.endpoint,
+        keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+      }),
+    });
+    setPushStatus("Notifications are enabled on this device.", "ok");
+  } catch (error) {
+    setPushStatus(`Could not enable notifications: ${error.message}`, "bad");
+  }
+}
+
+async function disablePush() {
+  try {
+    const subscription = await currentPushSubscription();
+    if (!subscription) {
+      setPushStatus("Notifications are not enabled on this device.", "");
+      return;
+    }
+    const endpoint = subscription.endpoint;
+    await subscription.unsubscribe();
+    if (state.token) {
+      try {
+        await api("/api/push/unsubscribe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ endpoint }),
+        });
+      } catch {
+        // The local unsubscribe is what matters; the server drops it on the next send.
+      }
+    }
+    setPushStatus("Notifications are disabled on this device.", "");
+  } catch (error) {
+    setPushStatus(`Could not disable notifications: ${error.message}`, "bad");
+  }
+}
+
+async function sendPushTest() {
+  if (!state.token) {
+    setPushStatus("Save your bearer token first.", "bad");
+    return;
+  }
+  try {
+    const result = await api("/api/push/test", { method: "POST" });
+    setPushStatus(`Test sent to ${result.sent} device(s).`, "ok");
+  } catch (error) {
+    setPushStatus(`Could not send a test: ${error.message}`, "bad");
+  }
+}
+
 async function loadHealth() {
   try {
     const response = await fetch("/api/health");
@@ -271,7 +393,10 @@ function showView(name) {
   }
   if (name === "status") void loadStatus();
   if (name === "receipts") void loadReceipts();
+  if (name === "settings") void refreshPushStatus();
 }
+
+const VIEWS = ["status", "compose", "receipts", "settings"];
 
 function init() {
   $("fact-origin").textContent = window.location.origin;
@@ -302,8 +427,14 @@ function init() {
     $("token-input").value = "";
     $("settings-status").textContent = "Token cleared.";
   });
+  $("push-enable").addEventListener("click", () => void enablePush());
+  $("push-disable").addEventListener("click", () => void disablePush());
+  $("push-test").addEventListener("click", () => void sendPushTest());
 
-  if (!state.token && !window.location.pathname.includes("settings")) {
+  const requested = new URLSearchParams(window.location.search).get("view");
+  if (requested && VIEWS.includes(requested)) {
+    showView(requested);
+  } else if (!state.token) {
     showView("settings");
   } else {
     showView("status");
