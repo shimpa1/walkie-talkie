@@ -156,9 +156,14 @@ curl -sS http://127.0.0.1:8787/api/note \
 ## Tests
 
 ```sh
+npm ci            # install the exact locked devDependencies
 npm test          # builds, then runs node:test over dist/test
 npm run typecheck # type-checks without emitting
 ```
+
+CI (`.github/workflows/ci.yml`) runs these same three commands on every pull
+request and on pushes to `main`, so a green local run here matches a green CI
+check.
 
 Tests use committed fixtures and a fake firstmate `bin/` directory; they never
 depend on a live firstmate home. They exercise real code paths: real HTTP
