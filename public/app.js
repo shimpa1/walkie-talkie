@@ -3,6 +3,7 @@ const TOKEN_KEY = "reach.token";
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || "",
   pendingRequestId: null,
+  pendingRequestText: null,
   status: null,
 };
 
@@ -185,7 +186,10 @@ async function submitNote(event) {
   event.preventDefault();
   const text = $("note-text").value.trim();
   if (!text) return;
-  if (!state.pendingRequestId) state.pendingRequestId = crypto.randomUUID();
+  if (!state.pendingRequestId || state.pendingRequestText !== text) {
+    state.pendingRequestId = crypto.randomUUID();
+    state.pendingRequestText = text;
+  }
   const button = $("send");
   const status = $("compose-status");
   button.disabled = true;
@@ -199,6 +203,7 @@ async function submitNote(event) {
     showReceipt(receipt);
     status.textContent = "";
     state.pendingRequestId = null;
+    state.pendingRequestText = null;
     $("note-text").value = "";
   } catch (error) {
     status.textContent = `Not queued: ${error.message}. Press send again to retry with the same request id.`;
@@ -267,6 +272,10 @@ function init() {
     void loadHealth();
   });
   $("note-form").addEventListener("submit", submitNote);
+  $("note-text").addEventListener("input", () => {
+    state.pendingRequestId = null;
+    state.pendingRequestText = null;
+  });
   $("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
     state.token = $("token-input").value.trim();

@@ -80,7 +80,7 @@ test("a JSON request without a requestId is still accepted and gets one", async 
   }
 });
 
-test("plain text body with an X-Request-Id header is accepted", async () => {
+test("a non-JSON body is rejected", async () => {
   const server = await startTestServer({ token: "t" });
   try {
     const response = await fetch(`${server.url}/api/note`, {
@@ -92,10 +92,33 @@ test("plain text body with an X-Request-Id header is accepted", async () => {
       },
       body: "from a plain client",
     });
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as NoteReceipt;
-    assert.equal(body.request_id, "header-req");
-    assert.equal(readFileSync(join(server.home, "state", "notes", "header-req"), "utf8"), "from a plain client");
+    assert.equal(response.status, 400);
+    assert.deepEqual(noteFiles(server.home), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the instruction alias is rejected", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const result = await postNote(server.url, "t", { instruction: "via alias", requestId: "alias-req" });
+    assert.equal(result.status, 400);
+    assert.deepEqual(noteFiles(server.home), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the request_id alias is ignored and a new id is generated", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const result = await postNote(server.url, "t", { text: "aliased id", request_id: "alias-id" });
+    assert.equal(result.status, 200);
+    const receipt = result.body as NoteReceipt;
+    assert.match(receipt.request_id, /^[0-9a-f-]{36}$/);
+    assert.notEqual(receipt.request_id, "alias-id");
+    assert.equal(noteFiles(server.home).length, 1);
   } finally {
     await server.close();
   }

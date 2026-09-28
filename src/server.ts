@@ -74,35 +74,29 @@ interface NoteBody {
   requestId: string;
 }
 
-function parseNoteBody(
-  raw: string,
-  contentType: string,
-  headerRequestId: string | undefined,
-): NoteBody | { error: string } {
-  let text = raw;
-  let requestId = headerRequestId?.trim() || undefined;
-
-  if (contentType.includes("application/json")) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return { error: "request body is not valid JSON" };
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { error: "request body must be a JSON object" };
-    }
-    const record = parsed as Record<string, unknown>;
-    const jsonText = record.text ?? record.instruction;
-    if (typeof jsonText !== "string") {
-      return { error: "JSON body requires a string 'text' field" };
-    }
-    text = jsonText;
-    const jsonId = record.requestId ?? record.request_id;
-    if (jsonId !== undefined) {
-      if (typeof jsonId !== "string") return { error: "'requestId' must be a string" };
-      requestId = jsonId.trim();
-    }
+function parseNoteBody(raw: string, contentType: string): NoteBody | { error: string } {
+  if (!contentType.includes("application/json")) {
+    return { error: "request body must be application/json" };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: "request body is not valid JSON" };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "request body must be a JSON object" };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.text !== "string") {
+    return { error: "JSON body requires a string 'text' field" };
+  }
+  const text = record.text;
+  let requestId: string | undefined;
+  const jsonId = record.requestId;
+  if (jsonId !== undefined) {
+    if (typeof jsonId !== "string") return { error: "'requestId' must be a string" };
+    requestId = jsonId.trim();
   }
 
   if (text.trim().length === 0) {
@@ -250,11 +244,9 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
           sendError(res, 413, "request body too large");
           return;
         }
-        const headerRequestId = req.headers["x-request-id"];
         const parsedResult = parseNoteBody(
           raw,
           String(req.headers["content-type"] ?? ""),
-          Array.isArray(headerRequestId) ? headerRequestId[0] : headerRequestId,
         );
         if ("error" in parsedResult) {
           sendError(res, 400, parsedResult.error);

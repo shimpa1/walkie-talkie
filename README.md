@@ -138,11 +138,10 @@ Every endpoint except `/api/health` requires `Authorization: Bearer <token>`.
 
 Firstmate's JSON is passed through unchanged.
 
-`POST /api/note` accepts either a JSON body
-`{"text": "...", "requestId": "..."}` or a plain-text body with an
-`X-Request-Id` header. The client supplies a stable request id; a retry with the
-same id is idempotent and queues exactly once. If no id is supplied, the service
-generates one and returns it. Request ids must match firstmate's own contract:
+`POST /api/note` accepts a JSON body `{"text": "...", "requestId": "..."}`.
+The client supplies a stable request id; a retry with the same id is idempotent
+and queues exactly once. If no id is supplied, the service generates one and
+returns it. Request ids must match firstmate's own contract:
 `[A-Za-z0-9._:-]{1,128}`, not starting with a dot.
 
 Example:
