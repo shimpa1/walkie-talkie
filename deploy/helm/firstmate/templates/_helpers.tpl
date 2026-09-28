@@ -88,7 +88,7 @@ walkie-talkie image reference.
 Name of the headless Service governing the StatefulSet.
 */}}
 {{- define "firstmate.headlessServiceName" -}}
-{{- printf "%s-headless" (include "firstmate.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-headless" (include "firstmate.fullname" . | trunc 54 | trimSuffix "-") | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
