@@ -53,6 +53,49 @@ test("a public bind is refused unless explicitly overridden", () => {
   assert.equal(bindRefusal(loopback), null);
 });
 
+test("push settings default and accept environment overrides", () => {
+  const base = resolveConfig({ env: { FM_WT_TOKEN: "t" }, cwd: tmpdir() });
+  assert.equal(base.vapidPublicKey, null);
+  assert.equal(base.vapidPrivateKey, null);
+  assert.equal(base.pushPollSeconds, 20);
+  assert.ok(base.pushStorePath.endsWith("walkie-talkie.push.json"));
+
+  const overridden = resolveConfig({
+    env: {
+      FM_WT_TOKEN: "t",
+      FM_WT_VAPID_PUBLIC_KEY: "public",
+      FM_WT_VAPID_PRIVATE_KEY: "private",
+      FM_WT_VAPID_SUBJECT: "mailto:push@example.com",
+      FM_WT_PUSH_POLL_SECONDS: "45",
+      FM_WT_PUSH_STORE: "/tmp/reach-push.json",
+    },
+    cwd: tmpdir(),
+  });
+  assert.equal(overridden.vapidPublicKey, "public");
+  assert.equal(overridden.vapidPrivateKey, "private");
+  assert.equal(overridden.vapidSubject, "mailto:push@example.com");
+  assert.equal(overridden.pushPollSeconds, 45);
+  assert.equal(overridden.pushStorePath, "/tmp/reach-push.json");
+});
+
+test("a half-configured VAPID pair is a configuration error", () => {
+  assert.throws(
+    () => resolveConfig({ env: { FM_WT_TOKEN: "t", FM_WT_VAPID_PUBLIC_KEY: "only-public" }, cwd: tmpdir() }),
+    ConfigError,
+  );
+});
+
+test("an out-of-range poll interval is a configuration error", () => {
+  assert.throws(
+    () => resolveConfig({ env: { FM_WT_TOKEN: "t", FM_WT_PUSH_POLL_SECONDS: "1" }, cwd: tmpdir() }),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ env: { FM_WT_TOKEN: "t", FM_WT_PUSH_POLL_SECONDS: "soon" }, cwd: tmpdir() }),
+    ConfigError,
+  );
+});
+
 test("loopback detection covers the usual spellings", () => {
   assert.equal(isLoopbackHost("127.0.0.1"), true);
   assert.equal(isLoopbackHost("::1"), true);

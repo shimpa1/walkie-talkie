@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 
 import type { AppConfig } from "../src/config.js";
 import { Firstmate } from "../src/firstmate.js";
+import type { PushApi } from "../src/push-service.js";
 import { createRequestHandler } from "../src/server.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -30,6 +31,7 @@ export async function startTestServer(options: {
   token?: string;
   home?: string;
   binDir?: string;
+  push?: PushApi;
 } = {}): Promise<TestServer> {
   const home = options.home ?? makeHome();
   const token = options.token ?? "test-token";
@@ -44,9 +46,16 @@ export async function startTestServer(options: {
     publicDir: PUBLIC_DIR,
     allowPublicBind: false,
     configFile: null,
+    vapidSubject: "mailto:test@localhost",
+    vapidPublicKey: null,
+    vapidPrivateKey: null,
+    pushPollSeconds: 20,
+    pushStorePath: join(home, "walkie-talkie.push.json"),
   };
   const firstmate = new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
-  const server: Server = createServer(createRequestHandler({ config, firstmate }));
+  const server: Server = createServer(
+    createRequestHandler({ config, firstmate, ...(options.push ? { push: options.push } : {}) }),
+  );
 
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
   const address = server.address();

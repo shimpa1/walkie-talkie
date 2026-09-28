@@ -75,6 +75,25 @@
             <span id="settings-status" class="hint" role="status"></span>
           </div>
         </form>
+        <div class="push-panel">
+          <h3>Push notifications</h3>
+          <p class="hint">
+            Get a ping when a pull request is ready for review, a decision is
+            waiting, or a worker is blocked. Delivery uses the browser's own
+            push service; nothing is sent to a third-party account.
+          </p>
+          <p id="push-status-line" class="hint" role="status">Checking this device…</p>
+          <div class="row">
+            <button id="push-enable" type="button">Enable on this device</button>
+            <button id="push-disable" class="ghost" type="button">Disable</button>
+            <button id="push-test" class="ghost" type="button">Send test</button>
+          </div>
+          <p class="hint">
+            On iPhone or iPad, add this app to the Home Screen first; notifications
+            only work from the installed app on iOS 16.4 or newer.
+          </p>
+        </div>
+
         <dl class="facts">
           <dt>Service</dt>
           <dd id="fact-origin">—</dd>

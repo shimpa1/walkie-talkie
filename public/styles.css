@@ -317,6 +317,19 @@ button.ghost {
   color: var(--text);
 }
 
+.push-panel {
+  margin-top: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.push-panel h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
 .facts {
   margin-top: 16px;
   display: grid;

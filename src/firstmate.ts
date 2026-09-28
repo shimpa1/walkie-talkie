@@ -83,6 +83,21 @@ export class Firstmate implements FirstmateClient {
   }
 }
 
+/**
+ * Return the trimmed stdout when it is a single JSON value, else null. Used to
+ * pass firstmate's own JSON through unchanged without trusting malformed output.
+ */
+export function parseJsonOutput(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
 /** The documented firstmate read/queue surfaces this service is allowed to touch. */
 export const FM_SCRIPTS = {
   inbox: "fm-inbox.sh",

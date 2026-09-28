@@ -11,6 +11,15 @@ export interface AppConfig {
   publicDir: string;
   allowPublicBind: boolean;
   configFile: string | null;
+  /** VAPID contact for the push token; a mailto: URL is conventional. */
+  vapidSubject: string;
+  /** Explicit VAPID keys, or null to generate and persist them on first run. */
+  vapidPublicKey: string | null;
+  vapidPrivateKey: string | null;
+  /** How often the service polls firstmate for new events, in seconds. */
+  pushPollSeconds: number;
+  /** Gitignored file holding the VAPID keys, subscriptions, and event cursor. */
+  pushStorePath: string;
 }
 
 interface FileConfig {
@@ -21,6 +30,11 @@ interface FileConfig {
   token?: unknown;
   publicDir?: unknown;
   allowPublicBind?: unknown;
+  vapidSubject?: unknown;
+  vapidPublicKey?: unknown;
+  vapidPrivateKey?: unknown;
+  pushPollSeconds?: unknown;
+  pushStore?: unknown;
 }
 
 export class ConfigError extends Error {
@@ -30,6 +44,11 @@ export class ConfigError extends Error {
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_CONFIG_FILE = "walkie-talkie.config.json";
+export const DEFAULT_VAPID_SUBJECT = "mailto:admin@localhost";
+export const DEFAULT_PUSH_POLL_SECONDS = 20;
+export const DEFAULT_PUSH_STORE = "walkie-talkie.push.json";
+export const MIN_PUSH_POLL_SECONDS = 5;
+export const MAX_PUSH_POLL_SECONDS = 24 * 60 * 60;
 
 export function defaultPublicDir(from: string): string {
   return resolve(from, "public");
@@ -134,7 +153,73 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     asBoolean(file.allowPublicBind, "allowPublicBind") ??
     false;
 
-  return { fmHome, fmBin, host, port, token, publicDir, allowPublicBind, configFile };
+  const vapidSubject =
+    env.FM_WT_VAPID_SUBJECT?.trim() ||
+    asString(file.vapidSubject, "vapidSubject") ||
+    DEFAULT_VAPID_SUBJECT;
+
+  const vapidPublicKey =
+    env.FM_WT_VAPID_PUBLIC_KEY?.trim() || asString(file.vapidPublicKey, "vapidPublicKey") || null;
+  const vapidPrivateKey =
+    env.FM_WT_VAPID_PRIVATE_KEY?.trim() || asString(file.vapidPrivateKey, "vapidPrivateKey") || null;
+  if ((vapidPublicKey === null) !== (vapidPrivateKey === null)) {
+    throw new ConfigError(
+      "vapidPublicKey and vapidPrivateKey must be set together (or both left unset to generate them)",
+    );
+  }
+
+  const pushPollSeconds =
+    parsePollSeconds(env.FM_WT_PUSH_POLL_SECONDS) ??
+    (file.pushPollSeconds === undefined
+      ? DEFAULT_PUSH_POLL_SECONDS
+      : parsePollSecondsFile(file.pushPollSeconds));
+
+  const pushStoreRaw =
+    env.FM_WT_PUSH_STORE?.trim() || asString(file.pushStore, "pushStore") || DEFAULT_PUSH_STORE;
+  const pushStorePath = isAbsolute(pushStoreRaw) ? pushStoreRaw : resolve(cwd, pushStoreRaw);
+
+  return {
+    fmHome,
+    fmBin,
+    host,
+    port,
+    token,
+    publicDir,
+    allowPublicBind,
+    configFile,
+    vapidSubject,
+    vapidPublicKey,
+    vapidPrivateKey,
+    pushPollSeconds,
+    pushStorePath,
+  };
+}
+
+function parsePollSeconds(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < MIN_PUSH_POLL_SECONDS || seconds > MAX_PUSH_POLL_SECONDS) {
+    throw new ConfigError(
+      `FM_WT_PUSH_POLL_SECONDS must be an integer between ${MIN_PUSH_POLL_SECONDS} and ${MAX_PUSH_POLL_SECONDS}, got ${value}`,
+    );
+  }
+  return seconds;
+}
+
+function parsePollSecondsFile(value: unknown): number {
+  if (typeof value === "number") {
+    if (Number.isInteger(value) && value >= MIN_PUSH_POLL_SECONDS && value <= MAX_PUSH_POLL_SECONDS) {
+      return value;
+    }
+    throw new ConfigError(
+      `config key pushPollSeconds must be between ${MIN_PUSH_POLL_SECONDS} and ${MAX_PUSH_POLL_SECONDS}`,
+    );
+  }
+  if (typeof value === "string") {
+    const parsed = parsePollSeconds(value);
+    if (parsed !== undefined) return parsed;
+  }
+  throw new ConfigError("config key pushPollSeconds must be a number");
 }
 
 function parsePortFile(value: unknown): number {
