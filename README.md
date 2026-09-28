@@ -157,8 +157,10 @@ On first run the service generates a P-256 VAPID key pair and writes it to
 `walkie-talkie.push.json` (`0600`, gitignored). To supply your own pair instead,
 set both `FM_WT_VAPID_PUBLIC_KEY` and `FM_WT_VAPID_PRIVATE_KEY` (or the
 `vapidPublicKey` / `vapidPrivateKey` config keys); they must be base64url, the
-public key an uncompressed P-256 point and the private key its 32-byte scalar.
-Setting only one is a configuration error. The VAPID contact
+public key an uncompressed P-256 point and the private key its 32-byte scalar,
+and they must be a matching pair (the private key must derive the public key).
+An off-curve point, an out-of-range scalar, or a mismatched pair is rejected at
+startup, as is setting only one of them. The VAPID contact
 (`FM_WT_VAPID_SUBJECT`) is sent to the push service as the `sub` claim.
 
 ### What triggers a notification
