@@ -217,7 +217,11 @@ a short-lived process.
 
 Add harness/model configuration through `firstmate.extraEnv` or
 `firstmate.extraEnvFrom`, and more credentials through
-`credentials.create.harness` / `credentials.keys.harness`.
+`credentials.create.harness` / `credentials.keys.harness`. Harness entries may
+not reuse the reserved names the chart manages — the
+`credentials.keys.walkieTalkieToken`/`credentials.keys.githubToken` key names and
+the `GH_TOKEN`/`GITHUB_TOKEN` env names — a collision fails the render instead of
+silently overwriting the built-in credential.
 
 ### TLS
 

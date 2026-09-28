@@ -22,6 +22,9 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if and $includeGithub (or (hasKey $harness "GH_TOKEN") (hasKey $harness "GITHUB_TOKEN")) -}}
+{{- fail "harness credentials may not use the reserved env names GH_TOKEN or GITHUB_TOKEN (managed via credentials.keys.githubToken); rename them" -}}
+{{- end -}}
 {{- $explicitCredential := or .Values.credentials.create.walkieTalkieToken .Values.credentials.create.githubToken (gt (len .Values.credentials.create.harness) 0) -}}
 apiVersion: apps/v1
 kind: StatefulSet

@@ -217,7 +217,10 @@ credentials:
     githubToken: ""
     # Harness/model credentials: map of environment-variable name to value.
     # Each becomes an environment variable in the firstmate container, read
-    # from the created Secret.
+    # from the created Secret. A name that collides with a reserved name makes
+    # the chart fail at render instead of silently overwriting the built-in
+    # credential: the `walkieTalkieToken`/`githubToken` key names (see
+    # `keys`) and the `GH_TOKEN`/`GITHUB_TOKEN` env names are all reserved.
     harness: {}
 
   # Secret key names. `create` writes these keys; with `existingSecret` these
@@ -226,7 +229,9 @@ credentials:
     walkieTalkieToken: walkie-talkie-token
     githubToken: github-token
     # Map of environment-variable name to key in the existing Secret. Ignored
-    # in created-Secret mode (the env-var name is the key there).
+    # in created-Secret mode (the env-var name is the key there). The env
+    # names `GH_TOKEN`/`GITHUB_TOKEN` are reserved and make the chart fail at
+    # render if reused here.
     harness: {}
 
 # ---------------------------------------------------------------------------

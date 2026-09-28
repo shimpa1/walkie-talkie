@@ -25,3 +25,9 @@ See [`values.yaml`](values.yaml) for every setting: images, the firstmate home
 path, `storageClass` (empty by default; the atus example sets `beta3`), storage
 size, resources, `httpRoute` parentRefs and hostnames, TLS, and the credential
 Secret.
+
+Harness/model credentials (`credentials.create.harness` / `credentials.keys.harness`)
+may not use the reserved names the chart manages for itself — the
+`credentials.keys.walkieTalkieToken` and `credentials.keys.githubToken` key
+names and the `GH_TOKEN`/`GITHUB_TOKEN` env names. A collision fails the render
+rather than silently overwriting the built-in credential.
