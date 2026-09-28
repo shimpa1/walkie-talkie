@@ -81,8 +81,9 @@ firstmate:
 # ---------------------------------------------------------------------------
 walkieTalkie:
   image:
-    # Build this image with the Dockerfile from the sibling deploy work
-    # (repository root Dockerfile), or point at your own built image.
+    # Built from the repository-root Dockerfile provided by the sibling
+    # Docker/Compose deploy slice (a prerequisite; merge it first), or point at
+    # your own built image.
     repository: walkie-talkie
     tag: ""
     pullPolicy: IfNotPresent

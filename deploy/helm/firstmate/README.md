@@ -18,8 +18,8 @@ helm upgrade --install firstmate deploy/helm/firstmate \
 
 The firstmate runtime image is built from
 [`deploy/kubernetes/firstmate`](../../kubernetes/firstmate). The walkie-talkie
-image is built from the sibling Docker/Compose deploy path (repository root
-`Dockerfile`).
+image is built from the repository-root `Dockerfile` provided by the sibling
+Docker/Compose deploy slice, which is a prerequisite (merge it first).
 
 See [`values.yaml`](values.yaml) for every setting: images, the firstmate home
 path, `storageClass` (default `beta3`), storage size, resources, `httpRoute`

@@ -68,8 +68,9 @@ have them:
   - the **firstmate runtime** — build it from
     [`deploy/kubernetes/firstmate/Dockerfile`](../deploy/kubernetes/firstmate/Dockerfile)
     (or supply your own image meeting the same contract);
-  - the **walkie-talkie service** — build it with the walkie-talkie Dockerfile
-    from the sibling Docker/Compose deploy path (repository root `Dockerfile`).
+  - the **walkie-talkie service** — built from the repository-root `Dockerfile`
+    provided by the sibling Docker/Compose deploy slice (a prerequisite: merge
+    that slice first).
 - **Credentials**: a walkie-talkie bearer token, a GitHub token, and any
   harness/model credentials your primary agent needs.
 
@@ -95,8 +96,9 @@ docker build \
   -t registry.example.com/firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
 ```
 
-walkie-talkie: build it with the Dockerfile from the sibling deploy work and
-push it to your registry as well.
+walkie-talkie: build it from the repository-root `Dockerfile` provided by the
+sibling Docker/Compose deploy slice (a prerequisite) and push it to your
+registry as well.
 
 Then set `firstmate.image.repository`/`tag` and
 `walkieTalkie.image.repository`/`tag` to your pushed images.
