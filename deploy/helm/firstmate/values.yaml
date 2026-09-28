@@ -31,10 +31,6 @@ firstmate:
   # persistent volume here. Both containers share it.
   home: /home/firstmate
 
-  # Runtime backend for new spawns. herdr keeps the session attachable with
-  # `kubectl exec -it ... -- herdr`.
-  backend: herdr
-
   # Named herdr session the runtime uses and that you attach to. firstmate
   # reads it from HERDR_SESSION and the entrypoint starts the headless server
   # for it.
@@ -136,7 +132,8 @@ persistence:
   accessModes:
     - ReadWriteOnce
   size: 20Gi
-  # Use an already-created PVC instead of a volumeClaimTemplate.
+  # Use an already-created PVC instead of a volumeClaimTemplate. Requires
+  # `enabled: false`; setting it while `enabled: true` fails the render.
   existingClaim: ""
   annotations: {}
 

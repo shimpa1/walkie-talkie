@@ -17,7 +17,6 @@ firstmate:
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   home: /home/firstmate
-  backend: herdr
   herdrSession: firstmate
   resources:
     requests:

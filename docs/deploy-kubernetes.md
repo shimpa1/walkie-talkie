@@ -197,7 +197,6 @@ a short-lived process.
 | --- | --- | --- |
 | `firstmate.image.repository` / `.tag` | `firstmate-runtime` / chart version | Runtime image. |
 | `firstmate.home` | `/home/firstmate` | Absolute container path of the firstmate home; also the volume mount and `FM_HOME`. |
-| `firstmate.backend` | `herdr` | Runtime backend (`FM_BACKEND`). |
 | `firstmate.herdrSession` | `firstmate` | Named herdr session (`HERDR_SESSION`). |
 | `walkieTalkie.image.repository` / `.tag` | `walkie-talkie` / chart version | Companion image. |
 | `walkieTalkie.port` | `8787` | Walkie-talkie port inside the container. |

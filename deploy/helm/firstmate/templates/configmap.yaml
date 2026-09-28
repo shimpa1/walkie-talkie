@@ -7,7 +7,6 @@ metadata:
 data:
   FM_HOME: {{ .Values.firstmate.home | quote }}
   FM_BIN: {{ printf "%s/bin" .Values.firstmate.home | quote }}
-  FM_BACKEND: {{ .Values.firstmate.backend | quote }}
   HERDR_SESSION: {{ .Values.firstmate.herdrSession | quote }}
   FM_WT_HOST: "0.0.0.0"
   FM_WT_PORT: {{ .Values.walkieTalkie.port | quote }}

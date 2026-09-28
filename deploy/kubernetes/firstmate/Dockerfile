@@ -79,7 +79,6 @@ RUN chmod 0755 /usr/local/bin/firstmate-entrypoint
 
 ENV HOME=/home/firstmate \
     FM_HOME=/home/firstmate \
-    FM_BACKEND=herdr \
     HERDR_SESSION=firstmate \
     NODE_ENV=production
 

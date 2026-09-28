@@ -30,7 +30,7 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/conf
 #    same herdr backend firstmate uses.
 git config --global --add safe.directory "$HOME_DIR" 2>/dev/null || true
 if [ ! -e "$HOME_DIR/config/backend" ]; then
-  printf '%s\n' "${FM_BACKEND:-herdr}" > "$HOME_DIR/config/backend"
+  printf '%s\n' herdr > "$HOME_DIR/config/backend"
 fi
 
 # Allow seeding to run on its own (for an initContainer or an image test)
