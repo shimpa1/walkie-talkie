@@ -1,0 +1,17 @@
+# Caddyfile for the Docker Compose deployment.
+#
+# Caddy obtains and renews a trusted TLS certificate for $DOMAIN automatically
+# (Let's Encrypt by default) and redirects HTTP to HTTPS. The app is reached
+# over the private Compose network by its service name; it is never published
+# on the host.
+#
+# DOMAIN and ACME_EMAIL are supplied by docker-compose.yml.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8787
+}

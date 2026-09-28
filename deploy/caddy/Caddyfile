@@ -1,0 +1,15 @@
+# Caddyfile for the systemd (non-Docker) deployment.
+#
+# Use with the walkie-talkie systemd unit, which binds the service to loopback;
+# Caddy terminates TLS for $DOMAIN and proxies to it, redirecting HTTP to HTTPS.
+#
+# Set DOMAIN and (optionally) ACME_EMAIL in the Caddy service environment.
+
+{
+	email {$ACME_EMAIL:acme@example.invalid}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787
+}
