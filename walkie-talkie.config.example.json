@@ -1,0 +1,7 @@
+{
+  "fmHome": "/Users/you/firstmate",
+  "fmBin": "/Users/you/firstmate/bin",
+  "host": "127.0.0.1",
+  "port": 8787,
+  "token": "replace-with-a-generated-token"
+}
