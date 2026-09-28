@@ -90,3 +90,17 @@ Name of the headless Service governing the StatefulSet.
 {{- define "firstmate.headlessServiceName" -}}
 {{- printf "%s-headless" (include "firstmate.fullname" .) -}}
 {{- end -}}
+
+{{/*
+Checksum source for the created-Secret pod-template annotation. Hashes only the
+explicit credentials, never lookup-preserved or auto-generated values.
+*/}}
+{{- define "firstmate.secretChecksum" -}}
+{{- $creds := dict -}}
+{{- $_ := set $creds "walkieTalkieToken" .Values.credentials.create.walkieTalkieToken -}}
+{{- $_ := set $creds "githubToken" .Values.credentials.create.githubToken -}}
+{{- range $k, $v := .Values.credentials.create.harness -}}
+{{- $_ := set $creds (printf "harness.%s" $k) $v -}}
+{{- end -}}
+{{- $creds | toJson -}}
+{{- end -}}
