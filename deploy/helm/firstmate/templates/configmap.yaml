@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firstmate.fullname" . }}-config
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+data:
+  FM_HOME: {{ .Values.firstmate.home | quote }}
+  FM_BIN: {{ printf "%s/bin" .Values.firstmate.home | quote }}
+  FM_BACKEND: {{ .Values.firstmate.backend | quote }}
+  HERDR_SESSION: {{ .Values.firstmate.herdrSession | quote }}
+  FM_WT_HOST: "0.0.0.0"
+  FM_WT_PORT: {{ .Values.walkieTalkie.port | quote }}
+  FM_WT_ALLOW_PUBLIC_BIND: "1"

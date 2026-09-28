@@ -1,0 +1,74 @@
+# Example values for the atus cluster: internet-facing NGINX Gateway API,
+# StorageClass `beta3` (Rook-Ceph), TLS terminated at the shared Gateway with
+# the wildcard `*.atus.hr` certificate.
+#
+#   helm upgrade --install firstmate deploy/helm/firstmate \
+#     --namespace firstmate --create-namespace \
+#     -f deploy/helm/firstmate/examples/values-atus.yaml \
+#     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
+#     --set credentials.create.githubToken=github_pat_xxx \
+#     --set credentials.create.harness.ANTHROPIC_API_KEY=sk-ant-xxx
+
+# Images. Build and push these to a registry the cluster can pull from, then
+# replace the repositories (the defaults are local build names).
+firstmate:
+  image:
+    repository: registry.atus.hr/firstmate-runtime
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  home: /home/firstmate
+  backend: herdr
+  herdrSession: firstmate
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+walkieTalkie:
+  image:
+    repository: registry.atus.hr/walkie-talkie
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+persistence:
+  enabled: true
+  storageClass: beta3
+  size: 20Gi
+
+service:
+  type: ClusterIP
+  port: 8787
+
+# The shared atus Gateway lives in namespace nginx-gateway. Pin the HTTPS
+# listener that serves the wildcard certificate (see
+# cluster-resources/gateway.yaml in the atus deployment repo).
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: gateway
+      namespace: nginx-gateway
+      sectionName: https-atus-wildcard
+  hostnames:
+    - reach.atus.hr
+  redirect:
+    enabled: true
+    parentRefs:
+      - name: gateway
+        namespace: nginx-gateway
+        sectionName: http
+
+# TLS terminates at the Gateway using the existing wildcard certificate, so no
+# cert-manager Certificate is created here.
+certificate:
+  enabled: false
+
+credentials:
+  # Either point at an existing Secret (recommended) or let the chart create
+  # one. For a GitOps setup, prefer an existing Secret managed outside Helm.
+  existingSecret: ""
+  create:
+    walkieTalkieToken: ""
+    githubToken: ""
+    harness: {}

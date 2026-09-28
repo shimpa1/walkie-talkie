@@ -1,0 +1,209 @@
+{{- $home := .Values.firstmate.home -}}
+{{- $secretName := include "firstmate.secretName" . -}}
+{{- $githubKey := .Values.credentials.keys.githubToken -}}
+{{- $includeGithub := and .Values.credentials.githubTokenEnabled (or .Values.credentials.existingSecret .Values.credentials.create.githubToken) -}}
+{{- $harness := dict -}}
+{{- if .Values.credentials.existingSecret -}}
+{{- $harness = .Values.credentials.keys.harness -}}
+{{- else -}}
+{{- range $env, $value := .Values.credentials.create.harness -}}
+{{- $_ := set $harness $env $env -}}
+{{- end -}}
+{{- end -}}
+{{- $explicitCredentials := .Values.credentials.create.walkieTalkieToken -}}
+{{- $explicitCredentials = or $explicitCredentials .Values.credentials.create.githubToken -}}
+{{- $explicitCredentials = or $explicitCredentials (gt (len .Values.credentials.create.harness) 0) -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "firstmate.fullname" . }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "firstmate.headlessServiceName" . }}
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "firstmate.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firstmate.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if and $explicitCredentials (not .Values.credentials.existingSecret) }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "firstmate.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.firstmate.podSecurityContext | nindent 8 }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: firstmate
+          image: {{ include "firstmate.image" . }}
+          imagePullPolicy: {{ .Values.firstmate.image.pullPolicy }}
+          {{- with .Values.firstmate.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.firstmate.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "firstmate.fullname" . }}-config
+            {{- with .Values.firstmate.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: HOME
+              value: {{ $home | quote }}
+            - name: HERDR_SESSION
+              value: {{ .Values.firstmate.herdrSession | quote }}
+            {{- if $includeGithub }}
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $githubKey }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $githubKey }}
+            {{- end }}
+            {{- range $env, $key := $harness }}
+            - name: {{ $env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- with .Values.firstmate.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: {{ $home }}
+          resources:
+            {{- toYaml .Values.firstmate.resources | nindent 12 }}
+          {{- with .Values.firstmate.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: walkie-talkie
+          image: {{ include "firstmate.walkieTalkie.image" . }}
+          imagePullPolicy: {{ .Values.walkieTalkie.image.pullPolicy }}
+          ports:
+            - name: walkie-talkie
+              containerPort: {{ .Values.walkieTalkie.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "firstmate.fullname" . }}-config
+            {{- with .Values.walkieTalkie.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: FM_WT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.credentials.keys.walkieTalkieToken }}
+            {{- with .Values.walkieTalkie.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.walkieTalkie.livenessProbe.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: walkie-talkie
+            initialDelaySeconds: {{ .Values.walkieTalkie.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.walkieTalkie.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.walkieTalkie.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.walkieTalkie.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.walkieTalkie.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: walkie-talkie
+            initialDelaySeconds: {{ .Values.walkieTalkie.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.walkieTalkie.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.walkieTalkie.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.walkieTalkie.readinessProbe.failureThreshold }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: {{ $home }}
+          resources:
+            {{- toYaml .Values.walkieTalkie.resources | nindent 12 }}
+          {{- with .Values.walkieTalkie.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- if not .Values.persistence.enabled }}
+      volumes:
+        {{- if .Values.persistence.existingClaim }}
+        - name: home
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- else }}
+        - name: home
+          emptyDir: {}
+        {{- end }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+        labels:
+          {{- include "firstmate.selectorLabels" . | nindent 10 }}
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
+  {{- end }}
