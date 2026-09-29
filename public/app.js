@@ -32,11 +32,12 @@ function setBanner(message, kind) {
 
 function handleUnauthorized(_response, token) {
   if (token !== state.token) return;
+  state.token = "";
+  forgetToken(localStorage);
+  $("token-input").value = "";
   setBanner(UNAUTHORIZED_MESSAGE, "bad");
-  if (!state.token) {
-    showView("settings");
-    setSettingsStatus(UNAUTHORIZED_MESSAGE, "bad");
-  }
+  showView("settings");
+  setSettingsStatus(UNAUTHORIZED_MESSAGE, "bad");
 }
 
 const api = createApi({

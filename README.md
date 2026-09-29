@@ -298,8 +298,8 @@ The token is saved as you type (debounced) and again when the field loses focus,
 so switching tabs or leaving **Settings** cannot drop it; **Save token** also
 checks it against `GET /api/status` and reports **Token accepted** or
 **Token rejected** inline. If any API call returns `401`, the app says the token
-is missing or wrong and, when none is set, opens **Settings** so the fix is
-obvious. **Forget token** removes it.
+is missing or wrong, clears the stored token and the field, and opens
+**Settings** so the fix is obvious. **Forget token** removes it.
 
 Alternative: bind the service directly to the machine's tailnet address. This
 needs the explicit override because the address is not loopback:
