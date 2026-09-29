@@ -303,6 +303,19 @@ button.ghost {
   border: 1px solid var(--line);
 }
 
+button.mic {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+button.mic.is-listening {
+  background: color-mix(in srgb, var(--bad) 20%, var(--panel-2));
+  border-color: var(--bad);
+  color: var(--text);
+}
+
 .receipt {
   margin-top: 12px;
   border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line));

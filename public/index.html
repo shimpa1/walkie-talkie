@@ -50,6 +50,9 @@
           <textarea id="note-text" name="text" rows="5" placeholder="What should the fleet know or do next?" required></textarea>
           <div class="row">
             <button id="send" type="submit">Queue instruction</button>
+            <button id="mic" class="ghost mic" type="button" aria-pressed="false" hidden>
+              Hold to talk
+            </button>
             <span id="compose-status" class="hint" role="status"></span>
           </div>
         </form>

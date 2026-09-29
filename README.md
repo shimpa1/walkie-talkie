@@ -14,7 +14,8 @@ ready for review, a decision is waiting, or a worker is blocked.
   firstmate home, queues instructions into it, and pushes notifications to the
   installed web app.
 - A minimal installable web app served by the same service at `/` with a status
-  view, an instruction composer, and a notification opt-in.
+  view, an instruction composer (with hold-to-talk voice input), and a
+  notification opt-in.
 - Self-hosted Web Push with VAPID: the service generates and holds its own key
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
@@ -359,6 +360,43 @@ the Home Screen**, and only on **iOS 16.4 or newer**. In Safari, tap Share ->
 **Add to Home Screen**, open the app from the new icon, then use **Settings ->
 Enable on this device**. A plain Safari tab cannot receive notifications.
 
+## Voice input
+
+The instruction composer has a **Hold to talk** microphone button, and it works
+the same way on desktop, Android, and iOS. While the button is held (with a
+pointer or touch, or with Space/Enter from the keyboard), speech is transcribed
+with the browser's Web Speech API (`SpeechRecognition`, or
+`webkitSpeechRecognition` where that is the only name) and written into the
+instruction textarea. Release to stop. The browser ends each recognition
+session at a pause in speech; while the button is still held, the app starts a
+new session right away and appends to the same dictation, so a pause never ends
+capture and later sentences are not dropped. Silence while the button is held
+is not an error; capture simply keeps waiting.
+
+Releasing the button (or pressing **Queue instruction** while dictating) seals
+the dictation: whatever is on screen at that moment, including words the
+browser had not yet finalized, stays in the textarea, and any recognition
+result that arrives afterwards is ignored. A late result can never rewrite the
+composer after the instruction has been sent.
+
+The composed text then goes out through the same `POST /api/note` path as typing:
+voice is only an input method for the note, not a second write path. The app
+records nothing, uploads no audio (there is no audio endpoint), and adds no
+transcription service of its own; recognition is performed by the browser's
+Web Speech API.
+
+The control is hidden when the browser has no Web Speech API, so it never
+breaks the composer. A listening state and short messages for the common
+failures (`not-allowed`, `audio-capture`, `network`) appear next to the send
+button.
+
+Browser support is uneven. Chrome, Edge, and Safari (desktop and iOS) ship the
+API; Firefox does not. On iOS, voice input needs **Safari** (the API is not
+exposed to other iOS browsers' web views), and, as with push, the page must be a
+secure context. If the API is unavailable, the mic control is hidden and you can
+still dictate with the OS keyboard's microphone key directly in the instruction
+field; that dictation remains a fallback and writes into the same textarea.
+
 ## Run on Kubernetes
 
 To run firstmate and this companion on a Kubernetes cluster behind a Gateway API
@@ -425,6 +463,9 @@ depend on a live firstmate home. They exercise real code paths: real HTTP
 handlers, real `execFile` child processes, real JSON pass-through, the durable
 subscription store, and the Web Push encryption against the RFC 8291 test
 vector. Push delivery is stubbed in tests, so no push service is ever contacted.
+Voice input is tested by loading the real browser module with a fake
+`SpeechRecognition`, so feature detection, restart-while-held, transcript
+handling, and error handling are covered without a microphone.
 
 ## Dependencies
 
