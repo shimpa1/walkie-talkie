@@ -39,6 +39,7 @@ PANE_LOG="$TMP/pane.log"
 SERVER_ENV="$TMP/server.env"
 FORCE_DEAD="$TMP/force-dead"
 STARTING="$TMP/starting"
+STATUS_FAIL_ONCE="$TMP/status-fail-once"
 : > "$HERDR_LOG"
 : > "$PANE_LOG"
 
@@ -53,7 +54,12 @@ args=("$@")
 printf '%s\n' "$*" >> "${FAKE_HERDR_LOG:?}"
 case "${args[0]:-} ${args[1]:-}" in
   "status --json")
-    printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":true,"protocol":22,"compatible":true}}\n'
+    if [ -e "${FAKE_HERDR_STATUS_FAIL_ONCE:-/nonexistent}" ]; then
+      rm -f "$FAKE_HERDR_STATUS_FAIL_ONCE"
+      printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":false,"protocol":22,"compatible":true}}\n'
+    else
+      printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":true,"protocol":22,"compatible":true}}\n'
+    fi
     ;;
   "workspace list")
     if grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
@@ -113,6 +119,7 @@ PATH="$FAKE_BIN:$PATH" \
   FAKE_HERDR_SERVER_ENV="$SERVER_ENV" \
   FAKE_HERDR_FORCE_DEAD="$FORCE_DEAD" \
   FAKE_HERDR_STARTING="$STARTING" \
+  FAKE_HERDR_STATUS_FAIL_ONCE="$STATUS_FAIL_ONCE" \
   bash "$ENTRYPOINT" &
 EP_PID=$!
 
@@ -149,7 +156,10 @@ live_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
 [ "$live_runs" -eq 1 ] \
   || fail "supervisor started $live_runs harnesses while one was already live"
 
-# Simulate the harness exiting and assert the supervisor starts it again.
+# Simulate the harness exiting and assert the supervisor starts it again. A
+# single transient `herdr status` failure is injected first: it must not end
+# supervision, so the restart must still happen.
+: > "$STATUS_FAIL_ONCE"
 : > "$FORCE_DEAD"
 for _ in $(seq 1 100); do
   [ "$(grep -c '^pane_run pane=' "$PANE_LOG" || true)" -ge 2 ] && break

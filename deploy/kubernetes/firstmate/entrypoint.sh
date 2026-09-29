@@ -153,7 +153,7 @@ supervise_primary_harness() {
   while kill -0 "$SERVER_PID" 2>/dev/null; do
     sleep "$HARNESS_CHECK_INTERVAL"
     kill -0 "$SERVER_PID" 2>/dev/null || return 0
-    herdr_server_running || return 0
+    herdr_server_running || continue
     herdr_home_harness_live && continue
     if [ -n "$HARNESS_STARTED_AT" ] \
       && [ $(( $(date +%s) - HARNESS_STARTED_AT )) -lt "$HARNESS_START_GRACE" ]; then
