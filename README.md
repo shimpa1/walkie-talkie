@@ -370,9 +370,8 @@ with the browser's Web Speech API (`SpeechRecognition`, or
 instruction textarea. Release to stop. The browser ends each recognition
 session at a pause in speech; while the button is still held, the app starts a
 new session right away and appends to the same dictation, so a pause never ends
-capture and later sentences are not dropped. A final result that repeats text
-already captured in the same session is not added twice. Silence while the
-button is held is not an error; capture simply keeps waiting.
+capture and later sentences are not dropped. Silence while the button is held
+is not an error; capture simply keeps waiting.
 
 Releasing the button (or pressing **Queue instruction** while dictating) seals
 the dictation: whatever is on screen at that moment, including words the

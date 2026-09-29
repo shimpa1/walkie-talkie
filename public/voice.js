@@ -31,15 +31,6 @@ function appendChunk(current, chunk) {
   return current ? `${current} ${piece}` : piece;
 }
 
-function appendFinal(current, chunk) {
-  const piece = cleanChunk(chunk);
-  if (!piece) return current;
-  if (!current) return piece;
-  if (piece === current || current.endsWith(` ${piece}`)) return current;
-  if (piece.startsWith(`${current} `)) return piece;
-  return `${current} ${piece}`;
-}
-
 function composeText(baseText, finalText, interimText) {
   return [baseText, finalText, interimText]
     .map((part) => (typeof part === "string" ? part.trim() : ""))
@@ -94,7 +85,7 @@ export function createVoiceInput(options) {
       const result = results[index];
       const alternative = result ? result[0] : null;
       const chunk = alternative ? alternative.transcript : "";
-      if (result && result.isFinal) finalText = appendFinal(finalText, chunk);
+      if (result && result.isFinal) finalText = appendChunk(finalText, chunk);
       else interimText = appendChunk(interimText, chunk);
     }
     sessionText = finalText;

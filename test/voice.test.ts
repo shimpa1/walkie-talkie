@@ -166,27 +166,6 @@ test("a pause while held restarts recognition and keeps every sentence", async (
   assert.deepEqual(states.map(([state]) => state), ["listening", "idle"]);
 });
 
-test("a repeated cumulative final is not duplicated", async () => {
-  const rec = await recorder({ initialText: "note" });
-  rec.voice.start();
-  rec.recognition.onresult?.(
-    transcriptEvent([
-      { transcript: "tell the builder to pause", final: true },
-      { transcript: "tell the builder to pause then rebase", final: true },
-    ]),
-  );
-  assert.equal(rec.text(), "note tell the builder to pause then rebase");
-
-  rec.recognition.onresult?.(
-    transcriptEvent([
-      { transcript: "tell the builder to pause then rebase", final: true },
-      { transcript: "tell the builder to pause then rebase", final: true },
-    ]),
-  );
-  rec.voice.stop();
-  assert.equal(rec.text(), "note tell the builder to pause then rebase");
-});
-
 test("silence while held keeps listening instead of reporting an error", async () => {
   const rec = await recorder();
   rec.voice.start();
