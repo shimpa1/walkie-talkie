@@ -4,8 +4,10 @@
 #
 # The image bakes the firstmate distro and its herdr/treehouse toolchain as a
 # seed at /opt/firstmate. On first start the entrypoint copies the seed into
-# the persistent firstmate home and then runs the herdr headless server, so
-# the session stays attachable from `kubectl exec -it ... -- herdr`.
+# the persistent firstmate home, runs the herdr headless server, and starts the
+# primary harness inside the session, restarting it if it exits, so the session
+# stays attachable from `kubectl exec -it ... -- herdr` and a live firstmate
+# drains queued instructions instead of only the server.
 #
 # Build (context is this directory):
 #   docker build -t firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
