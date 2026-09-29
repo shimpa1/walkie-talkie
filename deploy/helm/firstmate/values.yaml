@@ -303,9 +303,10 @@ agents:
   #        name: Qwen3.8-27B (3090)
 
   # firstmate's per-task dispatch profiles (its crew-dispatch schema): `rules`
-  # with natural-language `when` and `use` profiles, plus an optional
-  # `default` profile array. Each profile names a declared harness and an
-  # optional model as "<provider>/<model-id>".
+  # with natural-language `when` and `use` profiles, plus an optional `default`
+  # profile array (or a single profile object; a rule's `use` takes either form
+  # too). Each profile names a declared harness and an optional model as
+  # "<provider>/<model-id>".
   #
   # A profile needs only `harness` for the default, non-typed deployment. When
   # typed dispatch is enabled (TYPESAFE_API_KEY), firstmate additionally
