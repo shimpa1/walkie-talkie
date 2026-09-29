@@ -125,6 +125,19 @@ test("a real token ending in percent survives store, reload, and send", async ()
   assert.deepEqual(authHeaders(readToken(storage)), { authorization: "Bearer s3cr3t%" });
 });
 
+test("re-saving the stored token never strips a second genuine percent", async () => {
+  const { writeToken, readToken, authHeaders, TOKEN_KEY } = await loadToken();
+  const storage = new MemoryStorage();
+
+  assert.equal(writeToken(storage, "s3cr3t%%"), "s3cr3t%");
+  assert.equal(writeToken(storage, readToken(storage)), "s3cr3t%");
+  assert.equal(writeToken(storage, " s3cr3t% "), "s3cr3t%");
+  assert.equal(writeToken(storage, readToken(storage)), "s3cr3t%");
+  assert.equal(storage.getItem(TOKEN_KEY), "s3cr3t%");
+  assert.equal(readToken(storage), "s3cr3t%");
+  assert.deepEqual(authHeaders(readToken(storage)), { authorization: "Bearer s3cr3t%" });
+});
+
 test("tokenSuffix shows the last four characters only when a token is stored", async () => {
   const { tokenSuffix } = await loadToken();
 

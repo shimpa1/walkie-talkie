@@ -500,7 +500,7 @@ function saveToken() {
     clearTimeout(tokenSaveTimer);
     tokenSaveTimer = null;
   }
-  $("token-input").value = persistToken($("token-input").value);
+  persistToken($("token-input").value);
   return verifyToken();
 }
 
