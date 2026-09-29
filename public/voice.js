@@ -10,15 +10,20 @@ function defaultScope() {
   return typeof window !== "undefined" ? window : null;
 }
 
-export function voiceSupported(scope) {
-  return speechRecognitionCtor(scope) !== null;
-}
-
 export function speechRecognitionCtor(scope) {
   const target = scope || defaultScope();
   if (!target) return null;
   const ctor = target.SpeechRecognition || target.webkitSpeechRecognition;
   return typeof ctor === "function" ? ctor : null;
+}
+
+export function voiceMode(scope) {
+  const target = scope || defaultScope();
+  const nav = target && target.navigator ? target.navigator : null;
+  if (!nav) return "hold";
+  const ua = typeof nav.userAgent === "string" ? nav.userAgent : "";
+  const touchMac = nav.platform === "MacIntel" && Number(nav.maxTouchPoints) > 1;
+  return /iPad|iPhone|iPod/.test(ua) || touchMac ? "toggle" : "hold";
 }
 
 function describeError(error) {
@@ -45,7 +50,6 @@ function composeText(baseText, finalText, interimText) {
 
 export function createVoiceInput(options) {
   const opts = options || {};
-  const supported = typeof opts.supported === "function" ? opts.supported : () => false;
   const createRecognition =
     typeof opts.createRecognition === "function" ? opts.createRecognition : () => null;
   const getText = typeof opts.getText === "function" ? opts.getText : () => "";
@@ -104,10 +108,6 @@ export function createVoiceInput(options) {
 
   function start() {
     if (listening) return true;
-    if (!supported()) {
-      emit("unsupported", "Voice input is not supported in this browser. Type your instruction instead.");
-      return false;
-    }
     let recognition;
     try {
       recognition = createRecognition();
@@ -116,7 +116,7 @@ export function createVoiceInput(options) {
       return false;
     }
     if (!recognition) {
-      emit("unsupported", "Voice input is not supported in this browser. Type your instruction instead.");
+      emit("error", "Could not start voice input. Type your instruction instead.");
       return false;
     }
     baseText = typeof getText() === "string" ? getText() : "";
@@ -125,7 +125,7 @@ export function createVoiceInput(options) {
     listening = true;
     try {
       if (lang) recognition.lang = lang;
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
       recognition.onresult = handleResult;
       recognition.onerror = handleError;

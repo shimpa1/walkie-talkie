@@ -1,4 +1,6 @@
-export type VoiceState = "idle" | "listening" | "error" | "unsupported";
+export type VoiceState = "idle" | "listening" | "error";
+
+export type VoiceMode = "hold" | "toggle";
 
 export interface SpeechRecognitionLike {
   lang: string;
@@ -32,10 +34,10 @@ export interface SpeechErrorEventLike {
 export interface VoiceScope {
   SpeechRecognition?: unknown;
   webkitSpeechRecognition?: unknown;
+  navigator?: { userAgent?: string; platform?: string; maxTouchPoints?: number };
 }
 
 export interface VoiceInputOptions {
-  supported: () => boolean;
   createRecognition: () => SpeechRecognitionLike | null;
   getText: () => string;
   setText: (text: string) => void;
@@ -49,7 +51,7 @@ export interface VoiceInput {
   isListening: () => boolean;
 }
 
-export function voiceSupported(scope?: VoiceScope | null): boolean;
+export function voiceMode(scope?: VoiceScope | null): VoiceMode;
 
 export function speechRecognitionCtor(scope?: VoiceScope | null): unknown;
 

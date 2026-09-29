@@ -16,7 +16,7 @@ import type {
 
 interface VoiceModule {
   createVoiceInput: (options: unknown) => VoiceInput;
-  voiceSupported: (scope?: unknown) => boolean;
+  voiceMode: (scope?: unknown) => "hold" | "toggle";
   speechRecognitionCtor: (scope?: unknown) => unknown;
 }
 
@@ -82,7 +82,6 @@ async function recorder(options: { initialText?: string; recognition?: FakeRecog
   let text = options.initialText ?? "";
   const states: Array<[VoiceState, string]> = [];
   const voice = createVoiceInput({
-    supported: () => true,
     createRecognition: () => recognition,
     getText: () => text,
     setText: (value: string) => {
@@ -93,38 +92,60 @@ async function recorder(options: { initialText?: string; recognition?: FakeRecog
   return { voice, recognition, text: () => text, states };
 }
 
-test("voiceSupported detects the Web Speech API and its webkit alias", async () => {
-  const { voiceSupported, speechRecognitionCtor } = await loadVoice();
+test("speechRecognitionCtor detects the Web Speech API and its webkit alias", async () => {
+  const { speechRecognitionCtor } = await loadVoice();
   function Recognition(): void {}
 
-  assert.equal(voiceSupported({}), false);
-  assert.equal(voiceSupported({ SpeechRecognition: "yes" }), false);
-  assert.equal(voiceSupported({ SpeechRecognition: Recognition }), true);
-  assert.equal(voiceSupported({ webkitSpeechRecognition: Recognition }), true);
-  assert.equal(speechRecognitionCtor({ webkitSpeechRecognition: Recognition }), Recognition);
   assert.equal(speechRecognitionCtor({}), null);
+  assert.equal(speechRecognitionCtor({ SpeechRecognition: "yes" }), null);
+  assert.equal(speechRecognitionCtor({ SpeechRecognition: Recognition }), Recognition);
+  assert.equal(speechRecognitionCtor({ webkitSpeechRecognition: Recognition }), Recognition);
 });
 
-test("an unsupported browser never starts recognition", async () => {
+test("voiceMode uses tap-to-toggle on iOS and hold-to-talk elsewhere", async () => {
+  const { voiceMode } = await loadVoice();
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile Safari/604.1";
+  const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15";
+  const chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36";
+
+  assert.equal(voiceMode({ navigator: { userAgent: iphone, platform: "iPhone", maxTouchPoints: 5 } }), "toggle");
+  assert.equal(voiceMode({ navigator: { userAgent: mac, platform: "MacIntel", maxTouchPoints: 5 } }), "toggle");
+  assert.equal(voiceMode({ navigator: { userAgent: mac, platform: "MacIntel", maxTouchPoints: 0 } }), "hold");
+  assert.equal(voiceMode({ navigator: { userAgent: chrome, platform: "Win32", maxTouchPoints: 0 } }), "hold");
+  assert.equal(voiceMode({}), "hold");
+});
+
+test("a recognition that cannot be created reports an error", async () => {
   const { createVoiceInput } = await loadVoice();
   const states: Array<[VoiceState, string]> = [];
-  let created = 0;
   const voice = createVoiceInput({
-    supported: () => false,
-    createRecognition: () => {
-      created += 1;
-      return null;
-    },
+    createRecognition: () => null,
     getText: () => "",
     setText: () => {},
     onState: (state: VoiceState, message: string) => states.push([state, message]),
   });
 
   assert.equal(voice.start(), false);
-  assert.equal(created, 0);
-  assert.equal(states.length, 1);
-  assert.equal(states[0]?.[0], "unsupported");
-  assert.match(String(states[0]?.[1]), /not supported/i);
+  assert.equal(voice.isListening(), false);
+  assert.deepEqual(states.map(([state]) => state), ["error"]);
+});
+
+test("recognition keeps listening across pauses until it is stopped", async () => {
+  const rec = await recorder();
+  rec.voice.start();
+  assert.equal(rec.recognition.continuous, true);
+
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "Tell the builder to pause.", final: true }]));
+  assert.equal(rec.voice.isListening(), true);
+  rec.recognition.onresult?.(
+    transcriptEvent([
+      { transcript: "Tell the builder to pause.", final: true },
+      { transcript: "Then rebase onto main.", final: true },
+    ]),
+  );
+  rec.voice.stop();
+  assert.equal(rec.text(), "Tell the builder to pause. Then rebase onto main.");
+  assert.equal(rec.voice.isListening(), false);
 });
 
 test("the final transcript is appended to the composer text", async () => {
@@ -217,7 +238,6 @@ test("a recognition that fails to construct reports an error and does not throw"
   const { createVoiceInput } = await loadVoice();
   const states: Array<[VoiceState, string]> = [];
   const voice = createVoiceInput({
-    supported: () => true,
     createRecognition: () => {
       throw new Error("boom");
     },
@@ -241,7 +261,6 @@ test("an error raised while starting is not overwritten by the listening state",
   const states: Array<[VoiceState, string]> = [];
   let text = "";
   const voice = createVoiceInput({
-    supported: () => true,
     createRecognition: () => recognition,
     getText: () => text,
     setText: (value: string) => {

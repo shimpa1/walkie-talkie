@@ -1,4 +1,4 @@
-import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
+import { createVoiceInput, speechRecognitionCtor, voiceMode } from "./voice.js";
 
 const TOKEN_KEY = "reach.token";
 
@@ -236,9 +236,12 @@ function initVoice() {
     return;
   }
   button.hidden = false;
+  const toggle = voiceMode() === "toggle";
+  const idleLabel = toggle ? "Tap to talk" : "Hold to talk";
+  const listeningHint = toggle ? "Listening… tap again to stop." : "Listening… release to stop.";
+  button.textContent = idleLabel;
 
   const voice = createVoiceInput({
-    supported: () => speechRecognitionCtor() !== null,
     createRecognition: () => new Recognition(),
     getText: () => $("note-text").value,
     setText: (text) => {
@@ -248,12 +251,20 @@ function initVoice() {
       const listening = state === "listening";
       button.classList.toggle("is-listening", listening);
       button.setAttribute("aria-pressed", listening ? "true" : "false");
-      button.textContent = listening ? "Listening…" : "Hold to talk";
-      if (listening) status.textContent = "Listening… release to stop.";
+      button.textContent = listening ? (toggle ? "Tap to stop" : "Listening…") : idleLabel;
+      if (listening) status.textContent = listeningHint;
       else if (message) status.textContent = message;
       else status.textContent = "";
     },
   });
+
+  if (toggle) {
+    button.addEventListener("click", () => {
+      if (voice.isListening()) voice.stop();
+      else voice.start();
+    });
+    return;
+  }
 
   const begin = (event) => {
     event.preventDefault();
