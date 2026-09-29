@@ -107,7 +107,6 @@ agents:
       name: Local 3090 (Qwen3.8-27B)
       npm: "@ai-sdk/openai-compatible"
       baseURL: http://10.4.0.20:8000/v1
-      apiKey: local
       models:
         qwen3.8-27b:
           name: Qwen3.8-27B (3090)

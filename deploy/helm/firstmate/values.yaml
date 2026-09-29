@@ -282,9 +282,10 @@ agents:
   #   name     display name
   #   npm      provider package, e.g. "@ai-sdk/openai-compatible"
   #   baseURL  OpenAI-compatible endpoint base URL
-  #   apiKey   literal key value (use for a server that needs no real key)
-  #   apiKeyEnv  env var name for the key; mutually exclusive with apiKey and
-  #              must be declared under some harnesses[].env
+  #   apiKeyEnv  env var name for the key; the value comes from the credential
+  #              Secret and must be declared under some harnesses[].env. A
+  #              provider that needs no key (a local OpenAI-compatible server)
+  #              omits it.
   #   models   map of model id to model config (name and any provider fields)
   #   options  extra provider options passed through verbatim
   providers: []
@@ -296,7 +297,6 @@ agents:
   #    name: Local 3090 (Qwen3.8-27B)
   #    npm: "@ai-sdk/openai-compatible"
   #    baseURL: http://10.4.0.20:8000/v1
-  #    apiKey: local
   #    models:
   #      qwen3.8-27b:
   #        name: Qwen3.8-27B (3090)

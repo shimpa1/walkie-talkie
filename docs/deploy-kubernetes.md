@@ -211,7 +211,6 @@ agents:
       name: Local 3090 (Qwen3.8-27B)
       npm: "@ai-sdk/openai-compatible"
       baseURL: http://10.4.0.20:8000/v1
-      apiKey: local
       models:
         qwen3.8-27b:
           name: Qwen3.8-27B (3090)
@@ -236,14 +235,14 @@ agents:
 | `agents.providers` | The provider/model catalog the opencode harness can call, provider-agnostically: any models.dev provider id or OpenAI-compatible endpoint. | `<home>/.config/opencode/opencode.json` (opencode's global config). |
 | `agents.dispatch` | firstmate's per-task dispatch profiles, in its `crew-dispatch.json` schema, that choose a harness and model. | `<home>/config/crew-dispatch.json`. |
 
-A provider sets either `apiKey` (a literal value, for a server that needs no
-real key) or `apiKeyEnv` (an environment-variable name, rendered as opencode's
-`{env:NAME}`), or neither for a built-in models.dev provider. `models` is a map
-of model id to its config, and `options` is passed through verbatim for
-provider-specific fields. `agents.providers` renders only to the opencode
-harness config, so declaring a catalog requires `opencode` in
-`agents.harnesses`; firstmate can dispatch opencode crewmates from any primary
-harness, so the catalog is useful either way.
+A provider sets `apiKeyEnv` (an environment-variable name, rendered as
+opencode's `{env:NAME}`), or neither for a built-in models.dev provider or a
+local server that needs no key. `models` is a map of model id to its config,
+and `options` is passed through verbatim for provider-specific fields.
+`agents.providers` renders only to the opencode harness config, so declaring a
+catalog requires `opencode` in `agents.harnesses`; firstmate can dispatch
+opencode crewmates from any primary harness, so the catalog is useful either
+way.
 
 The harness *executables* are an image concern: install every harness you may
 want at build time with `HARNESS_PACKAGES` (for example
@@ -270,15 +269,15 @@ To **add an agent**:
 
 To **remove an agent**, delete its provider, dispatch profile, and env
 declaration; no image rebuild is involved. The local GPU server is just the
-`local3090` provider above: an OpenAI-compatible `baseURL`, models listed by id,
-and a placeholder `apiKey` because the server needs none. The network path to it
+`local3090` provider above: an OpenAI-compatible `baseURL` and models listed by
+id, with no API key because the server needs none. The network path to it
 (a firewall change) is out of scope here, and so is any app UI for choosing an
 agent per instruction; this chart only makes the agents available and sets
 dispatch defaults.
 
 The chart validates `agents` at render time and fails with a specific message
 instead of writing a config firstmate or opencode cannot read: a missing harness
-name or provider id, a duplicate, `apiKey` together with `apiKeyEnv`, an
+name or provider id, a duplicate, a provider field the schema does not allow, an
 `apiKeyEnv` no harness declares, a dispatch profile naming an undeclared
 harness, a provider catalog without the `opencode` harness, or an enabled block
 that declares neither a provider nor a dispatch.

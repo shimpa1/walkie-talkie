@@ -31,11 +31,11 @@
 {{- if hasKey $providers $id -}}
 {{- fail (printf "agents.providers: duplicate provider id %q" $id) -}}
 {{- end -}}
-{{- if and $p.apiKey $p.apiKeyEnv -}}
-{{- fail (printf "agents.providers[%s]: set either apiKey or apiKeyEnv, not both" $id) -}}
-{{- end -}}
 {{- if and $p.apiKeyEnv (not (hasKey $declaredEnv $p.apiKeyEnv)) -}}
 {{- fail (printf "agents.providers[%s]: apiKeyEnv %q is not declared in any agents.harnesses[].env" $id $p.apiKeyEnv) -}}
+{{- end -}}
+{{- if hasKey (default (dict) $p.options) "apiKey" -}}
+{{- fail (printf "agents.providers[%s]: declare the key with apiKeyEnv, not options.apiKey" $id) -}}
 {{- end -}}
 {{- $options := dict -}}
 {{- if $p.options -}}
@@ -44,9 +44,7 @@
 {{- if $p.baseURL -}}
 {{- $_ := set $options "baseURL" $p.baseURL -}}
 {{- end -}}
-{{- if $p.apiKey -}}
-{{- $_ := set $options "apiKey" $p.apiKey -}}
-{{- else if $p.apiKeyEnv -}}
+{{- if $p.apiKeyEnv -}}
 {{- $_ := set $options "apiKey" (printf "{env:%s}" $p.apiKeyEnv) -}}
 {{- end -}}
 {{- $provider := dict -}}

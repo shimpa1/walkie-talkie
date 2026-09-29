@@ -166,7 +166,6 @@
               "name": { "type": "string" },
               "npm": { "type": "string" },
               "baseURL": { "type": "string" },
-              "apiKey": { "type": "string" },
               "apiKeyEnv": { "type": "string", "minLength": 1 },
               "models": { "type": "object" },
               "options": { "type": "object" }
