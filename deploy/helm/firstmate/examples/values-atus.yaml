@@ -7,7 +7,12 @@
 #     -f deploy/helm/firstmate/examples/values-atus.yaml \
 #     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
 #     --set credentials.create.githubToken=github_pat_xxx \
-#     --set credentials.create.harness.ANTHROPIC_API_KEY=sk-ant-xxx
+#     --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx
+#
+# The harness credentials become environment variables in the firstmate
+# container, where the primary harness reads them. The runtime image's default
+# harness is opencode, which reads DEEPSEEK_API_KEY / OPENROUTER_API_KEY; a
+# Claude harness reads ANTHROPIC_API_KEY instead.
 
 # Images. Build and push these to a registry the cluster can pull from, then
 # replace the repositories (the defaults are local build names).
@@ -70,4 +75,7 @@ credentials:
   create:
     walkieTalkieToken: ""
     githubToken: ""
+    # Pass harness credentials with --set (shown above) rather than committing
+    # them here, e.g. DEEPSEEK_API_KEY / OPENROUTER_API_KEY for the default
+    # opencode harness, or ANTHROPIC_API_KEY for a Claude harness.
     harness: {}

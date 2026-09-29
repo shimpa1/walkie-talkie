@@ -4,9 +4,9 @@ firstmate and walkie-talkie are installed.
 
        kubectl -n {{ .Release.Namespace }} get statefulset {{ include "firstmate.fullname" . }} -w
 
-     The firstmate container seeds the persistent home on first start and then
-     runs the herdr headless server for session
-     {{ .Values.firstmate.herdrSession | quote }}.
+     The firstmate container seeds the persistent home on first start, runs the
+     herdr headless server for session {{ .Values.firstmate.herdrSession | quote }},
+     and starts the primary harness inside it{{ if not .Values.firstmate.harnessCommand }} (no harness command is set, so start it yourself after attaching){{ end }}.
 
   2. Attach to the firstmate session (herdr stays attachable):
 

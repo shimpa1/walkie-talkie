@@ -111,6 +111,8 @@ spec:
               value: {{ $home | quote }}
             - name: HERDR_SESSION
               value: {{ .Values.firstmate.herdrSession | quote }}
+            - name: FM_HARNESS_COMMAND
+              value: {{ .Values.firstmate.harnessCommand | quote }}
             {{- if $includeGithub }}
             - name: GH_TOKEN
               valueFrom:

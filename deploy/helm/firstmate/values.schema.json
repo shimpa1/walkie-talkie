@@ -21,6 +21,7 @@
         },
         "home": { "type": "string", "pattern": "^/" },
         "herdrSession": { "type": "string", "minLength": 1 },
+        "harnessCommand": { "type": "string" },
         "extraEnv": { "type": "array" },
         "extraEnvFrom": { "type": "array" },
         "command": { "type": "array" },

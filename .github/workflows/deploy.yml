@@ -1,0 +1,47 @@
+name: Deploy
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the chart
+        run: helm lint deploy/helm/firstmate
+
+      - name: Render the chart
+        run: |
+          helm template firstmate deploy/helm/firstmate --namespace firstmate >/dev/null
+          helm template firstmate deploy/helm/firstmate -n firstmate \
+            -f deploy/helm/firstmate/examples/values-atus.yaml \
+            --set credentials.create.walkieTalkieToken=tok \
+            --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx >/dev/null
+
+      - name: Reserved harness credential names still fail closed
+        run: |
+          if helm template firstmate deploy/helm/firstmate -n firstmate \
+            --set credentials.create.githubToken=x \
+            --set credentials.create.harness.GH_TOKEN=y >/dev/null 2>&1; then
+            echo "GH_TOKEN collision did not fail the render" >&2
+            exit 1
+          fi
+          if helm template firstmate deploy/helm/firstmate -n firstmate \
+            --set credentials.create.harness.walkie-talkie-token=x >/dev/null 2>&1; then
+            echo "reserved credential key collision did not fail the render" >&2
+            exit 1
+          fi
+
+      - name: Entrypoint harness-start test
+        run: bash deploy/kubernetes/firstmate/entrypoint.test.sh
