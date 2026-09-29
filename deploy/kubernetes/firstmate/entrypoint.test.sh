@@ -40,6 +40,8 @@ SERVER_ENV="$TMP/server.env"
 FORCE_DEAD="$TMP/force-dead"
 STARTING="$TMP/starting"
 STATUS_FAIL_ONCE="$TMP/status-fail-once"
+READ_FAIL="$TMP/read-fail"
+WS_FAIL="$TMP/ws-fail"
 : > "$HERDR_LOG"
 : > "$PANE_LOG"
 
@@ -62,7 +64,12 @@ case "${args[0]:-} ${args[1]:-}" in
     fi
     ;;
   "workspace list")
-    if grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
+    # A transient transport failure (not an authoritative empty list) must be
+    # reported as a failed read, never as "no workspace".
+    if [ -e "${FAKE_HERDR_WS_FAIL:-/nonexistent}" ]; then
+      printf '{"error":{"code":"server_not_running","message":"transient"}}\n' >&2
+      exit 1
+    elif grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
       printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
     else
       printf '{"result":{"workspaces":[]}}\n'
@@ -75,10 +82,15 @@ case "${args[0]:-} ${args[1]:-}" in
     printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n'
     ;;
   "agent get")
+    # A transient transport failure must be reported as a failed read, never as
+    # agent_not_found (which is an authoritative "the harness is gone").
+    if [ -e "${FAKE_HERDR_READ_FAIL:-/nonexistent}" ]; then
+      printf '{"error":{"code":"server_not_running","message":"transient"}}\n' >&2
+      exit 1
     # No agent while the start window is open (the harness is still coming up),
     # while the test forces it dead (the harness exited), or before any pane_run;
     # otherwise a live idle harness.
-    if [ -e "${FAKE_HERDR_FORCE_DEAD:-/nonexistent}" ] \
+    elif [ -e "${FAKE_HERDR_FORCE_DEAD:-/nonexistent}" ] \
       || [ -e "${FAKE_HERDR_STARTING:-/nonexistent}" ] \
       || ! grep -q '^pane_run ' "${FAKE_HERDR_PANE_LOG:?}" 2>/dev/null; then
       printf '{"error":{"code":"agent_not_found","message":"no agent"}}\n'
@@ -120,6 +132,8 @@ PATH="$FAKE_BIN:$PATH" \
   FAKE_HERDR_FORCE_DEAD="$FORCE_DEAD" \
   FAKE_HERDR_STARTING="$STARTING" \
   FAKE_HERDR_STATUS_FAIL_ONCE="$STATUS_FAIL_ONCE" \
+  FAKE_HERDR_READ_FAIL="$READ_FAIL" \
+  FAKE_HERDR_WS_FAIL="$WS_FAIL" \
   bash "$ENTRYPOINT" &
 EP_PID=$!
 
@@ -155,6 +169,27 @@ sleep 1
 live_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
 [ "$live_runs" -eq 1 ] \
   || fail "supervisor started $live_runs harnesses while one was already live"
+
+# A transient `agent get` failure (a transport error, not an authoritative
+# agent_not_found) must not be taken as the harness having exited: the
+# supervisor must skip the interval instead of typing the command over the live
+# pane. The failure window outlasts the start grace, so a fail-open read would
+# have restarted by now.
+: > "$READ_FAIL"
+sleep 1.5
+read_fail_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
+[ "$read_fail_runs" -eq 1 ] \
+  || fail "supervisor restarted the harness on a failed agent read"
+rm -f "$READ_FAIL"
+
+# The same holds for a failed workspace read, the other liveness input: it must
+# not create a second workspace or type over the live pane.
+: > "$WS_FAIL"
+sleep 1.5
+ws_fail_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
+[ "$ws_fail_runs" -eq 1 ] \
+  || fail "supervisor restarted the harness on a failed workspace read"
+rm -f "$WS_FAIL"
 
 # Simulate the harness exiting and assert the supervisor starts it again. A
 # single transient `herdr status` failure is injected first: it must not end

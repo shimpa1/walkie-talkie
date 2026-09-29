@@ -63,32 +63,68 @@ shutdown() {
   fi
 }
 
-# The id of this home's primary workspace in the session, or empty. Read-only.
+# Run a read-only herdr control call, capturing stderr as well as stdout
+# because herdr reports a server error as JSON on stderr with a non-zero exit.
+# Prints the combined reply and returns non-zero when the reply is missing or is
+# not a JSON object, so callers can tell a completed read from a failed one.
+# Every liveness helper uses this, so a failed, timed-out, empty, or unparseable
+# read is never mistaken for an absent harness.
+herdr_read() {  # <args...>
+  local out
+  out=$(herdr_cli "$@" 2>&1) || true
+  printf '%s' "$out"
+  printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1
+}
+
+# The id of this home's primary workspace in the session. Prints the id and
+# returns 0 when it exists, returns 1 when the session authoritatively has no
+# such workspace, and returns 2 when the read itself failed (unknown). Read-only.
 herdr_workspace_id() {
-  herdr_cli workspace list 2>/dev/null \
-    | jq -r --arg label "$WORKSPACE_LABEL" \
-        '.result.workspaces[]? | select(.label == $label) | .workspace_id' 2>/dev/null \
-    | head -1 || true
+  local out id
+  out=$(herdr_read workspace list) || return 2
+  if printf '%s' "$out" | jq -e 'has("error")' >/dev/null 2>&1; then
+    return 2
+  fi
+  id=$(printf '%s' "$out" | jq -r --arg label "$WORKSPACE_LABEL" \
+    '[.result.workspaces[]? | select(.label == $label) | .workspace_id][0] // empty' 2>/dev/null) \
+    || return 2
+  [ -n "$id" ] || return 1
+  printf '%s' "$id"
 }
 
 # The pane to run the harness in: the workspace's root pane, read back from a
 # live `pane list` so a husk restored across a server restart still resolves to
-# its own pane id. Empty when the workspace has no pane.
+# its own pane id. Prints the id and returns 0 when it exists, returns 1 when the
+# workspace authoritatively has no pane, and returns 2 when the read failed.
 herdr_workspace_pane() {  # <workspace-id>
-  herdr_cli pane list --workspace "$1" 2>/dev/null \
-    | jq -r '.result.panes[0].pane_id // empty' 2>/dev/null \
-    | head -1 || true
+  local out pane
+  out=$(herdr_read pane list --workspace "$1") || return 2
+  if printf '%s' "$out" | jq -e 'has("error")' >/dev/null 2>&1; then
+    return 2
+  fi
+  pane=$(printf '%s' "$out" | jq -r '.result.panes[0].pane_id // empty' 2>/dev/null) || return 2
+  [ -n "$pane" ] || return 1
+  printf '%s' "$pane"
 }
 
-# True when herdr already reports a registered agent in the pane. A server
-# restart clears live registrations, so after a restart this is false and the
-# harness is started; while it is true the entrypoint never types over a live
-# agent (for example if it is re-run against a server it did not start).
+# Returns 0 when herdr reports a registered agent in the pane, 1 when the server
+# authoritatively reports no agent there (a server restart clears live
+# registrations, so an empty pane is started), and 2 when the read failed, so a
+# transient CLI/IPC failure is never taken as evidence the harness is gone. While
+# the agent is live the entrypoint never types over it (for example if it is
+# re-run against a server it did not start).
 herdr_pane_has_agent() {  # <pane-id>
-  local status
-  status=$(herdr_cli agent get "$1" 2>/dev/null \
-    | jq -r '.result.agent.agent_status // empty' 2>/dev/null || true)
-  [ -n "$status" ]
+  local out status
+  out=$(herdr_read agent get "$1") || return 2
+  if printf '%s' "$out" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
+    return 1
+  fi
+  if printf '%s' "$out" | jq -e 'has("error")' >/dev/null 2>&1; then
+    return 2
+  fi
+  status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null) || return 2
+  [ -n "$status" ] || return 1
+  return 0
 }
 
 # Start the primary harness in the home workspace's pane. Creates the workspace
@@ -96,7 +132,12 @@ herdr_pane_has_agent() {  # <pane-id>
 # or tabs.
 start_primary_harness() {
   local wsid pane out
-  wsid=$(herdr_workspace_id)
+  local ws_rc=0 pane_rc=0 agent_rc=0
+  wsid=$(herdr_workspace_id) || ws_rc=$?
+  if [ "$ws_rc" -eq 2 ]; then
+    log "could not read the herdr workspace list for session '$SESSION'"
+    return 1
+  fi
   if [ -z "$wsid" ]; then
     out=$(herdr_cli workspace create --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) || {
       log "herdr workspace create failed for session '$SESSION'"
@@ -106,7 +147,11 @@ start_primary_harness() {
     pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   fi
   if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
-    pane=$(herdr_workspace_pane "$wsid")
+    pane=$(herdr_workspace_pane "$wsid") || pane_rc=$?
+    if [ "$pane_rc" -eq 2 ]; then
+      log "could not read the herdr pane list for workspace '$wsid'"
+      return 1
+    fi
   fi
   if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
     out=$(herdr_cli tab create --workspace "$wsid" --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) \
@@ -117,9 +162,14 @@ start_primary_harness() {
     log "could not resolve a herdr pane for the primary harness"
     return 1
   fi
-  if herdr_pane_has_agent "$pane"; then
+  herdr_pane_has_agent "$pane" || agent_rc=$?
+  if [ "$agent_rc" -eq 0 ]; then
     log "a harness is already live in pane '$pane'; not starting another"
     return 0
+  fi
+  if [ "$agent_rc" -eq 2 ]; then
+    log "could not read the harness state for pane '$pane'"
+    return 1
   fi
   log "starting primary harness in $SESSION:$pane: $HARNESS_CMD"
   if ! herdr_cli pane run "$pane" "$HARNESS_CMD" >/dev/null 2>&1; then
@@ -129,15 +179,17 @@ start_primary_harness() {
   HARNESS_STARTED_AT=$(date +%s)
 }
 
-# True when the home workspace's pane has a registered live harness. Resolves
-# the workspace and pane fresh each call so a pane recreated by a restart is
-# picked up.
+# Whether the home workspace's pane has a registered live harness: 0 alive,
+# 1 authoritatively not running, 2 when any read failed. Resolves the workspace
+# and pane fresh each call so a pane recreated by a restart is picked up, and
+# propagates the unknown state so a transient read failure skips the interval
+# instead of restarting the harness.
 herdr_home_harness_live() {
-  local wsid pane
-  wsid=$(herdr_workspace_id) || return 1
-  [ -n "$wsid" ] || return 1
-  pane=$(herdr_workspace_pane "$wsid") || return 1
-  [ -n "$pane" ] || return 1
+  local wsid pane ws_rc=0 pane_rc=0
+  wsid=$(herdr_workspace_id) || ws_rc=$?
+  [ "$ws_rc" -eq 0 ] || return "$ws_rc"
+  pane=$(herdr_workspace_pane "$wsid") || pane_rc=$?
+  [ "$pane_rc" -eq 0 ] || return "$pane_rc"
   herdr_pane_has_agent "$pane"
 }
 
@@ -148,13 +200,23 @@ herdr_home_harness_live() {
 # instructions pending. Each interval it checks the home pane and starts the
 # harness again when nothing is registered there, but never before the harness
 # it last started has had its grace period to register, so a slow start is not
-# mistaken for a dead harness.
+# mistaken for a dead harness. A read that fails or cannot be parsed is unknown,
+# not evidence the harness is gone, so it skips the interval and keeps
+# supervising; only an authoritative absent-harness answer restarts it.
 supervise_primary_harness() {
+  local live
   while kill -0 "$SERVER_PID" 2>/dev/null; do
     sleep "$HARNESS_CHECK_INTERVAL"
     kill -0 "$SERVER_PID" 2>/dev/null || return 0
     herdr_server_running || continue
-    herdr_home_harness_live && continue
+    if herdr_home_harness_live; then
+      continue
+    else
+      live=$?
+    fi
+    if [ "$live" -eq 2 ]; then
+      continue
+    fi
     if [ -n "$HARNESS_STARTED_AT" ] \
       && [ $(( $(date +%s) - HARNESS_STARTED_AT )) -lt "$HARNESS_START_GRACE" ]; then
       continue
