@@ -17,15 +17,6 @@ export function speechRecognitionCtor(scope) {
   return typeof ctor === "function" ? ctor : null;
 }
 
-export function voiceMode(scope) {
-  const target = scope || defaultScope();
-  const nav = target && target.navigator ? target.navigator : null;
-  if (!nav) return "hold";
-  const ua = typeof nav.userAgent === "string" ? nav.userAgent : "";
-  const touchMac = nav.platform === "MacIntel" && Number(nav.maxTouchPoints) > 1;
-  return /iPad|iPhone|iPod/.test(ua) || touchMac ? "toggle" : "hold";
-}
-
 function describeError(error) {
   if (error && typeof error.message === "string" && error.message) return error.message;
   return String(error);
@@ -39,6 +30,15 @@ function appendChunk(current, chunk) {
   const piece = cleanChunk(chunk);
   if (!piece) return current;
   return current ? `${current} ${piece}` : piece;
+}
+
+function appendFinal(current, chunk) {
+  const piece = cleanChunk(chunk);
+  if (!piece) return current;
+  if (!current) return piece;
+  if (piece === current || current.endsWith(` ${piece}`)) return current;
+  if (piece.startsWith(`${current} `)) return piece;
+  return `${current} ${piece}`;
 }
 
 function composeText(baseText, finalText, interimText) {
@@ -58,9 +58,10 @@ export function createVoiceInput(options) {
   const lang = typeof opts.lang === "string" && opts.lang ? opts.lang : "";
 
   let active = null;
-  let listening = false;
+  let held = false;
   let baseText = "";
   let committedText = "";
+  let sessionText = "";
 
   function emit(state, message) {
     onState(state, message || "");
@@ -70,7 +71,21 @@ export function createVoiceInput(options) {
     setText(composeText(baseText, committedText, ""));
   }
 
-  function handleResult(event) {
+  function foldSession() {
+    committedText = appendChunk(committedText, sessionText);
+    sessionText = "";
+  }
+
+  function finish(state, message) {
+    held = false;
+    active = null;
+    foldSession();
+    commit();
+    emit(state, message);
+  }
+
+  function handleResult(recognition, event) {
+    if (recognition !== active) return;
     const results = (event && event.results) || [];
     let finalText = "";
     let interimText = "";
@@ -78,71 +93,75 @@ export function createVoiceInput(options) {
       const result = results[index];
       const alternative = result ? result[0] : null;
       const chunk = alternative ? alternative.transcript : "";
-      if (result && result.isFinal) finalText = appendChunk(finalText, chunk);
+      if (result && result.isFinal) finalText = appendFinal(finalText, chunk);
       else interimText = appendChunk(interimText, chunk);
     }
-    committedText = finalText;
-    setText(composeText(baseText, committedText, interimText));
+    sessionText = finalText;
+    setText(composeText(baseText, appendChunk(committedText, sessionText), interimText));
   }
 
-  function handleError(event) {
+  function handleError(recognition, event) {
+    if (recognition !== active) return;
     const code = event && event.error ? String(event.error) : "unknown";
-    const wasListening = listening;
-    listening = false;
-    active = null;
-    if (wasListening) commit();
+    if (held && (code === "no-speech" || code === "aborted")) return;
     if (code === "aborted") {
-      emit("idle", "");
+      finish("idle", "");
       return;
     }
-    emit("error", ERROR_MESSAGES[code] || `Voice input failed (${code}). Type your instruction instead.`);
+    finish("error", ERROR_MESSAGES[code] || `Voice input failed (${code}). Type your instruction instead.`);
   }
 
-  function handleEnd() {
-    if (!listening) return;
-    listening = false;
-    active = null;
-    commit();
-    emit("idle", "");
+  function handleEnd(recognition) {
+    if (recognition !== active) return;
+    foldSession();
+    if (held) {
+      listen();
+      return;
+    }
+    finish("idle", "");
   }
 
-  function start() {
-    if (listening) return true;
+  function listen() {
     let recognition;
     try {
       recognition = createRecognition();
     } catch (error) {
-      emit("error", `Could not start voice input: ${describeError(error)}`);
-      return false;
+      finish("error", `Could not start voice input: ${describeError(error)}`);
+      return;
     }
     if (!recognition) {
-      emit("error", "Could not start voice input. Type your instruction instead.");
-      return false;
+      finish("error", "Could not start voice input. Type your instruction instead.");
+      return;
     }
-    baseText = typeof getText() === "string" ? getText() : "";
-    committedText = "";
     active = recognition;
-    listening = true;
     try {
       if (lang) recognition.lang = lang;
-      recognition.continuous = true;
+      recognition.continuous = false;
       recognition.interimResults = true;
-      recognition.onresult = handleResult;
-      recognition.onerror = handleError;
-      recognition.onend = handleEnd;
+      recognition.onresult = (event) => handleResult(recognition, event);
+      recognition.onerror = (event) => handleError(recognition, event);
+      recognition.onend = () => handleEnd(recognition);
       recognition.start();
     } catch (error) {
-      active = null;
-      listening = false;
-      emit("error", `Could not start voice input: ${describeError(error)}`);
-      return false;
+      if (recognition === active) finish("error", `Could not start voice input: ${describeError(error)}`);
     }
-    if (!listening) return false;
+  }
+
+  function start() {
+    if (held) return true;
+    held = true;
+    if (active) return true;
+    baseText = typeof getText() === "string" ? getText() : "";
+    committedText = "";
+    sessionText = "";
+    listen();
+    if (!held) return false;
     emit("listening", "");
     return true;
   }
 
   function stop() {
+    held = false;
     if (!active) return;
     const recognition = active;
     try {
@@ -151,16 +170,13 @@ export function createVoiceInput(options) {
       try {
         recognition.abort();
       } catch {
-        active = null;
-        listening = false;
-        commit();
-        emit("idle", "");
+        if (recognition === active) finish("idle", "");
       }
     }
   }
 
   function isListening() {
-    return listening;
+    return held || active !== null;
   }
 
   return { start, stop, isListening };

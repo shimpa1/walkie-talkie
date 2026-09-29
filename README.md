@@ -14,7 +14,8 @@ ready for review, a decision is waiting, or a worker is blocked.
   firstmate home, queues instructions into it, and pushes notifications to the
   installed web app.
 - A minimal installable web app served by the same service at `/` with a status
-  view, an instruction composer (with voice input), and a notification opt-in.
+  view, an instruction composer (with hold-to-talk voice input), and a
+  notification opt-in.
 - Self-hosted Web Push with VAPID: the service generates and holds its own key
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
@@ -361,18 +362,16 @@ Enable on this device**. A plain Safari tab cannot receive notifications.
 
 ## Voice input
 
-The instruction composer has a microphone button. Speech is transcribed with
-the browser's Web Speech API (`SpeechRecognition`, or `webkitSpeechRecognition`
-where that is the only name) in continuous mode, and the transcript is written
-into the instruction textarea. Pauses between sentences do not end capture; the
-button does:
-
-- **Hold to talk** (desktop and Android browsers): capture runs while the
-  button is held. Release to stop.
-- **Tap to talk** (iPhone and iPad): hold gestures are unreliable in iOS
-  Safari, so the button is a toggle. Tap once to start, and tap **Tap to stop**
-  when you are done. If Safari ends recognition on its own, the button returns
-  to **Tap to talk**; tap again to keep dictating, and the new text is appended.
+The instruction composer has a **Hold to talk** microphone button, and it works
+the same way on desktop, Android, and iOS. While the button is held (with a
+pointer or touch, or with Space/Enter from the keyboard), speech is transcribed
+with the browser's Web Speech API (`SpeechRecognition`, or
+`webkitSpeechRecognition` where that is the only name) and written into the
+instruction textarea. Release to stop. The browser ends each recognition
+session at a pause in speech; while the button is still held, the app starts a
+new session right away and appends to the same dictation, so a pause never ends
+capture and later sentences are not dropped. A final result that repeats text
+already captured in the same session is not added twice.
 
 The composed text then goes out through the same `POST /api/note` path as typing:
 voice is only an input method for the note, not a second write path. The app
@@ -459,8 +458,8 @@ handlers, real `execFile` child processes, real JSON pass-through, the durable
 subscription store, and the Web Push encryption against the RFC 8291 test
 vector. Push delivery is stubbed in tests, so no push service is ever contacted.
 Voice input is tested by loading the real browser module with a fake
-`SpeechRecognition`, so feature detection, hold/toggle mode selection,
-transcript handling, and error handling are covered without a microphone.
+`SpeechRecognition`, so feature detection, restart-while-held, transcript
+handling, and error handling are covered without a microphone.
 
 ## Dependencies
 

@@ -16,7 +16,6 @@ import type {
 
 interface VoiceModule {
   createVoiceInput: (options: unknown) => VoiceInput;
-  voiceMode: (scope?: unknown) => "hold" | "toggle";
   speechRecognitionCtor: (scope?: unknown) => unknown;
 }
 
@@ -102,19 +101,6 @@ test("speechRecognitionCtor detects the Web Speech API and its webkit alias", as
   assert.equal(speechRecognitionCtor({ webkitSpeechRecognition: Recognition }), Recognition);
 });
 
-test("voiceMode uses tap-to-toggle on iOS and hold-to-talk elsewhere", async () => {
-  const { voiceMode } = await loadVoice();
-  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile Safari/604.1";
-  const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15";
-  const chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36";
-
-  assert.equal(voiceMode({ navigator: { userAgent: iphone, platform: "iPhone", maxTouchPoints: 5 } }), "toggle");
-  assert.equal(voiceMode({ navigator: { userAgent: mac, platform: "MacIntel", maxTouchPoints: 5 } }), "toggle");
-  assert.equal(voiceMode({ navigator: { userAgent: mac, platform: "MacIntel", maxTouchPoints: 0 } }), "hold");
-  assert.equal(voiceMode({ navigator: { userAgent: chrome, platform: "Win32", maxTouchPoints: 0 } }), "hold");
-  assert.equal(voiceMode({}), "hold");
-});
-
 test("a recognition that cannot be created reports an error", async () => {
   const { createVoiceInput } = await loadVoice();
   const states: Array<[VoiceState, string]> = [];
@@ -130,22 +116,75 @@ test("a recognition that cannot be created reports an error", async () => {
   assert.deepEqual(states.map(([state]) => state), ["error"]);
 });
 
-test("recognition keeps listening across pauses until it is stopped", async () => {
-  const rec = await recorder();
-  rec.voice.start();
-  assert.equal(rec.recognition.continuous, true);
+test("a pause while held restarts recognition and keeps every sentence", async () => {
+  const { createVoiceInput } = await loadVoice();
+  const sessions: FakeRecognition[] = [];
+  const states: Array<[VoiceState, string]> = [];
+  let text = "";
+  const voice = createVoiceInput({
+    createRecognition: () => {
+      const recognition = new FakeRecognition();
+      sessions.push(recognition);
+      return recognition;
+    },
+    getText: () => text,
+    setText: (value: string) => {
+      text = value;
+    },
+    onState: (state: VoiceState, message: string) => states.push([state, message]),
+  });
 
-  rec.recognition.onresult?.(transcriptEvent([{ transcript: "Tell the builder to pause.", final: true }]));
-  assert.equal(rec.voice.isListening(), true);
+  assert.equal(voice.start(), true);
+  assert.equal(sessions[0]?.continuous, false);
+  sessions[0]?.onresult?.(transcriptEvent([{ transcript: "Tell the builder to pause.", final: true }]));
+  sessions[0]?.onend?.();
+
+  assert.equal(voice.isListening(), true);
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[1]?.started, true);
+  assert.equal(text, "Tell the builder to pause.");
+
+  sessions[1]?.onresult?.(transcriptEvent([{ transcript: "Then rebase", final: false }]));
+  assert.equal(text, "Tell the builder to pause. Then rebase");
+  sessions[0]?.onresult?.(transcriptEvent([{ transcript: "stale", final: true }]));
+  assert.equal(text, "Tell the builder to pause. Then rebase");
+  sessions[1]?.onresult?.(transcriptEvent([{ transcript: "Then rebase onto main.", final: true }]));
+
+  voice.stop();
+  assert.equal(voice.isListening(), false);
+  assert.equal(sessions.length, 2);
+  assert.equal(text, "Tell the builder to pause. Then rebase onto main.");
+  assert.deepEqual(states.map(([state]) => state), ["listening", "idle"]);
+});
+
+test("a repeated cumulative final is not duplicated", async () => {
+  const rec = await recorder({ initialText: "note" });
+  rec.voice.start();
   rec.recognition.onresult?.(
     transcriptEvent([
-      { transcript: "Tell the builder to pause.", final: true },
-      { transcript: "Then rebase onto main.", final: true },
+      { transcript: "tell the builder to pause", final: true },
+      { transcript: "tell the builder to pause then rebase", final: true },
+    ]),
+  );
+  assert.equal(rec.text(), "note tell the builder to pause then rebase");
+
+  rec.recognition.onresult?.(
+    transcriptEvent([
+      { transcript: "tell the builder to pause then rebase", final: true },
+      { transcript: "tell the builder to pause then rebase", final: true },
     ]),
   );
   rec.voice.stop();
-  assert.equal(rec.text(), "Tell the builder to pause. Then rebase onto main.");
-  assert.equal(rec.voice.isListening(), false);
+  assert.equal(rec.text(), "note tell the builder to pause then rebase");
+});
+
+test("silence while held keeps listening instead of reporting an error", async () => {
+  const rec = await recorder();
+  rec.voice.start();
+  rec.recognition.onerror?.({ error: "no-speech" });
+  rec.recognition.onend?.();
+  assert.equal(rec.voice.isListening(), true);
+  assert.equal(rec.states.some(([state]) => state === "error"), false);
 });
 
 test("the final transcript is appended to the composer text", async () => {
@@ -157,7 +196,7 @@ test("the final transcript is appended to the composer text", async () => {
   rec.recognition.onresult?.(transcriptEvent([{ transcript: "hello world", final: true }]));
   assert.equal(rec.text(), "existing note hello world");
 
-  rec.recognition.onend?.();
+  rec.voice.stop();
   assert.equal(rec.text(), "existing note hello world");
   assert.equal(rec.voice.isListening(), false);
 });
@@ -207,7 +246,6 @@ test("stop ends listening and keeps the finalized transcript", async () => {
 test("microphone and speech errors surface a short message and keep final text", async () => {
   const cases: Array<[string, RegExp]> = [
     ["not-allowed", /blocked/i],
-    ["no-speech", /hear/i],
     ["audio-capture", /microphone/i],
     ["unknown-code", /failed/i],
   ];
@@ -226,12 +264,42 @@ test("microphone and speech errors surface a short message and keep final text",
   }
 });
 
-test("an aborted recognition returns to idle without an error", async () => {
-  const rec = await recorder();
+test("errors after release report no-speech and treat aborted as idle", async () => {
+  const cases: Array<[string, VoiceState, RegExp]> = [
+    ["no-speech", "error", /hear/i],
+    ["aborted", "idle", /^$/],
+  ];
+
+  for (const [code, expected, pattern] of cases) {
+    const rec = await recorder();
+    rec.recognition.stop = () => {
+      rec.recognition.stopped = true;
+    };
+    rec.voice.start();
+    rec.voice.stop();
+    assert.equal(rec.voice.isListening(), true);
+    rec.recognition.onerror?.({ error: code });
+    rec.recognition.onend?.();
+    assert.equal(rec.states.at(-1)?.[0], expected);
+    assert.match(String(rec.states.at(-1)?.[1]), pattern);
+    assert.equal(rec.voice.isListening(), false);
+  }
+});
+
+test("pressing again before the stopped session ends keeps the same dictation", async () => {
+  const rec = await recorder({ initialText: "note" });
+  rec.recognition.stop = () => {
+    rec.recognition.stopped = true;
+  };
   rec.voice.start();
-  rec.recognition.onerror?.({ error: "aborted" });
-  assert.equal(rec.states.at(-1)?.[0], "idle");
-  assert.equal(rec.voice.isListening(), false);
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "one", final: false }]));
+  rec.voice.stop();
+  assert.equal(rec.voice.start(), true);
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "one", final: true }]));
+  rec.recognition.onend?.();
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "two", final: true }]));
+  assert.equal(rec.voice.isListening(), true);
+  assert.equal(rec.text(), "note one two");
 });
 
 test("a recognition that fails to construct reports an error and does not throw", async () => {
