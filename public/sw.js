@@ -1,9 +1,10 @@
-const CACHE = "reach-shell-v3";
+const CACHE = "walkie-talkie-shell-v4";
 const SHELL = [
   "/",
   "/index.html",
   "/app.js",
   "/voice.js",
+  "/token.js",
   "/styles.css",
   "/manifest.webmanifest",
   "/icon.svg",
@@ -54,7 +55,7 @@ self.addEventListener("push", (event) => {
   } catch {
     data = {};
   }
-  const title = typeof data.title === "string" && data.title ? data.title : "Reach";
+  const title = typeof data.title === "string" && data.title ? data.title : "Walkie-Talkie";
   const options = {
     body: typeof data.body === "string" ? data.body : "",
     icon: "/icon.svg",

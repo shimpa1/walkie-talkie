@@ -1,6 +1,6 @@
 {
-  "name": "Reach — firstmate companion",
-  "short_name": "Reach",
+  "name": "Walkie-Talkie — firstmate companion",
+  "short_name": "Walkie-Talkie",
   "description": "See what the firstmate fleet is doing and queue an instruction, from a phone.",
   "start_url": "/",
   "scope": "/",

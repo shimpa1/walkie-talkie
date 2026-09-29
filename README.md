@@ -3,7 +3,7 @@
 A mobile companion for [firstmate](https://github.com/kunchenguid/firstmate):
 reach your fleet and direct it from a phone.
 
-The first slice, **Reach**, let you see what the fleet is doing and drop an
+The first slice, **Walkie-Talkie**, let you see what the fleet is doing and drop an
 instruction into firstmate's existing intake, end to end. This slice adds
 **push notifications**: firstmate can ping the phone when a pull request is
 ready for review, a decision is waiting, or a worker is blocked.
@@ -171,7 +171,7 @@ service reads the existing home and queues notes straight into it.
 
    | Setting | Meaning |
    | --- | --- |
-   | `DOMAIN` | The domain that points at this VM, e.g. `reach.example.com` |
+   | `DOMAIN` | The domain that points at this VM, e.g. `walkie-talkie.example.com` |
    | `ACME_EMAIL` | Email for certificate expiry notices (recommended) |
    | `FM_HOME` | Absolute path to the firstmate home on the host, e.g. `/home/you/firstmate` |
    | `FM_WT_TOKEN` | The bearer token the phone enters under **Settings** |
@@ -254,7 +254,7 @@ address.
    sudo cp deploy/caddy/Caddyfile /etc/caddy/Caddyfile
    sudo systemctl edit caddy     # add:
    #   [Service]
-   #   Environment=DOMAIN=reach.example.com
+   #   Environment=DOMAIN=walkie-talkie.example.com
    #   Environment=ACME_EMAIL=you@example.com
    sudo systemctl restart caddy
    ```

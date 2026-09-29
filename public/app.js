@@ -1,9 +1,8 @@
 import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
-
-const TOKEN_KEY = "reach.token";
+import { TOKEN_KEY, loadToken } from "./token.js";
 
 const state = {
-  token: localStorage.getItem(TOKEN_KEY) || "",
+  token: loadToken(localStorage),
   pendingRequestId: null,
   pendingRequestText: null,
   status: null,
