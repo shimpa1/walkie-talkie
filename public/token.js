@@ -6,7 +6,10 @@ export const UNAUTHORIZED_MESSAGE =
 
 export function normalizeToken(value) {
   if (typeof value !== "string") return "";
-  const token = value.replace(/\s+/g, "");
+  return value.replace(/\s+/g, "");
+}
+
+function stripShellMarker(token) {
   return token.endsWith("%") ? token.slice(0, -1) : token;
 }
 
@@ -30,7 +33,7 @@ export function readToken(storage) {
 }
 
 export function writeToken(storage, value) {
-  const token = normalizeToken(value);
+  const token = stripShellMarker(normalizeToken(value));
   try {
     if (token) storage.setItem(TOKEN_KEY, token);
     else storage.removeItem(TOKEN_KEY);

@@ -98,24 +98,38 @@ test("a token entered in Settings is stored trimmed and survives a reload", asyn
   assert.equal(readToken(new MemoryStorage()), "");
 });
 
-test("stored tokens drop all whitespace and a single trailing percent sign", async () => {
-  const { normalizeToken, writeToken, readToken } = await loadToken();
-  const storage = new MemoryStorage();
+test("normalizeToken only strips whitespace so it never removes a genuine percent", async () => {
+  const { normalizeToken } = await loadToken();
 
-  assert.equal(normalizeToken("  sec ret%  "), "secret");
-  assert.equal(normalizeToken("token%%"), "token%");
-  assert.equal(normalizeToken("%"), "");
+  assert.equal(normalizeToken("  sec ret%  "), "secret%");
+  assert.equal(normalizeToken("token%%"), "token%%");
+  assert.equal(normalizeToken("%"), "%");
   assert.equal(normalizeToken(null), "");
+});
+
+test("storing a token strips whitespace and a single trailing shell percent", async () => {
+  const { writeToken, readToken } = await loadToken();
+  const storage = new MemoryStorage();
 
   assert.equal(writeToken(storage, " secret% "), "secret");
   assert.equal(readToken(storage), "secret");
+});
+
+test("a real token ending in percent survives store, reload, and send", async () => {
+  const { writeToken, readToken, authHeaders, TOKEN_KEY } = await loadToken();
+  const storage = new MemoryStorage();
+
+  assert.equal(writeToken(storage, "s3cr3t%%"), "s3cr3t%");
+  assert.equal(storage.getItem(TOKEN_KEY), "s3cr3t%");
+  assert.equal(readToken(storage), "s3cr3t%");
+  assert.deepEqual(authHeaders(readToken(storage)), { authorization: "Bearer s3cr3t%" });
 });
 
 test("tokenSuffix shows the last four characters only when a token is stored", async () => {
   const { tokenSuffix } = await loadToken();
 
   assert.equal(tokenSuffix("token-abcd"), "...abcd");
-  assert.equal(tokenSuffix("  token-abcd%  "), "...abcd");
+  assert.equal(tokenSuffix("  token-abcd%  "), "...bcd%");
   assert.equal(tokenSuffix("abc"), "...abc");
   assert.equal(tokenSuffix(""), "");
   assert.equal(tokenSuffix("   "), "");
