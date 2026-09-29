@@ -1,0 +1,258 @@
+# Default values for the firstmate chart.
+#
+# The chart installs firstmate (running on its herdr session backend) together
+# with the walkie-talkie companion service into one cluster. Nothing about any
+# particular cluster is baked in: images, storage class, gateway, hostname,
+# TLS, credentials and the firstmate home path are all values here. Replace
+# them for your cluster; see docs/deploy-kubernetes.md and
+# examples/values-atus.yaml.
+
+# Override the chart name or the generated resource name prefix.
+nameOverride: ""
+fullnameOverride: ""
+
+# Pull secrets for private image registries.
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# firstmate container
+# ---------------------------------------------------------------------------
+firstmate:
+  image:
+    # Build this image from deploy/kubernetes/firstmate/Dockerfile, or point at
+    # your own firstmate runtime image.
+    repository: firstmate-runtime
+    # Defaults to .Chart.AppVersion when left empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Absolute path inside the container that is the firstmate home (the cloned
+  # distro plus state, data, projects and config). The StatefulSet mounts its
+  # persistent volume here. Both containers share it.
+  home: /home/firstmate
+
+  # Named herdr session the runtime uses and that you attach to. firstmate
+  # reads it from HERDR_SESSION and the entrypoint starts the headless server
+  # for it.
+  herdrSession: firstmate
+
+  # Extra environment variables for the firstmate container. Harness and model
+  # credentials belong under `credentials`, not here.
+  extraEnv: []
+  #  - name: ANTHROPIC_BASE_URL
+  #    value: https://example.invalid
+
+  # Extra environment variables sourced from Secrets or ConfigMaps.
+  extraEnvFrom: []
+  #  - secretRef:
+  #      name: my-harness-config
+
+  # Override the image entrypoint if you ship your own image.
+  command: []
+  args: []
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+  # Pod-security settings are intentional defaults; change them to match your
+  # cluster's Pod Security Admission level and the user that owns the volume.
+  podSecurityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# ---------------------------------------------------------------------------
+# walkie-talkie container (the phone companion PWA + API)
+# ---------------------------------------------------------------------------
+walkieTalkie:
+  image:
+    # Built from the repository-root Dockerfile provided by the sibling
+    # Docker/Compose deploy slice (a prerequisite; merge it first), or point at
+    # your own built image.
+    repository: walkie-talkie
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Port the service listens on inside the container.
+  port: 8787
+
+  extraEnv: []
+  extraEnvFrom: []
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # Probes. Liveness is a plain TCP check so a unhealthy firstmate does not
+  # restart the web tier; readiness asks firstmate whether it is ready.
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# ---------------------------------------------------------------------------
+# Persistence: the firstmate home
+# ---------------------------------------------------------------------------
+persistence:
+  # Create a volumeClaimTemplate on the StatefulSet. When false, you must set
+  # `existingClaim` (or the pod will use an emptyDir, which loses state).
+  enabled: true
+  # StorageClass for the claim. Leave empty to use the cluster's default
+  # StorageClass. `beta3` is the atus cluster's Rook-Ceph class and belongs only
+  # in examples/values-atus.yaml, not the generic chart default.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 20Gi
+  # Use an already-created PVC instead of a volumeClaimTemplate. Requires
+  # `enabled: false`; setting it while `enabled: true` fails the render.
+  existingClaim: ""
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Service + Gateway API routing
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  # Port exposed by the Service; routes to walkie-talkie's container port.
+  port: 8787
+  annotations: {}
+
+# The HTTPRoute attaches to this Gateway (gateway.networking.k8s.io/v1). TLS
+# terminates at the Gateway; the chart never exposes anything else publicly.
+httpRoute:
+  enabled: true
+  # One entry per Gateway listener. Multiple parents are allowed.
+  parentRefs:
+    - name: gateway
+      namespace: nginx-gateway
+      # Leave empty to attach to every listener on the Gateway whose hostname
+      # matches; set it to pin a specific listener, e.g. https-atus-wildcard.
+      sectionName: ""
+  # Hostnames routed to walkie-talkie.
+  hostnames:
+    - firstmate.example.com
+  annotations: {}
+  # Add an HTTP listener route that 301-redirects to HTTPS.
+  redirect:
+    enabled: false
+    parentRefs:
+      - name: gateway
+        namespace: nginx-gateway
+        sectionName: http
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+# TLS terminates at the Gateway for the normal case. The chart does not create
+# the Gateway's TLS secret. Enable `certificate` only when this namespace
+# terminates its own TLS with cert-manager.
+certificate:
+  enabled: false
+  secretName: firstmate-tls
+  issuerRef:
+    name: ""
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames: []
+  duration: ""
+  renewBefore: ""
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Credentials
+# ---------------------------------------------------------------------------
+# Nothing is inlined into the workload: every credential reaches a container
+# through a Secret with secretKeyRef. Either point at an existing Secret
+# (recommended for GitOps and external secret operators) or let the chart
+# create one from the values below.
+credentials:
+  # Name of a pre-created Secret. When set, the chart creates no Secret and
+  # reads the keys below from it; the pods cannot start until it exists.
+  existingSecret: ""
+
+  # Inject GH_TOKEN/GITHUB_TOKEN into the firstmate container from the Secret.
+  # Set false when your existing Secret carries no GitHub key.
+  githubTokenEnabled: true
+
+  # Created-Secret mode: used only when existingSecret is empty.
+  # Do not commit real tokens to values.yaml; pass them with --set or a sealed
+  # secret / external secret operator.
+  create:
+    # Bearer token the phone uses under Settings. If left empty the chart
+    # generates one and preserves it across upgrades; set it to control it.
+    walkieTalkieToken: ""
+    # Token for the GitHub CLI inside the firstmate container.
+    githubToken: ""
+    # Harness/model credentials: map of environment-variable name to value.
+    # Each becomes an environment variable in the firstmate container, read
+    # from the created Secret. A name that collides with a reserved name makes
+    # the chart fail at render instead of silently overwriting the built-in
+    # credential: the `walkieTalkieToken`/`githubToken` key names (see
+    # `keys`) and the `GH_TOKEN`/`GITHUB_TOKEN` env names are all reserved.
+    harness: {}
+
+  # Secret key names. `create` writes these keys; with `existingSecret` these
+  # are the keys the chart reads.
+  keys:
+    walkieTalkieToken: walkie-talkie-token
+    githubToken: github-token
+    # Map of environment-variable name to key in the existing Secret. Ignored
+    # in created-Secret mode (the env-var name is the key there). The env
+    # names `GH_TOKEN`/`GITHUB_TOKEN` are reserved and make the chart fail at
+    # render if reused here.
+    harness: {}
+
+# ---------------------------------------------------------------------------
+# Pod scheduling and identity
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Optional default-deny network policy for the namespace's ingress, allowing
+# only the Gateway namespace to reach walkie-talkie. Disabled by default
+# because kubelet probe traffic handling varies by CNI.
+networkPolicy:
+  enabled: false
+  # Namespace the Gateway lives in. When empty, uses the first httpRoute
+  # parentRef namespace.
+  gatewayNamespace: ""

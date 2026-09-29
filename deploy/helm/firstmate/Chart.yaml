@@ -1,0 +1,20 @@
+apiVersion: v2
+name: firstmate
+description: |
+  Run firstmate and its walkie-talkie phone companion on Kubernetes: one
+  StatefulSet with a persistent firstmate home, the herdr session backend so
+  the session stays attachable, and an HTTPRoute on a Gateway API Gateway.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - firstmate
+  - walkie-talkie
+  - herdr
+  - agents
+home: https://github.com/shimpa1/walkie-talkie
+sources:
+  - https://github.com/shimpa1/walkie-talkie
+annotations:
+  category: DeveloperTools

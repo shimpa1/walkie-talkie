@@ -1,0 +1,32 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "firstmate.fullname" . }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+  {{- with .Values.certificate.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  secretName: {{ required "certificate.secretName is required when certificate.enabled is true" .Values.certificate.secretName }}
+  issuerRef:
+    name: {{ required "certificate.issuerRef.name is required when certificate.enabled is true" .Values.certificate.issuerRef.name }}
+    kind: {{ default "ClusterIssuer" .Values.certificate.issuerRef.kind }}
+    group: {{ default "cert-manager.io" .Values.certificate.issuerRef.group }}
+  dnsNames:
+    {{- if .Values.certificate.dnsNames }}
+    {{- toYaml .Values.certificate.dnsNames | nindent 4 }}
+    {{- else }}
+    {{- range .Values.httpRoute.hostnames }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.certificate.duration }}
+  duration: {{ . }}
+  {{- end }}
+  {{- with .Values.certificate.renewBefore }}
+  renewBefore: {{ . }}
+  {{- end }}
+{{- end }}

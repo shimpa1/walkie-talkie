@@ -1,0 +1,52 @@
+firstmate and walkie-talkie are installed.
+
+  1. Watch the StatefulSet come up:
+
+       kubectl -n {{ .Release.Namespace }} get statefulset {{ include "firstmate.fullname" . }} -w
+
+     The firstmate container seeds the persistent home on first start and then
+     runs the herdr headless server for session
+     {{ .Values.firstmate.herdrSession | quote }}.
+
+  2. Attach to the firstmate session (herdr stays attachable):
+
+       kubectl -n {{ .Release.Namespace }} exec -it {{ include "firstmate.fullname" . }}-0 -c firstmate -- \
+         herdr session attach {{ .Values.firstmate.herdrSession }}
+
+  3. Reach the phone companion at the hostname(s) routed through the Gateway:
+
+       {{- range .Values.httpRoute.hostnames }}
+       https://{{ . }}
+       {{- end }}
+
+     Enter the walkie-talkie bearer token once under Settings.
+{{- if not .Values.credentials.existingSecret }}
+{{- $secretName := include "firstmate.secretName" . }}
+{{- $tokenKey := .Values.credentials.keys.walkieTalkieToken }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+
+     The chart created Secret {{ $secretName }}.
+{{- if and $existing $existing.data (index $existing.data $tokenKey) }}
+     Its walkie-talkie token is:
+
+       {{ index $existing.data $tokenKey | b64dec }}
+
+     Read it again later with:
+
+       kubectl -n {{ .Release.Namespace }} get secret {{ $secretName }} \
+         -o jsonpath='{.data.{{ $tokenKey }}}' | base64 -d
+{{- else }}
+     Read the walkie-talkie token with:
+
+       kubectl -n {{ .Release.Namespace }} get secret {{ $secretName }} \
+         -o jsonpath='{.data.{{ $tokenKey }}}' | base64 -d
+{{- end }}
+{{- else }}
+
+     Credentials are read from the existing Secret
+     {{ .Values.credentials.existingSecret | quote }}.
+{{- end }}
+
+  To upgrade:  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} -f your-values.yaml
+  To uninstall (keeps the home PVC by default):
+               helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

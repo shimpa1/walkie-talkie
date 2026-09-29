@@ -359,6 +359,15 @@ the Home Screen**, and only on **iOS 16.4 or newer**. In Safari, tap Share ->
 **Add to Home Screen**, open the app from the new icon, then use **Settings ->
 Enable on this device**. A plain Safari tab cannot receive notifications.
 
+## Run on Kubernetes
+
+To run firstmate and this companion on a Kubernetes cluster behind a Gateway API
+Gateway, with a persistent firstmate home and the attachable herdr session, use
+the Helm chart in [`deploy/helm/firstmate`](deploy/helm/firstmate). This is an
+addition to the host-based usage above, not a replacement; see
+[`docs/deploy-kubernetes.md`](docs/deploy-kubernetes.md) for prerequisites,
+install/upgrade/uninstall, and the atus cluster example.
+
 ## Endpoints
 
 Every endpoint except `/api/health` and `/api/push/config` requires
