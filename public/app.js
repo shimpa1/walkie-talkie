@@ -1,3 +1,5 @@
+import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
+
 const TOKEN_KEY = "reach.token";
 
 const state = {
@@ -225,6 +227,66 @@ async function submitNote(event) {
   }
 }
 
+function initVoice() {
+  const button = $("mic");
+  const status = $("compose-status");
+  const Recognition = speechRecognitionCtor();
+  if (!Recognition) {
+    button.hidden = true;
+    return;
+  }
+  button.hidden = false;
+
+  const voice = createVoiceInput({
+    supported: () => speechRecognitionCtor() !== null,
+    createRecognition: () => new Recognition(),
+    getText: () => $("note-text").value,
+    setText: (text) => {
+      $("note-text").value = text;
+    },
+    onState: (state, message) => {
+      const listening = state === "listening";
+      button.classList.toggle("is-listening", listening);
+      button.setAttribute("aria-pressed", listening ? "true" : "false");
+      button.textContent = listening ? "Listening…" : "Hold to talk";
+      if (listening) status.textContent = "Listening… release to stop.";
+      else if (message) status.textContent = message;
+      else status.textContent = "";
+    },
+  });
+
+  const begin = (event) => {
+    event.preventDefault();
+    if (typeof button.setPointerCapture === "function") {
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is a convenience; the release handlers still stop the voice.
+      }
+    }
+    voice.start();
+  };
+  const end = () => voice.stop();
+
+  button.addEventListener("pointerdown", begin);
+  button.addEventListener("pointerup", end);
+  button.addEventListener("pointercancel", end);
+  button.addEventListener("pointerleave", end);
+  button.addEventListener("contextmenu", (event) => event.preventDefault());
+  button.addEventListener("keydown", (event) => {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      voice.start();
+    }
+  });
+  button.addEventListener("keyup", (event) => {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      voice.stop();
+    }
+  });
+}
+
 async function loadReceipts() {
   const body = $("receipts-body");
   body.textContent = "";
@@ -414,6 +476,7 @@ function init() {
     state.pendingRequestId = null;
     state.pendingRequestText = null;
   });
+  initVoice();
   $("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
     state.token = $("token-input").value.trim();

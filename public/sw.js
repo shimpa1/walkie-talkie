@@ -1,8 +1,9 @@
-const CACHE = "reach-shell-v2";
+const CACHE = "reach-shell-v3";
 const SHELL = [
   "/",
   "/index.html",
   "/app.js",
+  "/voice.js",
   "/styles.css",
   "/manifest.webmanifest",
   "/icon.svg",
