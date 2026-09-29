@@ -1,8 +1,14 @@
 import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
-import { TOKEN_KEY, loadToken } from "./token.js";
+import {
+  createApi,
+  forgetToken,
+  readToken,
+  UNAUTHORIZED_MESSAGE,
+  writeToken,
+} from "./token.js";
 
 const state = {
-  token: loadToken(localStorage),
+  token: readToken(localStorage),
   pendingRequestId: null,
   pendingRequestText: null,
   status: null,
@@ -23,29 +29,18 @@ function setBanner(message, kind) {
   banner.textContent = message;
 }
 
-function authHeaders(extra) {
-  const headers = Object.assign({}, extra || {});
-  if (state.token) headers["authorization"] = `Bearer ${state.token}`;
-  return headers;
+function handleUnauthorized() {
+  setBanner(UNAUTHORIZED_MESSAGE, "bad");
+  if (!state.token) {
+    showView("settings");
+    setSettingsStatus(UNAUTHORIZED_MESSAGE, "bad");
+  }
 }
 
-async function api(path, options) {
-  const init = Object.assign({}, options || {});
-  init.headers = authHeaders(init.headers);
-  const response = await fetch(path, init);
-  const text = await response.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = null;
-  }
-  if (!response.ok) {
-    const detail = body && body.error ? body.error : `HTTP ${response.status}`;
-    throw new Error(detail);
-  }
-  return body;
-}
+const api = createApi({
+  getToken: () => state.token,
+  onUnauthorized: handleUnauthorized,
+});
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -171,6 +166,7 @@ async function loadStatus() {
     renderStatus(payload);
     setBanner(null);
   } catch (error) {
+    if (error && error.status === 401) return;
     setBanner(`Could not load fleet status: ${error.message}`, "bad");
   }
 }
@@ -460,6 +456,47 @@ function showView(name) {
 }
 
 const VIEWS = ["status", "compose", "receipts", "settings"];
+const TOKEN_SAVE_DELAY_MS = 300;
+let tokenSaveTimer = null;
+
+function setSettingsStatus(message, kind) {
+  const status = $("settings-status");
+  status.textContent = message;
+  status.className = `hint ${kind || ""}`;
+}
+
+function persistToken(value) {
+  state.token = writeToken(localStorage, value);
+  return state.token;
+}
+
+function scheduleTokenPersist() {
+  if (tokenSaveTimer !== null) clearTimeout(tokenSaveTimer);
+  tokenSaveTimer = setTimeout(() => {
+    tokenSaveTimer = null;
+    persistToken($("token-input").value);
+  }, TOKEN_SAVE_DELAY_MS);
+}
+
+async function verifyToken() {
+  setSettingsStatus("Checking…", "");
+  try {
+    await api("/api/status");
+    setSettingsStatus("Token accepted", "ok");
+  } catch (error) {
+    if (error && error.status === 401) setSettingsStatus("Token rejected", "bad");
+    else setSettingsStatus(`Could not verify token: ${error.message}`, "bad");
+  }
+}
+
+function saveToken() {
+  if (tokenSaveTimer !== null) {
+    clearTimeout(tokenSaveTimer);
+    tokenSaveTimer = null;
+  }
+  $("token-input").value = persistToken($("token-input").value);
+  return verifyToken();
+}
 
 function init() {
   $("fact-origin").textContent = window.location.origin;
@@ -478,18 +515,23 @@ function init() {
     state.pendingRequestText = null;
   });
   initVoice();
+  const tokenInput = $("token-input");
+  tokenInput.addEventListener("input", scheduleTokenPersist);
+  tokenInput.addEventListener("change", () => persistToken(tokenInput.value));
+  tokenInput.addEventListener("blur", () => void saveToken());
   $("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    state.token = $("token-input").value.trim();
-    localStorage.setItem(TOKEN_KEY, state.token);
-    $("settings-status").textContent = "Saved.";
-    void loadStatus();
+    void saveToken();
   });
   $("clear-token").addEventListener("click", () => {
+    if (tokenSaveTimer !== null) {
+      clearTimeout(tokenSaveTimer);
+      tokenSaveTimer = null;
+    }
+    forgetToken(localStorage);
     state.token = "";
-    localStorage.removeItem(TOKEN_KEY);
-    $("token-input").value = "";
-    $("settings-status").textContent = "Token cleared.";
+    tokenInput.value = "";
+    setSettingsStatus("Token cleared.", "");
   });
   $("push-enable").addEventListener("click", () => void enablePush());
   $("push-disable").addEventListener("click", () => void disablePush());
