@@ -88,7 +88,7 @@ docker push registry.example.com/firstmate-runtime:0.1.0
 The build installs firstmate from `FIRSTMATE_REPO`/`FIRSTMATE_REF` (defaults to
 the public firstmate repo at `main`), then uses firstmate's own pinned
 installers for herdr and treehouse. The primary harness is installed from
-`HARNESS_PACKAGES` (default `@anthropic-ai/claude-code`). Override build args
+`HARNESS_PACKAGES` (default `opencode-ai`). Override build args
 for a different harness or a pinned firstmate ref:
 
 ```sh

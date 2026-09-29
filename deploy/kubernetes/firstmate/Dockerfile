@@ -11,7 +11,7 @@
 #   docker build -t firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
 #
 # The harness (the coding agent firstmate runs as its primary) is installed
-# from HARNESS_PACKAGES. The default is the Claude Code CLI; override it for
+# from HARNESS_PACKAGES. The default is the opencode CLI; override it for
 # another harness, or set it empty and install your own on top.
 #
 # This is one generic way to package the runtime, not a requirement: point the
@@ -25,7 +25,7 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG FIRSTMATE_REPO=https://github.com/kunchenguid/firstmate
 ARG FIRSTMATE_REF=main
-ARG HARNESS_PACKAGES=@anthropic-ai/claude-code
+ARG HARNESS_PACKAGES=opencode-ai
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
