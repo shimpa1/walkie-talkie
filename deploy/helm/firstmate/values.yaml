@@ -306,6 +306,14 @@ agents:
   # with natural-language `when` and `use` profiles, plus an optional
   # `default` profile array. Each profile names a declared harness and an
   # optional model as "<provider>/<model-id>".
+  #
+  # A profile needs only `harness` for the default, non-typed deployment. When
+  # typed dispatch is enabled (TYPESAFE_API_KEY), firstmate additionally
+  # requires `provider` on every profile whose harness has no built-in
+  # single-provider mapping - opencode, pi, pi-signed, and omp - naming the
+  # quota-axi provider family; otherwise it rejects the rules file as malformed.
+  # Harnesses with a built-in mapping (claude, codex, grok, kimi, cursor, agy,
+  # muse) need no provider.
   dispatch: {}
   #  rules:
   #    - when: "Mechanical or routine implementation along an existing pattern."

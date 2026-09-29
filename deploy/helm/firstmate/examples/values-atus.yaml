@@ -110,6 +110,13 @@ agents:
       models:
         qwen3.8-27b:
           name: Qwen3.8-27B (3090)
+  # These profiles name only a harness, which is all the default (non-typed)
+  # deployment needs. If you enable typed dispatch (TYPESAFE_API_KEY in
+  # credentials.create.harness), every profile whose harness has no built-in
+  # single-provider mapping - opencode here - must also set `provider` to your
+  # quota-axi provider family (for example `provider: deepseek`), or firstmate
+  # rejects the rules file as malformed. Leave typed dispatch off to keep these
+  # profiles unchanged.
   dispatch:
     rules:
       - when: "Mechanical or routine implementation, or other work with a settled plan and a bounded path."

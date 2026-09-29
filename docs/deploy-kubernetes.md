@@ -233,7 +233,7 @@ agents:
 | --- | --- | --- |
 | `agents.harnesses` | The harness adapters firstmate may launch and the environment variables that authorize each. The executable must already be in the runtime image (the `HARNESS_PACKAGES` build arg). | Declarative; validated against the dispatch profiles. |
 | `agents.providers` | The provider/model catalog the opencode harness can call, provider-agnostically: any models.dev provider id or OpenAI-compatible endpoint. | `<home>/.config/opencode/opencode.json` (opencode's global config). |
-| `agents.dispatch` | firstmate's per-task dispatch profiles, in its `crew-dispatch.json` schema, that choose a harness and model. | `<home>/config/crew-dispatch.json`. |
+| `agents.dispatch` | firstmate's per-task dispatch profiles, in its `crew-dispatch.json` schema, that choose a harness and model. A profile needs only `harness` unless typed dispatch is enabled, which also requires `provider` for harnesses without a built-in mapping such as `opencode`. | `<home>/config/crew-dispatch.json`. |
 
 A provider sets `apiKeyEnv` (an environment-variable name, rendered as
 opencode's `{env:NAME}`), or neither for a built-in models.dev provider or a
@@ -284,6 +284,18 @@ harness, a provider catalog without the `opencode` harness, or an enabled block
 that declares neither a provider nor a dispatch.
 `dispatch.default` (and a rule's `use`) accepts either the array form or a
 single profile object, matching firstmate's own schema.
+
+A profile needs only `harness` for the default, non-typed deployment; the
+example above omits `provider` for that reason. When firstmate runs with typed
+dispatch enabled (`TYPESAFE_API_KEY`), its resolver also requires `provider` on
+every profile whose harness has no built-in single-provider mapping:
+`claude`, `codex`, `grok`, `kimi`, `cursor`, `agy`, and `muse` have one, while
+`opencode` (and `pi`, `pi-signed`, `omp`) do not, so every such profile must
+name the quota-axi provider family to use (for example `provider: deepseek`).
+If you enable typed dispatch without adding `provider` to the example's
+`opencode` profiles, firstmate rejects the rendered `crew-dispatch.json` as a
+malformed rules file and dispatch stops. Either add `provider` to each profile
+or leave typed dispatch off.
 
 ## Install
 
