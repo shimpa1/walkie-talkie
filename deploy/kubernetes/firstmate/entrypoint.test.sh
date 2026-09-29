@@ -38,6 +38,7 @@ HERDR_LOG="$TMP/herdr.log"
 PANE_LOG="$TMP/pane.log"
 SERVER_ENV="$TMP/server.env"
 FORCE_DEAD="$TMP/force-dead"
+STARTING="$TMP/starting"
 : > "$HERDR_LOG"
 : > "$PANE_LOG"
 
@@ -68,9 +69,11 @@ case "${args[0]:-} ${args[1]:-}" in
     printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n'
     ;;
   "agent get")
-    # A live harness only while a pane_run has happened and the test has not
-    # forced it dead; forcing it dead simulates the harness exiting.
+    # No agent while the start window is open (the harness is still coming up),
+    # while the test forces it dead (the harness exited), or before any pane_run;
+    # otherwise a live idle harness.
     if [ -e "${FAKE_HERDR_FORCE_DEAD:-/nonexistent}" ] \
+      || [ -e "${FAKE_HERDR_STARTING:-/nonexistent}" ] \
       || ! grep -q '^pane_run ' "${FAKE_HERDR_PANE_LOG:?}" 2>/dev/null; then
       printf '{"error":{"code":"agent_not_found","message":"no agent"}}\n'
     else
@@ -93,17 +96,23 @@ chmod +x "$FAKE_BIN/herdr"
 
 HARNESS_CMD="OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode"
 
+# The harness is "starting" (no agent registered) until the test removes this
+# marker, so the supervisor's start-grace window is exercised.
+: > "$STARTING"
+
 PATH="$FAKE_BIN:$PATH" \
   HOME="$HOME_DIR" \
   FM_HOME="$HOME_DIR" \
   HERDR_SESSION=firstmate \
   FM_HARNESS_COMMAND="$HARNESS_CMD" \
   FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
+  FM_HARNESS_SUPERVISION_GRACE=3 \
   DEEPSEEK_API_KEY=test-deepseek-key \
   FAKE_HERDR_LOG="$HERDR_LOG" \
   FAKE_HERDR_PANE_LOG="$PANE_LOG" \
   FAKE_HERDR_SERVER_ENV="$SERVER_ENV" \
   FAKE_HERDR_FORCE_DEAD="$FORCE_DEAD" \
+  FAKE_HERDR_STARTING="$STARTING" \
   bash "$ENTRYPOINT" &
 EP_PID=$!
 
@@ -126,9 +135,16 @@ grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \
   || fail "harness credentials did not reach the herdr server environment"
 
-# A registered live harness is present after the first pane_run, so the
-# supervisor must not type a duplicate command over it.
-sleep 0.8
+# The harness has not registered yet (start window open), so the supervisor
+# must give it its grace period instead of typing a duplicate command.
+sleep 1
+starting_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
+[ "$starting_runs" -eq 1 ] \
+  || fail "supervisor started $starting_runs harnesses during the start grace window"
+
+# The harness is now registered and live, so the supervisor must leave it alone.
+rm -f "$STARTING"
+sleep 1
 live_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
 [ "$live_runs" -eq 1 ] \
   || fail "supervisor started $live_runs harnesses while one was already live"

@@ -45,8 +45,7 @@ firstmate:
   # different posture. Set it empty to run the herdr server only and start the
   # harness yourself after attaching. Harness credentials are passed to it
   # through `credentials.create.harness` (or an existing Secret), which become
-  # environment variables in this container; `extraEnvFrom` can also inject a
-  # Secret/ConfigMap directly.
+  # environment variables in this container.
   harnessCommand: >-
     OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode
 

@@ -29,8 +29,15 @@ WORKSPACE_LABEL="firstmate"
 # test; the production default trades a short detection delay for one cheap
 # read-only `agent get` per interval.
 HARNESS_CHECK_INTERVAL="${FM_HARNESS_SUPERVISION_INTERVAL:-5}"
+# Seconds a freshly started harness is given to register before the supervisor
+# treats its absence as a failure. `herdr pane run` returns as soon as the
+# command is typed, so an unregistered pane can simply mean the harness is still
+# coming up; without this pause the supervisor would type the command a second
+# time into a harness that is still starting.
+HARNESS_START_GRACE="${FM_HARNESS_SUPERVISION_GRACE:-30}"
 SERVER_PID=
 SUPERVISOR_PID=
+HARNESS_STARTED_AT=
 
 log() { printf 'firstmate-entrypoint: %s\n' "$*" >&2; }
 
@@ -119,6 +126,7 @@ start_primary_harness() {
     log "herdr pane run failed for $SESSION:$pane"
     return 1
   fi
+  HARNESS_STARTED_AT=$(date +%s)
 }
 
 # True when the home workspace's pane has a registered live harness. Resolves
@@ -138,13 +146,19 @@ herdr_home_harness_live() {
 # exits immediately (a bad or missing credential) or later (a crash, a quit, an
 # auto-update restart) would leave the server up, the pod Ready, and queued
 # instructions pending. Each interval it checks the home pane and starts the
-# harness again when nothing is registered there.
+# harness again when nothing is registered there, but never before the harness
+# it last started has had its grace period to register, so a slow start is not
+# mistaken for a dead harness.
 supervise_primary_harness() {
   while kill -0 "$SERVER_PID" 2>/dev/null; do
     sleep "$HARNESS_CHECK_INTERVAL"
     kill -0 "$SERVER_PID" 2>/dev/null || return 0
     herdr_server_running || return 0
     herdr_home_harness_live && continue
+    if [ -n "$HARNESS_STARTED_AT" ] \
+      && [ $(( $(date +%s) - HARNESS_STARTED_AT )) -lt "$HARNESS_START_GRACE" ]; then
+      continue
+    fi
     log "primary harness is not running in session '$SESSION'; starting it again"
     start_primary_harness \
       || log "warning: failed to start the primary harness again"

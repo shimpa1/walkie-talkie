@@ -32,10 +32,8 @@ headless server, and starts the primary harness inside the session from
 the harness in the same pane when it exits, so the pod keeps a live firstmate
 draining queued instructions. The harness reads its provider credentials from
 the container environment, which the chart fills from
-`credentials.create.harness` or `credentials.keys.harness`, or injects directly
-with `firstmate.extraEnvFrom` (for opencode, e.g. `DEEPSEEK_API_KEY` /
-`OPENROUTER_API_KEY`; for Claude, `ANTHROPIC_API_KEY`). Any secret source
-works, because the harness only needs the environment variables.
+`credentials.create.harness` or `credentials.keys.harness` (for opencode, e.g.
+`DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY`; for Claude, `ANTHROPIC_API_KEY`).
 
 Harness/model credentials (`credentials.create.harness` / `credentials.keys.harness`)
 may not use the reserved names the chart manages for itself — the

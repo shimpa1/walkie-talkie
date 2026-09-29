@@ -114,29 +114,11 @@ Then set `firstmate.image.repository`/`tag` and
 
 ## Credentials
 
-Every credential reaches a container through a Secret; none is inlined into the
-pod spec. The harness only ever reads plain environment variables, so **any
-secret source works** — a plain `kubectl` Secret, External Secrets,
-sealed-secrets, a cloud secret manager, the Doppler operator, and so on. There
-are two ways to get those variables into the firstmate container.
+Every credential reaches a container through a Secret with `secretKeyRef`; none
+is inlined into the pod spec. There are two modes.
 
-**Chart-created Secret (default).** Leave `existingSecret` empty and pass the
-values:
-
-```sh
-helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
-  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
-  --set credentials.create.githubToken="github_pat_xxx" \
-  --set credentials.create.harness.DEEPSEEK_API_KEY="sk-xxx"
-```
-
-Each `credentials.create.harness` entry becomes an environment variable in the
-firstmate container: the key is the variable name and the value is its value.
-The default opencode harness reads `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`; a
-Claude harness reads `ANTHROPIC_API_KEY`.
-
-**Secret managed elsewhere (recommended for GitOps).** Create the Secret with
-whatever tool you already use and point the chart at it:
+**Existing Secret (recommended for GitOps).** Create the Secret yourself and
+point the chart at it:
 
 ```sh
 kubectl -n <namespace> create secret generic firstmate-credentials \
@@ -156,31 +138,21 @@ credentials:
 ```
 
 Each `keys.harness` entry maps an environment-variable name in the firstmate
-container to a key in the Secret. With `credentials.existingSecret` set the
-chart creates no Secret. If your Secret has no GitHub key, set
-`credentials.githubTokenEnabled: false`.
+container to a key in the Secret. The examples use `DEEPSEEK_API_KEY` for the
+default opencode harness; use `OPENROUTER_API_KEY` instead, or
+`ANTHROPIC_API_KEY` for a Claude harness.
 
-If you would rather inject the whole Secret than map keys, use
-`firstmate.extraEnvFrom` (a raw `envFrom` reference, so it is not covered by the
-reserved-name guard below):
+With `credentials.existingSecret` set the chart creates no Secret. If your
+Secret has no GitHub key, set `credentials.githubTokenEnabled: false`.
 
-```yaml
-firstmate:
-  extraEnvFrom:
-    - secretRef:
-        name: firstmate-credentials
+**Chart-created Secret.** Leave `existingSecret` empty and pass the values:
+
+```sh
+helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
+  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
+  --set credentials.create.githubToken="github_pat_xxx" \
+  --set credentials.create.harness.DEEPSEEK_API_KEY="sk-xxx"
 ```
-
-**Optional example: the Doppler operator.** This is one optional secret source,
-for clusters that already run [Doppler's Kubernetes
-operator](https://docs.doppler.com/docs/kubernetes-operator) — nothing here
-requires Doppler, and the plain Secret paths above are the default. The example
-manifest
-[`examples/doppler-secret.yaml`](../deploy/helm/firstmate/examples/doppler-secret.yaml)
-syncs a Doppler config into a Kubernetes Secret; fill in its placeholders and
-apply it, then point the chart at the Secret it manages with
-`credentials.existingSecret` (or `firstmate.extraEnvFrom`). It never contains a
-token itself: the operator reads its token from a separate Kubernetes Secret.
 
 If you omit the walkie-talkie token, the chart generates one and prints it in
 the release notes. Set it explicitly for a token you control. Do not commit
