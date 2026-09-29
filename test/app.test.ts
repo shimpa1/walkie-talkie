@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 
 import { REPO_ROOT, startTestServer } from "./helpers.js";
 
+const nativeFetch = globalThis.fetch;
+
 interface TokenStorageLike {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
@@ -73,15 +75,26 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
   throw new Error("timed out waiting for app state");
 }
 
-test("a 401 clears the stored token and field so the captain re-enters the real one", async () => {
-  const { TOKEN_KEY, UNAUTHORIZED_MESSAGE } = (await import(
-    pathToFileURL(join(REPO_ROOT, "public", "token.js")).href
-  )) as { TOKEN_KEY: string; UNAUTHORIZED_MESSAGE: string };
+async function loadTokenMessages(): Promise<{ TOKEN_KEY: string; UNAUTHORIZED_MESSAGE: string }> {
+  return (await import(pathToFileURL(join(REPO_ROOT, "public", "token.js")).href)) as {
+    TOKEN_KEY: string;
+    UNAUTHORIZED_MESSAGE: string;
+  };
+}
 
-  const server = await startTestServer({ token: "s3cr3t" });
-  const storage = new MemoryStorage();
-  storage.setItem(TOKEN_KEY, "s3cr3t%");
+interface AppHarness {
+  getElement: (id: string) => FakeElement;
+  tokenInput: FakeElement;
+  settingsStatus: FakeElement;
+}
 
+let bootCount = 0;
+
+async function bootApp(
+  storage: MemoryStorage,
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>,
+): Promise<AppHarness> {
+  bootCount += 1;
   const elements = new Map<string, FakeElement>();
   const getElement = (id: string): FakeElement => {
     let element = elements.get(id);
@@ -98,7 +111,6 @@ test("a 401 clears the stored token and field so the captain re-enters the real 
   });
   const views = ["status", "compose", "receipts", "settings"].map((view) => makeElement(`view-${view}`));
 
-  const realFetch = globalThis.fetch;
   const globals: Array<[string, unknown]> = [
     ["localStorage", storage],
     [
@@ -116,20 +128,34 @@ test("a 401 clears the stored token and field so the captain re-enters the real 
     ],
     ["window", { location: { origin: "http://localhost", search: "" } }],
     ["navigator", {}],
-    [
-      "fetch",
-      (path: string, init?: Parameters<typeof fetch>[1]) => realFetch(server.url + path, init),
-    ],
+    ["fetch", fetchImpl],
   ];
   for (const [name, value] of globals) {
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
   }
 
-  try {
-    await import(pathToFileURL(join(REPO_ROOT, "public", "app.js")).href);
+  await import(`${pathToFileURL(join(REPO_ROOT, "public", "app.js")).href}?boot=${bootCount}`);
 
-    const tokenInput = getElement("token-input");
-    const settingsStatus = getElement("settings-status");
+  return {
+    getElement,
+    tokenInput: getElement("token-input"),
+    settingsStatus: getElement("settings-status"),
+  };
+}
+
+test("a 401 clears the stored token and field so the captain re-enters the real one", async () => {
+  const { TOKEN_KEY, UNAUTHORIZED_MESSAGE } = await loadTokenMessages();
+
+  const server = await startTestServer({ token: "s3cr3t" });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "s3cr3t%");
+
+  try {
+    const { getElement, tokenInput, settingsStatus } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+    );
+
     await waitFor(() => settingsStatus.textContent === UNAUTHORIZED_MESSAGE);
 
     assert.equal(storage.getItem(TOKEN_KEY), null);
@@ -142,6 +168,48 @@ test("a 401 clears the stored token and field so the captain re-enters the real 
 
     assert.equal(storage.getItem(TOKEN_KEY), "s3cr3t");
     assert.match(settingsStatus.textContent, /Token accepted/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a stale 401 leaves a newer token the captain is still entering", async () => {
+  const { TOKEN_KEY, UNAUTHORIZED_MESSAGE } = await loadTokenMessages();
+
+  const server = await startTestServer({ token: "s3cr3t" });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "s3cr3t%");
+
+  let releaseStatus: () => void = () => {};
+  const statusGate = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
+  let statusStarted = false;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/status" && !statusStarted) {
+      statusStarted = true;
+      await statusGate;
+    }
+    return nativeFetch(server.url + path, init);
+  };
+
+  try {
+    const { getElement, tokenInput, settingsStatus } = await bootApp(storage, fetchImpl);
+
+    await waitFor(() => statusStarted);
+    tokenInput.value = "s3cr3t";
+    releaseStatus();
+
+    await waitFor(() => settingsStatus.textContent.startsWith(UNAUTHORIZED_MESSAGE));
+
+    assert.equal(tokenInput.value, "s3cr3t");
+    assert.equal(storage.getItem(TOKEN_KEY), "s3cr3t%");
+
+    getElement("settings-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => settingsStatus.textContent.startsWith("Token accepted"));
+
+    assert.equal(storage.getItem(TOKEN_KEY), "s3cr3t");
+    assert.equal(tokenInput.value, "s3cr3t");
   } finally {
     await server.close();
   }

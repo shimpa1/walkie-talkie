@@ -32,15 +32,14 @@ export function readToken(storage) {
   }
 }
 
-export function writeToken(storage, value) {
+export function resolveToken(storage, value) {
   const normalized = normalizeToken(value);
-  let existing = "";
-  try {
-    existing = normalizeToken(storage.getItem(TOKEN_KEY));
-  } catch {
-    existing = "";
-  }
-  const token = normalized === existing ? existing : stripShellMarker(normalized);
+  const existing = readToken(storage);
+  return normalized === existing ? existing : stripShellMarker(normalized);
+}
+
+export function writeToken(storage, value) {
+  const token = resolveToken(storage, value);
   try {
     if (token) storage.setItem(TOKEN_KEY, token);
     else storage.removeItem(TOKEN_KEY);

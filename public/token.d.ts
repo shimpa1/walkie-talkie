@@ -15,6 +15,8 @@ export interface TokenStorage {
 
 export function readToken(storage: TokenStorage): string;
 
+export function resolveToken(storage: TokenStorage, value: string): string;
+
 export function writeToken(storage: TokenStorage, value: string): string;
 
 export function forgetToken(storage: TokenStorage): void;

@@ -3,6 +3,7 @@ import {
   createApi,
   forgetToken,
   readToken,
+  resolveToken,
   tokenSuffix,
   UNAUTHORIZED_MESSAGE,
   writeToken,
@@ -32,9 +33,11 @@ function setBanner(message, kind) {
 
 function handleUnauthorized(_response, token) {
   if (token !== state.token) return;
-  state.token = "";
-  forgetToken(localStorage);
-  $("token-input").value = "";
+  if (resolveToken(localStorage, $("token-input").value) === token) {
+    state.token = "";
+    forgetToken(localStorage);
+    $("token-input").value = "";
+  }
   setBanner(UNAUTHORIZED_MESSAGE, "bad");
   showView("settings");
   setSettingsStatus(UNAUTHORIZED_MESSAGE, "bad");
