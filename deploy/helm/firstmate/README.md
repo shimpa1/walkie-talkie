@@ -35,6 +35,13 @@ the container environment, which the chart fills from
 `credentials.create.harness` or `credentials.keys.harness` (for opencode, e.g.
 `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY`; for Claude, `ANTHROPIC_API_KEY`).
 
+`agents` is an optional, values-driven description of the harnesses,
+provider/model catalog (including a local OpenAI-compatible endpoint), and
+per-task dispatch defaults the deployment may use. When enabled, the chart
+renders it into a ConfigMap mounted on the firstmate home, so adding or removing
+an agent is a values change rather than an image rebuild. See
+[`docs/deploy-kubernetes.md`](../../../docs/deploy-kubernetes.md).
+
 Harness/model credentials (`credentials.create.harness` / `credentials.keys.harness`)
 may not use the reserved names the chart manages for itself — the
 `credentials.keys.walkieTalkieToken` and `credentials.keys.githubToken` key

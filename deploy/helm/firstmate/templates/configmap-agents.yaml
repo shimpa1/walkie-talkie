@@ -1,0 +1,105 @@
+{{- if .Values.agents.enabled -}}
+{{- /* ------------------------------------------------------------------ */ -}}
+{{- /* Validate the declared harnesses, provider catalog, and dispatch rules */ -}}
+{{- /* before rendering anything, so a bad values file fails the render     */ -}}
+{{- /* instead of writing a config firstmate or its harness cannot read.    */ -}}
+{{- $harnesses := dict -}}
+{{- range $h := .Values.agents.harnesses -}}
+{{- $name := required "agents.harnesses[].name is required" $h.name -}}
+{{- if hasKey $harnesses $name -}}
+{{- fail (printf "agents.harnesses: duplicate harness %q" $name) -}}
+{{- end -}}
+{{- $_ := set $harnesses $name true -}}
+{{- end -}}
+{{- if eq (len $harnesses) 0 -}}
+{{- fail "agents.enabled requires at least one harness in agents.harnesses" -}}
+{{- end -}}
+{{- if and (gt (len (default (list) .Values.agents.providers)) 0) (not (hasKey $harnesses "opencode")) -}}
+{{- fail "agents.providers renders the opencode harness config; declare \"opencode\" in agents.harnesses" -}}
+{{- end -}}
+
+{{- $declaredEnv := dict -}}
+{{- range $h := .Values.agents.harnesses -}}
+{{- range $e := (default (list) $h.env) -}}
+{{- $_ := set $declaredEnv $e true -}}
+{{- end -}}
+{{- end -}}
+
+{{- $providers := dict -}}
+{{- range $p := (default (list) .Values.agents.providers) -}}
+{{- $id := required "agents.providers[].id is required" $p.id -}}
+{{- if hasKey $providers $id -}}
+{{- fail (printf "agents.providers: duplicate provider id %q" $id) -}}
+{{- end -}}
+{{- if and $p.apiKey $p.apiKeyEnv -}}
+{{- fail (printf "agents.providers[%s]: set either apiKey or apiKeyEnv, not both" $id) -}}
+{{- end -}}
+{{- if and $p.apiKeyEnv (not (hasKey $declaredEnv $p.apiKeyEnv)) -}}
+{{- fail (printf "agents.providers[%s]: apiKeyEnv %q is not declared in any agents.harnesses[].env" $id $p.apiKeyEnv) -}}
+{{- end -}}
+{{- $options := dict -}}
+{{- if $p.options -}}
+{{- $options = deepCopy $p.options -}}
+{{- end -}}
+{{- if $p.baseURL -}}
+{{- $_ := set $options "baseURL" $p.baseURL -}}
+{{- end -}}
+{{- if $p.apiKey -}}
+{{- $_ := set $options "apiKey" $p.apiKey -}}
+{{- else if $p.apiKeyEnv -}}
+{{- $_ := set $options "apiKey" (printf "{env:%s}" $p.apiKeyEnv) -}}
+{{- end -}}
+{{- $provider := dict -}}
+{{- if $p.npm -}}{{- $_ := set $provider "npm" $p.npm -}}{{- end -}}
+{{- if $p.name -}}{{- $_ := set $provider "name" $p.name -}}{{- end -}}
+{{- if $options -}}{{- $_ := set $provider "options" $options -}}{{- end -}}
+{{- if $p.models -}}{{- $_ := set $provider "models" $p.models -}}{{- end -}}
+{{- $_ := set $providers $id $provider -}}
+{{- end -}}
+
+{{- $dispatch := default (dict) .Values.agents.dispatch -}}
+{{- range $rule := (default (list) $dispatch.rules) -}}
+{{- if not $rule.when -}}
+{{- fail "agents.dispatch.rules[].when is required" -}}
+{{- end -}}
+{{- $uses := $rule.use -}}
+{{- if kindIs "map" $uses -}}
+{{- $uses = list $uses -}}
+{{- end -}}
+{{- if or (not $uses) (eq (len $uses) 0) -}}
+{{- fail "agents.dispatch.rules[].use is required" -}}
+{{- end -}}
+{{- range $u := $uses -}}
+{{- if not (hasKey $harnesses $u.harness) -}}
+{{- fail (printf "agents.dispatch.rules[].use: harness %q is not declared in agents.harnesses" $u.harness) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $defaults := $dispatch.default -}}
+{{- if kindIs "map" $defaults -}}
+{{- $defaults = list $defaults -}}
+{{- end -}}
+{{- range $d := (default (list) $defaults) -}}
+{{- if not (hasKey $harnesses $d.harness) -}}
+{{- fail (printf "agents.dispatch.default: harness %q is not declared in agents.harnesses" $d.harness) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq (len $providers) 0) (not $dispatch) -}}
+{{- fail "agents.enabled requires agents.providers or agents.dispatch" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firstmate.agentsConfigMapName" . }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+data:
+  {{- if $providers }}
+  opencode.json: |-
+{{ dict "provider" $providers | toPrettyJson | indent 4 }}
+  {{- end }}
+  {{- if $dispatch }}
+  crew-dispatch.json: |-
+{{ $dispatch | toPrettyJson | indent 4 }}
+  {{- end }}
+{{- end }}

@@ -138,6 +138,56 @@
         }
       }
     },
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "env": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" },
+              "npm": { "type": "string" },
+              "baseURL": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "apiKeyEnv": { "type": "string", "minLength": 1 },
+              "models": { "type": "object" },
+              "options": { "type": "object" }
+            }
+          }
+        },
+        "dispatch": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "rules": { "type": "array" },
+            "default": {
+              "oneOf": [
+                { "type": "array" },
+                { "type": "object" }
+              ]
+            }
+          }
+        }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": true,

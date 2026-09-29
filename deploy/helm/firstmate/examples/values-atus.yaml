@@ -7,7 +7,8 @@
 #     -f deploy/helm/firstmate/examples/values-atus.yaml \
 #     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
 #     --set credentials.create.githubToken=github_pat_xxx \
-#     --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx
+#     --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx \
+#     --set credentials.create.harness.OPENROUTER_API_KEY=sk-or-xxx
 #
 # The harness credentials become environment variables in the firstmate
 # container, where the primary harness reads them. The runtime image's default
@@ -83,3 +84,43 @@ credentials:
     # them here, e.g. DEEPSEEK_API_KEY / OPENROUTER_API_KEY for the default
     # opencode harness, or ANTHROPIC_API_KEY for a Claude harness.
     harness: {}
+
+# Declarative agents: opencode is the harness, DeepSeek and OpenRouter are
+# API-key providers, and the self-hosted Qwen on the atus 3090 box
+# (10.4.0.20) is an OpenAI-compatible provider that needs no real key. Adding
+# or removing an agent is a change to these values, not an image rebuild.
+# Provider keys reach the container through the credential Secret:
+#   credentials.create.harness.DEEPSEEK_API_KEY=... etc.
+agents:
+  enabled: true
+  harnesses:
+    - name: opencode
+      env:
+        - DEEPSEEK_API_KEY
+        - OPENROUTER_API_KEY
+  providers:
+    - id: deepseek
+      apiKeyEnv: DEEPSEEK_API_KEY
+    - id: openrouter
+      apiKeyEnv: OPENROUTER_API_KEY
+    - id: local3090
+      name: Local 3090 (Qwen3.8-27B)
+      npm: "@ai-sdk/openai-compatible"
+      baseURL: http://10.4.0.20:8000/v1
+      apiKey: local
+      models:
+        qwen3.8-27b:
+          name: Qwen3.8-27B (3090)
+  dispatch:
+    rules:
+      - when: "Mechanical or routine implementation, or other work with a settled plan and a bounded path."
+        use:
+          - harness: opencode
+            model: local3090/qwen3.8-27b
+      - when: "Complex, ambiguous, or high-blast-radius work where the plan itself must be worked out."
+        use:
+          - harness: opencode
+            model: deepseek/deepseek-flash
+    default:
+      - harness: opencode
+        model: deepseek/deepseek-flash
