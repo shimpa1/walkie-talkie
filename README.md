@@ -297,9 +297,12 @@ token is stored only in that browser on that device.
 The token is saved as you type (debounced) and again when the field loses focus,
 so switching tabs or leaving **Settings** cannot drop it; **Save token** also
 checks it against `GET /api/status` and reports **Token accepted** or
-**Token rejected** inline. If any API call returns `401`, the app says the token
-is missing or wrong, clears the stored token and the field, and opens
-**Settings** so the fix is obvious. **Forget token** removes it.
+**Token rejected** inline, shown with the stored token's last four characters so
+you can confirm which one is in use. If any API call returns `401`, the app says
+the token is missing or wrong and opens **Settings** so the fix is obvious; it
+clears the saved token and the field only when the failed request still matches
+both of them, so a newer value you are already typing is not erased.
+**Forget token** removes it.
 
 Alternative: bind the service directly to the machine's tailnet address. This
 needs the explicit override because the address is not loopback:
