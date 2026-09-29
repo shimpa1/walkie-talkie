@@ -184,7 +184,7 @@ export class PushService implements PushApi {
 
   async sendTest(): Promise<PushSendSummary> {
     return this.broadcast({
-      title: "Reach test",
+      title: "Walkie-Talkie test",
       body: "Push notifications are working on this device.",
       url: "/?view=settings",
       tag: "test",

@@ -143,7 +143,7 @@ test("a test notification reaches every device and drops gone subscriptions", as
   assert.equal(summary.sent, 2);
   assert.equal(summary.removed, 1);
   assert.equal(store.subscriptionCount(), 2);
-  assert.equal(sender.sent[0]?.message.title, "Reach test");
+  assert.equal(sender.sent[0]?.message.title, "Walkie-Talkie test");
 });
 
 test("resubscribing the same endpoint reports a replacement", () => {
