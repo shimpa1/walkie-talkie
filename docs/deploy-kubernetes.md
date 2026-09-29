@@ -238,7 +238,8 @@ agents:
 A provider sets `apiKeyEnv` (an environment-variable name, rendered as
 opencode's `{env:NAME}`), or neither for a built-in models.dev provider or a
 local server that needs no key. `models` is a map of model id to its config,
-and `options` is passed through verbatim for provider-specific fields.
+and `options` is passed through for provider-specific fields except `apiKey`,
+which the chart rejects; declare the key with `apiKeyEnv` instead.
 `agents.providers` renders only to the opencode harness config, so declaring a
 catalog requires `opencode` in `agents.harnesses`; firstmate can dispatch
 opencode crewmates from any primary harness, so the catalog is useful either

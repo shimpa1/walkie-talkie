@@ -74,6 +74,9 @@
 {{- end -}}
 {{- end -}}
 {{- $defaults := $dispatch.default -}}
+{{- if and (hasKey $dispatch "default") (eq (len (default (list) $defaults)) 0) -}}
+{{- fail "agents.dispatch.default must be a profile object or non-empty profile array" -}}
+{{- end -}}
 {{- if kindIs "map" $defaults -}}
 {{- $defaults = list $defaults -}}
 {{- end -}}

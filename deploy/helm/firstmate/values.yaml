@@ -287,7 +287,8 @@ agents:
   #              provider that needs no key (a local OpenAI-compatible server)
   #              omits it.
   #   models   map of model id to model config (name and any provider fields)
-  #   options  extra provider options passed through verbatim
+  #   options  extra provider options passed through, except `apiKey`; declare
+  #              the key with apiKeyEnv instead
   providers: []
   #  - id: deepseek
   #    apiKeyEnv: DEEPSEEK_API_KEY

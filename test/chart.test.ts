@@ -180,6 +180,22 @@ test("a dispatch profile naming an undeclared harness fails the render", { skip:
   assert.match(rendered.stderr, /harness "claude" is not declared/);
 });
 
+test("an explicitly empty dispatch default fails the render", { skip: skipHelm }, () => {
+  const file = valuesFile({
+    agents: {
+      enabled: true,
+      harnesses: [{ name: "opencode" }],
+      dispatch: { default: [] },
+    },
+  });
+  const rendered = render(["-f", file]);
+  assert.notEqual(rendered.status, 0);
+  assert.match(
+    rendered.stderr,
+    /agents\.dispatch\.default must be a profile object or non-empty profile array/,
+  );
+});
+
 test("a single dispatch profile object is accepted", { skip: skipHelm }, () => {
   const file = valuesFile({
     agents: {
