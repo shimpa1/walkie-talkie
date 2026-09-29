@@ -37,15 +37,16 @@ firstmate:
   herdrSession: firstmate
 
   # Command that starts firstmate's primary harness inside the herdr session at
-  # container start. The entrypoint runs it in the firstmate home, in the
-  # session's primary workspace pane, so the pod runs a live firstmate that
-  # drains queued instructions rather than only the herdr server. The default
-  # matches the runtime image's default harness (opencode) and auto-approves its
-  # tool calls, which an unattended primary needs; override it for another
-  # harness or a different posture. Set it empty to run the herdr server only
-  # and start the harness yourself after attaching. Harness credentials are
-  # passed to it through `credentials.create.harness` (or an existing Secret),
-  # which become environment variables in this container.
+  # container start. The entrypoint supervises it and starts it again in the
+  # same pane when it exits, so the pod runs a live firstmate that drains queued
+  # instructions rather than only the herdr server. The default matches the
+  # runtime image's default harness (opencode) and auto-approves its tool calls,
+  # which an unattended primary needs; override it for another harness or a
+  # different posture. Set it empty to run the herdr server only and start the
+  # harness yourself after attaching. Harness credentials are passed to it
+  # through `credentials.create.harness` (or an existing Secret), which become
+  # environment variables in this container; `extraEnvFrom` can also inject a
+  # Secret/ConfigMap directly.
   harnessCommand: >-
     OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode
 

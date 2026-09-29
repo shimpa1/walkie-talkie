@@ -9,10 +9,18 @@
 #     --set credentials.create.githubToken=github_pat_xxx \
 #     --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx
 #
-# The harness credentials become environment variables in the firstmate
-# container, where the primary harness reads them. The runtime image's default
-# harness is opencode, which reads DEEPSEEK_API_KEY / OPENROUTER_API_KEY; a
-# Claude harness reads ANTHROPIC_API_KEY instead.
+# The harness credentials become plain environment variables in the firstmate
+# container, where the primary harness reads them. They are just env vars, so
+# any secret source works: pass them with --set as above (the chart creates the
+# Secret), or point `credentials.existingSecret` at a Secret managed by
+# External Secrets, sealed-secrets, a cloud secret manager, the Doppler
+# operator, and so on. See docs/deploy-kubernetes.md "Credentials". The runtime
+# image's default harness is opencode, which reads DEEPSEEK_API_KEY /
+# OPENROUTER_API_KEY; a Claude harness reads ANTHROPIC_API_KEY instead.
+#
+# The runtime starts the primary harness in the herdr session and restarts it
+# in the same pane if it exits, so the pod keeps a live firstmate draining
+# queued instructions.
 
 # Images. Build and push these to a registry the cluster can pull from, then
 # replace the repositories (the defaults are local build names).
@@ -70,7 +78,9 @@ certificate:
 
 credentials:
   # Either point at an existing Secret (recommended) or let the chart create
-  # one. For a GitOps setup, prefer an existing Secret managed outside Helm.
+  # one. For a GitOps setup, any external secret operator works: create the
+  # Secret with it and set `existingSecret` to its name. An optional Doppler
+  # example is in examples/doppler-secret.yaml.
   existingSecret: ""
   create:
     walkieTalkieToken: ""

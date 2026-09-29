@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Exercise deploy/kubernetes/firstmate/entrypoint.sh against a fake herdr so the
-# harness-start and credential-environment paths are verified without a cluster
-# and without driving any real Herdr lifecycle. Prints "ok" on success.
+# harness-start, harness-supervision, and credential-environment paths are
+# verified without a cluster and without driving any real Herdr lifecycle.
+# Prints "ok" on success.
 #
 # Usage: bash deploy/kubernetes/firstmate/entrypoint.test.sh
 set -euo pipefail
@@ -36,6 +37,7 @@ FAKE_BIN="$TMP/bin"
 HERDR_LOG="$TMP/herdr.log"
 PANE_LOG="$TMP/pane.log"
 SERVER_ENV="$TMP/server.env"
+FORCE_DEAD="$TMP/force-dead"
 : > "$HERDR_LOG"
 : > "$PANE_LOG"
 
@@ -53,7 +55,11 @@ case "${args[0]:-} ${args[1]:-}" in
     printf '{"client":{"version":"0.9.0","protocol":22},"server":{"running":true,"protocol":22,"compatible":true}}\n'
     ;;
   "workspace list")
-    printf '{"result":{"workspaces":[]}}\n'
+    if grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
+      printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
+    else
+      printf '{"result":{"workspaces":[]}}\n'
+    fi
     ;;
   "workspace create")
     printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n'
@@ -62,7 +68,14 @@ case "${args[0]:-} ${args[1]:-}" in
     printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n'
     ;;
   "agent get")
-    printf '{"error":{"code":"agent_not_found","message":"no agent"}}\n'
+    # A live harness only while a pane_run has happened and the test has not
+    # forced it dead; forcing it dead simulates the harness exiting.
+    if [ -e "${FAKE_HERDR_FORCE_DEAD:-/nonexistent}" ] \
+      || ! grep -q '^pane_run ' "${FAKE_HERDR_PANE_LOG:?}" 2>/dev/null; then
+      printf '{"error":{"code":"agent_not_found","message":"no agent"}}\n'
+    else
+      printf '{"result":{"agent":{"agent":"opencode","agent_status":"idle"}}}\n'
+    fi
     ;;
   "pane run")
     printf 'pane_run pane=%s command=%s\n' "${args[2]:-}" "${args[3]:-}" >> "${FAKE_HERDR_PANE_LOG:?}"
@@ -85,10 +98,12 @@ PATH="$FAKE_BIN:$PATH" \
   FM_HOME="$HOME_DIR" \
   HERDR_SESSION=firstmate \
   FM_HARNESS_COMMAND="$HARNESS_CMD" \
+  FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
   DEEPSEEK_API_KEY=test-deepseek-key \
   FAKE_HERDR_LOG="$HERDR_LOG" \
   FAKE_HERDR_PANE_LOG="$PANE_LOG" \
   FAKE_HERDR_SERVER_ENV="$SERVER_ENV" \
+  FAKE_HERDR_FORCE_DEAD="$FORCE_DEAD" \
   bash "$ENTRYPOINT" &
 EP_PID=$!
 
@@ -110,5 +125,23 @@ grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \
   || fail "harness credentials did not reach the herdr server environment"
+
+# A registered live harness is present after the first pane_run, so the
+# supervisor must not type a duplicate command over it.
+sleep 0.8
+live_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
+[ "$live_runs" -eq 1 ] \
+  || fail "supervisor started $live_runs harnesses while one was already live"
+
+# Simulate the harness exiting and assert the supervisor starts it again.
+: > "$FORCE_DEAD"
+for _ in $(seq 1 100); do
+  [ "$(grep -c '^pane_run pane=' "$PANE_LOG" || true)" -ge 2 ] && break
+  kill -0 "$EP_PID" 2>/dev/null || break
+  sleep 0.1
+done
+restarted_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
+[ "$restarted_runs" -ge 2 ] \
+  || fail "supervisor did not restart the primary harness after it exited"
 
 echo "ok"

@@ -48,6 +48,7 @@ The two containers share the home volume:
 - **firstmate** — the runtime, on the `herdr` backend, running the herdr
   headless server for a named session and starting firstmate's primary harness
   inside it, so the pod runs a live firstmate that drains queued instructions.
+  A supervisor starts the harness again in the same pane when it exits.
 - **walkie-talkie** — the PWA + API on the configured port, invoking firstmate
   only through its own `bin/` scripts.
 
@@ -113,11 +114,29 @@ Then set `firstmate.image.repository`/`tag` and
 
 ## Credentials
 
-Every credential reaches a container through a Secret with `secretKeyRef`; none
-is inlined into the pod spec. There are two modes.
+Every credential reaches a container through a Secret; none is inlined into the
+pod spec. The harness only ever reads plain environment variables, so **any
+secret source works** — a plain `kubectl` Secret, External Secrets,
+sealed-secrets, a cloud secret manager, the Doppler operator, and so on. There
+are two ways to get those variables into the firstmate container.
 
-**Existing Secret (recommended for GitOps).** Create the Secret yourself and
-point the chart at it:
+**Chart-created Secret (default).** Leave `existingSecret` empty and pass the
+values:
+
+```sh
+helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
+  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
+  --set credentials.create.githubToken="github_pat_xxx" \
+  --set credentials.create.harness.DEEPSEEK_API_KEY="sk-xxx"
+```
+
+Each `credentials.create.harness` entry becomes an environment variable in the
+firstmate container: the key is the variable name and the value is its value.
+The default opencode harness reads `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`; a
+Claude harness reads `ANTHROPIC_API_KEY`.
+
+**Secret managed elsewhere (recommended for GitOps).** Create the Secret with
+whatever tool you already use and point the chart at it:
 
 ```sh
 kubectl -n <namespace> create secret generic firstmate-credentials \
@@ -137,21 +156,31 @@ credentials:
 ```
 
 Each `keys.harness` entry maps an environment-variable name in the firstmate
-container to a key in the Secret. The examples use `DEEPSEEK_API_KEY` for the
-default opencode harness; use `OPENROUTER_API_KEY` instead, or
-`ANTHROPIC_API_KEY` for a Claude harness.
+container to a key in the Secret. With `credentials.existingSecret` set the
+chart creates no Secret. If your Secret has no GitHub key, set
+`credentials.githubTokenEnabled: false`.
 
-With `credentials.existingSecret` set the chart creates no Secret. If your
-Secret has no GitHub key, set `credentials.githubTokenEnabled: false`.
+If you would rather inject the whole Secret than map keys, use
+`firstmate.extraEnvFrom` (a raw `envFrom` reference, so it is not covered by the
+reserved-name guard below):
 
-**Chart-created Secret.** Leave `existingSecret` empty and pass the values:
-
-```sh
-helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
-  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
-  --set credentials.create.githubToken="github_pat_xxx" \
-  --set credentials.create.harness.DEEPSEEK_API_KEY="sk-xxx"
+```yaml
+firstmate:
+  extraEnvFrom:
+    - secretRef:
+        name: firstmate-credentials
 ```
+
+**Optional example: the Doppler operator.** This is one optional secret source,
+for clusters that already run [Doppler's Kubernetes
+operator](https://docs.doppler.com/docs/kubernetes-operator) — nothing here
+requires Doppler, and the plain Secret paths above are the default. The example
+manifest
+[`examples/doppler-secret.yaml`](../deploy/helm/firstmate/examples/doppler-secret.yaml)
+syncs a Doppler config into a Kubernetes Secret; fill in its placeholders and
+apply it, then point the chart at the Secret it manages with
+`credentials.existingSecret` (or `firstmate.extraEnvFrom`). It never contains a
+token itself: the operator reads its token from a separate Kubernetes Secret.
 
 If you omit the walkie-talkie token, the chart generates one and prints it in
 the release notes. Set it explicitly for a token you control. Do not commit
@@ -159,13 +188,17 @@ real tokens to a values file.
 
 The firstmate container starts its primary harness inside the herdr session at
 container start, from `firstmate.harnessCommand` (default
-`OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode`). The harness
-runs in the firstmate home with the container's environment, so the harness
-credentials above are exactly the provider credentials it reads. The default
-auto-approves opencode's tool calls because the primary runs unattended; set
-`firstmate.harnessCommand` to another command for a different harness or
-posture, or to `""` to run the herdr server only and start the harness yourself
-after attaching.
+`OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode`), and keeps it
+running: the entrypoint supervises the harness and starts it again in the same
+pane whenever it exits (a bad or missing credential, a crash, a quit, an
+auto-update restart), so the pod keeps a live firstmate draining queued
+instructions instead of only the herdr server. The harness runs in the firstmate
+home with the container's environment, so the harness credentials above are
+exactly the provider credentials it reads. The default auto-approves opencode's
+tool calls because the primary runs unattended; set `firstmate.harnessCommand`
+to another command for a different harness or posture, or to `""` to run the
+herdr server only and start the harness yourself after attaching (the supervisor
+is not started when the command is empty).
 
 Once created, the walkie-talkie token, GitHub token, and harness credentials are
 preserved across upgrades: you do not need to re-pass them on `helm upgrade`.
@@ -201,7 +234,8 @@ The walkie-talkie pod is ready once `/api/health` reports firstmate ready.
 ## Attach to firstmate
 
 The firstmate container runs a headless herdr server for the configured named
-session and starts firstmate's primary harness inside it. Attach to it:
+session and starts firstmate's primary harness inside it, restarting it in the
+same pane if it exits. Attach to it:
 
 ```sh
 kubectl -n firstmate exec -it firstmate-0 -c firstmate -- \
@@ -220,7 +254,7 @@ workspace, so an attach lands on a live firstmate rather than an empty server.
 | `firstmate.image.repository` / `.tag` | `firstmate-runtime` / chart version | Runtime image. |
 | `firstmate.home` | `/home/firstmate` | Absolute container path of the firstmate home; also the volume mount and `FM_HOME`. |
 | `firstmate.herdrSession` | `firstmate` | Named herdr session (`HERDR_SESSION`). |
-| `firstmate.harnessCommand` | `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode` | Command that starts the primary harness in the herdr session at container start; `""` runs the server only. |
+| `firstmate.harnessCommand` | `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode` | Command that starts the primary harness in the herdr session at container start; the entrypoint restarts it when it exits; `""` runs the server only. |
 | `walkieTalkie.image.repository` / `.tag` | `walkie-talkie` / chart version | Companion image. |
 | `walkieTalkie.port` | `8787` | Walkie-talkie port inside the container. |
 | `persistence.storageClass` | `""` (cluster default) | StorageClass for the home claim; `beta3` in the atus example. |
@@ -361,15 +395,16 @@ CRDs installed.
 
 The firstmate runtime image builds and its entrypoint seeds the home correctly
 (the seeding path and tool set were exercised in the image). The harness-start
-path is exercised without a cluster and without driving any real Herdr
-lifecycle, using a fake `herdr` on `PATH`:
+and harness-supervision paths are exercised without a cluster and without
+driving any real Herdr lifecycle, using a fake `herdr` on `PATH`:
 
 ```sh
 bash deploy/kubernetes/firstmate/entrypoint.test.sh
 ```
 
 It asserts that the entrypoint creates the primary workspace, starts
-`firstmate.harnessCommand` in that workspace's pane, and that harness
+`firstmate.harnessCommand` in that workspace's pane, leaves a live harness
+alone, starts it again when the fake reports it exited, and that harness
 credentials reach both the herdr server environment and the pane call. Starting
 a real herdr server, session, or harness is a cluster/runtime concern and is not
 driven here.
@@ -393,9 +428,12 @@ host.
   logs include `starting herdr server for session '<name>'`; the session name
   is `firstmate.herdrSession`.
 - **Attach shows an empty server (no harness).** Confirm the logs include
-  `starting primary harness in`; a failure there is logged as a warning and the
-  server keeps running, so start the harness by hand after attaching. Check
-  that `firstmate.harnessCommand` names a harness the image installed.
+  `starting primary harness in`. The entrypoint supervises the harness and
+  restarts it when it exits, logging `primary harness is not running` each time,
+  so an empty pane that stays empty means `firstmate.harnessCommand` names a
+  harness the image did not install or it exits immediately on every attempt;
+  check the repeated restart lines and start a working harness by hand after
+  attaching.
 - **Route not serving.** Check the HTTPRoute status and that its `parentRefs`
   name and namespace match your Gateway and `sectionName` matches a listener
   whose hostname covers `httpRoute.hostnames`.

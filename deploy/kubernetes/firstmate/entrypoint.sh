@@ -5,8 +5,11 @@
 # explicit, starts the herdr headless server for the configured named session,
 # and then starts firstmate's primary harness inside that session so the pod
 # runs a live firstmate that drains queued instructions instead of only the
-# server. The server stays in the foreground, so the session stays attachable
-# with `herdr session attach <session>`.
+# server. A supervisor keeps the harness running: `herdr pane run` returns as
+# soon as the command is typed, so a harness that exits (a bad credential, a
+# crash, a quit, an auto-update restart) is started again in the same pane. The
+# server stays in the foreground, so the session stays attachable with
+# `herdr session attach <session>`.
 set -euo pipefail
 
 HOME_DIR="${FM_HOME:-/home/firstmate}"
@@ -22,7 +25,12 @@ HARNESS_CMD="${FM_HARNESS_COMMAND:-}"
 # fm_backend_herdr_workspace_label). Reusing it keeps the primary harness in
 # the same workspace firstmate later places its crewmate tabs in.
 WORKSPACE_LABEL="firstmate"
+# Seconds between supervisor liveness checks. Overridable for the entrypoint
+# test; the production default trades a short detection delay for one cheap
+# read-only `agent get` per interval.
+HARNESS_CHECK_INTERVAL="${FM_HARNESS_SUPERVISION_INTERVAL:-5}"
 SERVER_PID=
+SUPERVISOR_PID=
 
 log() { printf 'firstmate-entrypoint: %s\n' "$*" >&2; }
 
@@ -39,6 +47,9 @@ herdr_server_running() {
 }
 
 shutdown() {
+  if [ -n "$SUPERVISOR_PID" ] && kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+    kill -TERM "$SUPERVISOR_PID" 2>/dev/null || true
+  fi
   if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill -TERM "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -110,6 +121,36 @@ start_primary_harness() {
   fi
 }
 
+# True when the home workspace's pane has a registered live harness. Resolves
+# the workspace and pane fresh each call so a pane recreated by a restart is
+# picked up.
+herdr_home_harness_live() {
+  local wsid pane
+  wsid=$(herdr_workspace_id) || return 1
+  [ -n "$wsid" ] || return 1
+  pane=$(herdr_workspace_pane "$wsid") || return 1
+  [ -n "$pane" ] || return 1
+  herdr_pane_has_agent "$pane"
+}
+
+# Keep the primary harness running for as long as the server is. `herdr pane
+# run` returns once the command is typed, so without this an opencode that
+# exits immediately (a bad or missing credential) or later (a crash, a quit, an
+# auto-update restart) would leave the server up, the pod Ready, and queued
+# instructions pending. Each interval it checks the home pane and starts the
+# harness again when nothing is registered there.
+supervise_primary_harness() {
+  while kill -0 "$SERVER_PID" 2>/dev/null; do
+    sleep "$HARNESS_CHECK_INTERVAL"
+    kill -0 "$SERVER_PID" 2>/dev/null || return 0
+    herdr_server_running || return 0
+    herdr_home_harness_live && continue
+    log "primary harness is not running in session '$SESSION'; starting it again"
+    start_primary_harness \
+      || log "warning: failed to start the primary harness again"
+  done
+}
+
 # 1. Seed the persistent home on first start. A home that already carries the
 #    distro (from a previous run or a migration) is left untouched.
 if [ ! -e "$HOME_DIR/bin/fm-inbox.sh" ]; then
@@ -159,14 +200,17 @@ if ! herdr_server_running; then
   exit 1
 fi
 
-# 4. Start firstmate's primary harness inside the session. The server passes
-#    its startup environment to every pane it creates, so the harness inherits
-#    this container's environment, including the harness credentials the chart
-#    mounted. A failure to start is not fatal: the session stays attachable and
-#    an operator can start the harness by hand.
+# 4. Start firstmate's primary harness inside the session and supervise it. The
+#    server passes its startup environment to every pane it creates, so the
+#    harness inherits this container's environment, including the harness
+#    credentials the chart mounted. A failure to start is not fatal: the session
+#    stays attachable, the supervisor keeps retrying, and an operator can start
+#    the harness by hand.
 if [ -n "$HARNESS_CMD" ]; then
   start_primary_harness \
-    || log "warning: the primary harness did not start; attach to '$SESSION' and start it manually"
+    || log "warning: the primary harness did not start; the supervisor will keep trying and you can attach to '$SESSION' and start it manually"
+  supervise_primary_harness &
+  SUPERVISOR_PID=$!
 else
   log "FM_HARNESS_COMMAND is empty; running the herdr server without a harness"
 fi
