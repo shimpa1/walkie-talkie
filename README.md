@@ -371,7 +371,14 @@ instruction textarea. Release to stop. The browser ends each recognition
 session at a pause in speech; while the button is still held, the app starts a
 new session right away and appends to the same dictation, so a pause never ends
 capture and later sentences are not dropped. A final result that repeats text
-already captured in the same session is not added twice.
+already captured in the same session is not added twice. Silence while the
+button is held is not an error; capture simply keeps waiting.
+
+Releasing the button (or pressing **Queue instruction** while dictating) seals
+the dictation: whatever is on screen at that moment, including words the
+browser had not yet finalized, stays in the textarea, and any recognition
+result that arrives afterwards is ignored. A late result can never rewrite the
+composer after the instruction has been sent.
 
 The composed text then goes out through the same `POST /api/note` path as typing:
 voice is only an input method for the note, not a second write path. The app
@@ -381,7 +388,7 @@ Web Speech API.
 
 The control is hidden when the browser has no Web Speech API, so it never
 breaks the composer. A listening state and short messages for the common
-failures (`not-allowed`, `no-speech`, `audio-capture`) appear next to the send
+failures (`not-allowed`, `audio-capture`, `network`) appear next to the send
 button.
 
 Browser support is uneven. Chrome, Edge, and Safari (desktop and iOS) ship the

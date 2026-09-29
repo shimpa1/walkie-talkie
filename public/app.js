@@ -7,6 +7,7 @@ const state = {
   pendingRequestId: null,
   pendingRequestText: null,
   status: null,
+  voice: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -199,6 +200,7 @@ function showReceipt(receipt) {
 
 async function submitNote(event) {
   event.preventDefault();
+  if (state.voice) state.voice.stop();
   const text = $("note-text").value.trim();
   if (!text) return;
   if (!state.pendingRequestId || state.pendingRequestText !== text) {
@@ -253,6 +255,7 @@ function initVoice() {
       else status.textContent = "";
     },
   });
+  state.voice = voice;
 
   const begin = (event) => {
     event.preventDefault();

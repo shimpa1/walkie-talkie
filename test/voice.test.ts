@@ -72,6 +72,7 @@ interface Recorder {
   voice: VoiceInput;
   recognition: FakeRecognition;
   text: () => string;
+  setText: (value: string) => void;
   states: Array<[VoiceState, string]>;
 }
 
@@ -88,7 +89,15 @@ async function recorder(options: { initialText?: string; recognition?: FakeRecog
     },
     onState: (state: VoiceState, message: string) => states.push([state, message]),
   });
-  return { voice, recognition, text: () => text, states };
+  return {
+    voice,
+    recognition,
+    text: () => text,
+    setText: (value: string) => {
+      text = value;
+    },
+    states,
+  };
 }
 
 test("speechRecognitionCtor detects the Web Speech API and its webkit alias", async () => {
@@ -264,42 +273,35 @@ test("microphone and speech errors surface a short message and keep final text",
   }
 });
 
-test("errors after release report no-speech and treat aborted as idle", async () => {
-  const cases: Array<[string, VoiceState, RegExp]> = [
-    ["no-speech", "error", /hear/i],
-    ["aborted", "idle", /^$/],
-  ];
+test("release keeps interim speech and ignores late recognition events", async () => {
+  const rec = await recorder({ initialText: "note" });
+  rec.voice.start();
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate", final: false }]));
 
-  for (const [code, expected, pattern] of cases) {
-    const rec = await recorder();
-    rec.recognition.stop = () => {
-      rec.recognition.stopped = true;
-    };
-    rec.voice.start();
-    rec.voice.stop();
-    assert.equal(rec.voice.isListening(), true);
-    rec.recognition.onerror?.({ error: code });
-    rec.recognition.onend?.();
-    assert.equal(rec.states.at(-1)?.[0], expected);
-    assert.match(String(rec.states.at(-1)?.[1]), pattern);
-    assert.equal(rec.voice.isListening(), false);
-  }
+  rec.voice.stop();
+  assert.equal(rec.voice.isListening(), false);
+  assert.equal(rec.text(), "note check the west gate");
+  assert.equal(rec.states.at(-1)?.[0], "idle");
+
+  const stateCount = rec.states.length;
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate now", final: true }]));
+  rec.recognition.onerror?.({ error: "network" });
+  rec.recognition.onend?.();
+  assert.equal(rec.text(), "note check the west gate");
+  assert.equal(rec.states.length, stateCount);
 });
 
-test("pressing again before the stopped session ends keeps the same dictation", async () => {
-  const rec = await recorder({ initialText: "note" });
-  rec.recognition.stop = () => {
-    rec.recognition.stopped = true;
-  };
+test("interim speech survives a pause that restarts recognition while held", async () => {
+  const rec = await recorder();
   rec.voice.start();
-  rec.recognition.onresult?.(transcriptEvent([{ transcript: "one", final: false }]));
-  rec.voice.stop();
-  assert.equal(rec.voice.start(), true);
-  rec.recognition.onresult?.(transcriptEvent([{ transcript: "one", final: true }]));
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the", final: false }]));
   rec.recognition.onend?.();
-  rec.recognition.onresult?.(transcriptEvent([{ transcript: "two", final: true }]));
   assert.equal(rec.voice.isListening(), true);
-  assert.equal(rec.text(), "note one two");
+  assert.equal(rec.text(), "check the");
+
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "west gate", final: true }]));
+  rec.voice.stop();
+  assert.equal(rec.text(), "check the west gate");
 });
 
 test("a recognition that fails to construct reports an error and does not throw", async () => {
@@ -363,13 +365,13 @@ test("voice input never writes anywhere but the composer text", async () => {
   }
 });
 
-test("spoken text is queued through the existing /api/note path", async () => {
+test("dictated text is queued through /api/note and late results cannot refill the composer", async () => {
   const rec = await recorder();
   rec.voice.start();
-  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate", final: true }]));
-  rec.recognition.onend?.();
-  const text = rec.text();
-  assert.equal(text, "check the west gate");
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate", final: false }]));
+
+  rec.voice.stop();
+  const text = rec.text().trim();
 
   const server = await startTestServer({ token: "t" });
   try {
@@ -384,4 +386,9 @@ test("spoken text is queued through the existing /api/note path", async () => {
   } finally {
     await server.close();
   }
+
+  rec.setText("");
+  rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate", final: true }]));
+  rec.recognition.onend?.();
+  assert.equal(rec.text(), "");
 });

@@ -2,7 +2,6 @@ const ERROR_MESSAGES = {
   "not-allowed": "Microphone access is blocked. Allow it in your browser, or type your instruction.",
   "service-not-allowed": "Speech recognition is blocked. Allow it in your browser, or type your instruction.",
   "audio-capture": "No microphone was found. Check your device and try again, or type your instruction.",
-  "no-speech": "I did not hear anything. Try again, or type your instruction.",
   network: "Speech recognition needs a network connection. Try again, or type your instruction.",
 };
 
@@ -62,6 +61,7 @@ export function createVoiceInput(options) {
   let baseText = "";
   let committedText = "";
   let sessionText = "";
+  let sessionInterim = "";
 
   function emit(state, message) {
     onState(state, message || "");
@@ -72,8 +72,9 @@ export function createVoiceInput(options) {
   }
 
   function foldSession() {
-    committedText = appendChunk(committedText, sessionText);
+    committedText = appendChunk(appendChunk(committedText, sessionText), sessionInterim);
     sessionText = "";
+    sessionInterim = "";
   }
 
   function finish(state, message) {
@@ -97,28 +98,21 @@ export function createVoiceInput(options) {
       else interimText = appendChunk(interimText, chunk);
     }
     sessionText = finalText;
+    sessionInterim = interimText;
     setText(composeText(baseText, appendChunk(committedText, sessionText), interimText));
   }
 
   function handleError(recognition, event) {
     if (recognition !== active) return;
     const code = event && event.error ? String(event.error) : "unknown";
-    if (held && (code === "no-speech" || code === "aborted")) return;
-    if (code === "aborted") {
-      finish("idle", "");
-      return;
-    }
+    if (code === "no-speech" || code === "aborted") return;
     finish("error", ERROR_MESSAGES[code] || `Voice input failed (${code}). Type your instruction instead.`);
   }
 
   function handleEnd(recognition) {
     if (recognition !== active) return;
     foldSession();
-    if (held) {
-      listen();
-      return;
-    }
-    finish("idle", "");
+    listen();
   }
 
   function listen() {
@@ -150,10 +144,10 @@ export function createVoiceInput(options) {
   function start() {
     if (held) return true;
     held = true;
-    if (active) return true;
     baseText = typeof getText() === "string" ? getText() : "";
     committedText = "";
     sessionText = "";
+    sessionInterim = "";
     listen();
     if (!held) return false;
     emit("listening", "");
@@ -161,22 +155,18 @@ export function createVoiceInput(options) {
   }
 
   function stop() {
-    held = false;
-    if (!active) return;
+    if (!held) return;
     const recognition = active;
+    finish("idle", "");
     try {
-      recognition.stop();
+      recognition.abort();
     } catch {
-      try {
-        recognition.abort();
-      } catch {
-        if (recognition === active) finish("idle", "");
-      }
+      return;
     }
   }
 
   function isListening() {
-    return held || active !== null;
+    return held;
   }
 
   return { start, stop, isListening };
