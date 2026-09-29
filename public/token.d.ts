@@ -5,6 +5,8 @@ export const UNAUTHORIZED_MESSAGE: string;
 
 export function normalizeToken(value: unknown): string;
 
+export function tokenSuffix(value: unknown): string;
+
 export interface TokenStorage {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
@@ -36,7 +38,7 @@ export interface ApiResponseLike {
 export interface CreateApiOptions {
   fetch?: (path: string, init?: RequestInit) => Promise<ApiResponseLike>;
   getToken?: () => string;
-  onUnauthorized?: (response: ApiResponseLike) => void;
+  onUnauthorized?: (response: ApiResponseLike, token: string) => void;
 }
 
 export function createApi(

@@ -3,6 +3,7 @@ import {
   createApi,
   forgetToken,
   readToken,
+  tokenSuffix,
   UNAUTHORIZED_MESSAGE,
   writeToken,
 } from "./token.js";
@@ -29,7 +30,8 @@ function setBanner(message, kind) {
   banner.textContent = message;
 }
 
-function handleUnauthorized() {
+function handleUnauthorized(_response, token) {
+  if (token !== state.token) return;
   setBanner(UNAUTHORIZED_MESSAGE, "bad");
   if (!state.token) {
     showView("settings");
@@ -461,7 +463,8 @@ let tokenSaveTimer = null;
 
 function setSettingsStatus(message, kind) {
   const status = $("settings-status");
-  status.textContent = message;
+  const suffix = tokenSuffix(state.token);
+  status.textContent = suffix ? `${message} - ${suffix}` : message;
   status.className = `hint ${kind || ""}`;
 }
 
@@ -479,11 +482,14 @@ function scheduleTokenPersist() {
 }
 
 async function verifyToken() {
+  const token = state.token;
   setSettingsStatus("Checking…", "");
   try {
     await api("/api/status");
+    if (state.token !== token) return;
     setSettingsStatus("Token accepted", "ok");
   } catch (error) {
+    if (state.token !== token) return;
     if (error && error.status === 401) setSettingsStatus("Token rejected", "bad");
     else setSettingsStatus(`Could not verify token: ${error.message}`, "bad");
   }

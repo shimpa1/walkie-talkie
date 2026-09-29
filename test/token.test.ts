@@ -36,7 +36,7 @@ interface ApiClient {
 interface CreateApiOptions {
   fetch?: FetchLike;
   getToken?: () => string;
-  onUnauthorized?: (response: ResponseLike) => void;
+  onUnauthorized?: (response: ResponseLike, token: string) => void;
 }
 
 interface TokenModule {
@@ -44,6 +44,7 @@ interface TokenModule {
   LEGACY_TOKEN_KEY: string;
   UNAUTHORIZED_MESSAGE: string;
   normalizeToken: (value: unknown) => string;
+  tokenSuffix: (value: unknown) => string;
   readToken: (storage: TokenStorageLike) => string;
   writeToken: (storage: TokenStorageLike, value: string) => string;
   forgetToken: (storage: TokenStorageLike) => void;
@@ -95,6 +96,30 @@ test("a token entered in Settings is stored trimmed and survives a reload", asyn
   assert.equal(storage.getItem(TOKEN_KEY), "secret-token");
   assert.equal(readToken(storage), "secret-token");
   assert.equal(readToken(new MemoryStorage()), "");
+});
+
+test("stored tokens drop all whitespace and a single trailing percent sign", async () => {
+  const { normalizeToken, writeToken, readToken } = await loadToken();
+  const storage = new MemoryStorage();
+
+  assert.equal(normalizeToken("  sec ret%  "), "secret");
+  assert.equal(normalizeToken("token%%"), "token%");
+  assert.equal(normalizeToken("%"), "");
+  assert.equal(normalizeToken(null), "");
+
+  assert.equal(writeToken(storage, " secret% "), "secret");
+  assert.equal(readToken(storage), "secret");
+});
+
+test("tokenSuffix shows the last four characters only when a token is stored", async () => {
+  const { tokenSuffix } = await loadToken();
+
+  assert.equal(tokenSuffix("token-abcd"), "...abcd");
+  assert.equal(tokenSuffix("  token-abcd%  "), "...abcd");
+  assert.equal(tokenSuffix("abc"), "...abc");
+  assert.equal(tokenSuffix(""), "");
+  assert.equal(tokenSuffix("   "), "");
+  assert.equal(tokenSuffix(null), "");
 });
 
 test("storing an empty token forgets it instead of keeping a blank credential", async () => {
@@ -158,6 +183,24 @@ test("a 401 reports the Settings guidance and drives the unauthorized hook", asy
     return true;
   });
   assert.equal(unauthorized, 1);
+});
+
+test("the unauthorized hook receives the token the request actually used", async () => {
+  const { createApi } = await loadToken();
+  let seen: string | null = null;
+  const api = createApi({
+    fetch: async () => jsonResponse(401, { error: "unauthorized" }),
+    getToken: () => "request-token",
+    onUnauthorized: (_response, token) => {
+      seen = token;
+    },
+  });
+
+  await assert.rejects(api("/api/status"), (error: unknown) => {
+    assert.equal((error as ApiErrorLike).status, 401);
+    return true;
+  });
+  assert.equal(seen, "request-token");
 });
 
 test("a non-401 failure keeps the server's own message and status", async () => {

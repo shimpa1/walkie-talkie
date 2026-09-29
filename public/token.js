@@ -5,7 +5,14 @@ export const UNAUTHORIZED_MESSAGE =
   "Unauthorized - your token is missing or wrong; set it in Settings";
 
 export function normalizeToken(value) {
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value !== "string") return "";
+  const token = value.replace(/\s+/g, "");
+  return token.endsWith("%") ? token.slice(0, -1) : token;
+}
+
+export function tokenSuffix(value) {
+  const token = normalizeToken(value);
+  return token ? `...${token.slice(-4)}` : "";
 }
 
 export function readToken(storage) {
@@ -69,7 +76,8 @@ export function createApi(options) {
 
   return async function api(path, init) {
     const requestInit = Object.assign({}, init || {});
-    requestInit.headers = authHeaders(getToken(), requestInit.headers);
+    const token = getToken();
+    requestInit.headers = authHeaders(token, requestInit.headers);
     const response = await fetchImpl(path, requestInit);
     const text = await response.text();
     let body = null;
@@ -79,7 +87,7 @@ export function createApi(options) {
       body = null;
     }
     if (response.status === 401) {
-      onUnauthorized(response);
+      onUnauthorized(response, token);
       throw new ApiError(UNAUTHORIZED_MESSAGE, 401);
     }
     if (!response.ok) {
