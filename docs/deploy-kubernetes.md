@@ -95,7 +95,10 @@ have them:
   provider credentials your primary harness reads from the environment — for
   the default opencode harness `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`, for
   a Claude harness `ANTHROPIC_API_KEY`. The chart passes these to the firstmate
-  container as environment variables.
+  container as environment variables. The GitHub token may instead come from an
+  external secret-manager Secret (for example a Doppler-synced key named
+  `GH_TOKEN`); see
+  [GitHub token from a Doppler-synced Secret](#github-token-from-a-doppler-synced-secret).
 
 ## Build and push the images
 
@@ -117,6 +120,23 @@ shipping silently. The primary harness is installed from `HARNESS_PACKAGES`
 starts that same opencode harness; when you build a different harness, set
 `firstmate.harnessCommand` to match.
 
+The image also bakes the command-line tools a firstmate home expects on `PATH`,
+so the deployed home boots without bootstrap's `MISSING:`-tool diagnostics:
+`no-mistakes` (a pinned, checksum-verified release binary) and the AXI-family
+tools `gh-axi`, `chrome-devtools-axi`, `tasks-axi`, `quota-axi`, and
+`lavish-axi` (pinned npm versions). Their defaults track the floors in the
+pinned firstmate ref's `bin/fm-bootstrap.sh`, so bump `FIRSTMATE_REF` and the
+`*_VERSION` build args together; a tool the floors no longer accept fails
+firstmate's own compatibility probes.
+
+**Staying current is a rebuild-and-roll, not manual drift.** To pick up a newer
+firstmate or tool version: bump `FIRSTMATE_REF` and the `*_VERSION` build args in
+[`deploy/kubernetes/firstmate/Dockerfile`](../deploy/kubernetes/firstmate/Dockerfile),
+verify the patch set still applies, build under a new immutable tag, push it,
+update `firstmate.image.tag` in your values to that tag, and roll the release
+with `helm upgrade`. The image tag must be immutable and build-specific; the
+atus example uses the git commit the image was built from.
+
 The committed patch set currently has one entry,
 `0001-opencode-arm-without-task.patch`: upstream's OpenCode watch-arm plugin
 only armed supervision when a `state/*.meta` task existed or x-mode was set, so
@@ -132,6 +152,12 @@ Override build args for a different harness or to bump the pinned firstmate ref
 docker build \
   --build-arg FIRSTMATE_REF=<40-char-commit> \
   --build-arg HARNESS_PACKAGES="@openai/codex" \
+  --build-arg NO_MISTAKES_VERSION=1.84.0 \
+  --build-arg GH_AXI_VERSION=0.1.35 \
+  --build-arg CHROME_DEVTOOLS_AXI_VERSION=0.1.35 \
+  --build-arg TASKS_AXI_VERSION=0.2.6 \
+  --build-arg QUOTA_AXI_VERSION=0.1.55 \
+  --build-arg LAVISH_AXI_VERSION=0.1.80 \
   -t registry.example.com/firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
 ```
 
@@ -187,6 +213,43 @@ helm upgrade --install firstmate deploy/helm/firstmate -n <namespace> \
 If you omit the walkie-talkie token, the chart generates one and prints it in
 the release notes. Set it explicitly for a token you control. Do not commit
 real tokens to a values file.
+
+**GitHub token from a Doppler-synced Secret.** To keep the GitHub PAT in a
+secret manager rather than the chart's credential Secret, carry it as a key
+named `GH_TOKEN` in a Secret you already sync into the namespace (the atus
+deployment uses the Doppler operator's `firstmate-doppler-secrets`), inject
+that Secret with `firstmate.extraEnvFrom`, map the same key to `GITHUB_TOKEN`
+for tools that read that name, and disable the chart's own GitHub wiring so it
+never sources a token from its credential Secret:
+
+```yaml
+firstmate:
+  extraEnvFrom:
+    - secretRef:
+        name: firstmate-doppler-secrets
+  # optional: true keeps the pod schedulable before the key exists; a missing
+  # token then surfaces as `gh auth status` reporting logged-out, not a
+  # crash-looping pod.
+  extraEnv:
+    - name: GITHUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: firstmate-doppler-secrets
+          key: GH_TOKEN
+          optional: true
+credentials:
+  githubTokenEnabled: false
+```
+
+The exact key to add to the Doppler project is **`GH_TOKEN`**; its value is the
+GitHub PAT, which the operator owns and never commits here. `extraEnvFrom`
+injects it as the environment variable `GH_TOKEN`, which `gh` and `gh-axi`
+read. Verify inside the pod:
+
+```sh
+kubectl -n <namespace> exec <pod> -c firstmate -- gh auth status
+kubectl -n <namespace> exec <pod> -c firstmate -- gh api user --jq .login
+```
 
 The firstmate container starts its primary harness inside the herdr session at
 container start, from `firstmate.harnessCommand` (default
@@ -460,19 +523,20 @@ example is
   as API-key providers, and the self-hosted Qwen on the 3090 box as the
   `local3090` OpenAI-compatible provider (see
   [Agent configuration](#agent-configuration)).
+- Harness credentials and the GitHub token come from the Doppler-synced Secret
+  `firstmate-doppler-secrets` (`firstmate.extraEnvFrom`), not from `--set`. Add
+  the GitHub PAT as the Doppler key `GH_TOKEN` (see
+  [GitHub token from a Doppler-synced Secret](#github-token-from-a-doppler-synced-secret)).
 
 ```sh
 helm upgrade --install firstmate deploy/helm/firstmate \
   --namespace firstmate --create-namespace \
   -f deploy/helm/firstmate/examples/values-atus.yaml \
-  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
-  --set credentials.create.githubToken=github_pat_xxx \
-  --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx \
-  --set credentials.create.harness.OPENROUTER_API_KEY=sk-or-xxx
+  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)"
 ```
 
 That example is a starting point; adjust the host, the listener `sectionName`,
-the images, and the harness credentials (opencode's `DEEPSEEK_API_KEY` /
+the images, and the provider credentials (opencode's `DEEPSEEK_API_KEY` /
 `OPENROUTER_API_KEY`, or `ANTHROPIC_API_KEY` for a Claude harness) for your
 cluster.
 
@@ -530,9 +594,10 @@ kube context that can reach the cluster with the Gateway API and cert-manager
 CRDs installed.
 
 The firstmate runtime image builds and its entrypoint seeds the home correctly
-(the seeding path and tool set were exercised in the image). The harness-start
-and harness-supervision paths are exercised without a cluster and without
-driving any real Herdr lifecycle, using a fake `herdr` on `PATH`:
+(the seeding path was exercised in the image), and the image now carries
+firstmate's expected CLI tools (no-mistakes and the AXI family). The
+harness-start and harness-supervision paths are exercised without a cluster and
+without driving any real Herdr lifecycle, using a fake `herdr` on `PATH`:
 
 ```sh
 bash deploy/kubernetes/firstmate/entrypoint.test.sh
@@ -549,12 +614,14 @@ and is not driven here.
 
 **What is not verified here.** Steps that require a real cluster — actual PVC
 binding, Gateway attachment and certificate issuance, image pulls, secret
-contents, the harness actually launching and draining queued instructions, and
-firstmate's own data/logins — cannot be exercised outside the cluster and are
-stated as expectations, not asserted facts. Bootstrapping
-firstmate's data and logins (GitHub auth, harness login, projects) is out of
-scope: after install, attach and complete it as you would on any firstmate
-host.
+contents (including the Doppler-synced `GH_TOKEN`), `gh auth status` inside the
+pod, the tools being on `PATH` in a running pod, the harness actually launching
+and draining queued instructions, and firstmate's own data/logins — cannot be
+exercised outside the cluster and are stated as expectations, not asserted
+facts. GitHub authentication reaches the container as `GH_TOKEN`/`GITHUB_TOKEN`
+through the Doppler secret once the captain adds the `GH_TOKEN` key; the rest of
+firstmate's data and logins (harness login, projects) is out of scope: after
+install, attach and complete it as you would on any firstmate host.
 
 ## Troubleshooting
 

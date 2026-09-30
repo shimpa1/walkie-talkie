@@ -248,6 +248,57 @@ test("the atus example installs the herdr CLI for the Conversations view", { ski
   assert.match(rendered.stdout, /name: XDG_CONFIG_HOME\n\s+value: "\/home\/firstmate\/\.config"/);
 });
 
+test("the atus example takes GitHub auth from the Doppler secret, not the chart Secret", { skip: skipHelm }, () => {
+  const rendered = render(["-f", VALUES_ATUS]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  // The Doppler-synced Secret is injected, so its GH_TOKEN key becomes the env
+  // var GH_TOKEN.
+  assert.match(
+    rendered.stdout,
+    /envFrom:\n\s+- configMapRef:[\s\S]*?secretRef:\n\s+name: firstmate-doppler-secrets/,
+  );
+  // The same key is mapped to GITHUB_TOKEN, optionally so a missing key does
+  // not block the pod.
+  assert.match(
+    rendered.stdout,
+    /- name: GITHUB_TOKEN\n\s+valueFrom:\n\s+secretKeyRef:\n\s+key: GH_TOKEN\n\s+name: firstmate-doppler-secrets\n\s+optional: true/,
+  );
+  // The chart's own GitHub token wiring is off, so it never reads a token from
+  // its credential Secret.
+  assert.doesNotMatch(
+    rendered.stdout,
+    /name: GH_TOKEN\n\s+valueFrom:\n\s+secretKeyRef:\n\s+name: firstmate-credentials/,
+  );
+});
+
+test("an existing secret may supply GitHub via GH_TOKEN with the chart wiring off", { skip: skipHelm }, () => {
+  const file = valuesFile({
+    firstmate: {
+      extraEnvFrom: [{ secretRef: { name: "my-doppler-secrets" } }],
+      extraEnv: [
+        {
+          name: "GITHUB_TOKEN",
+          valueFrom: {
+            secretKeyRef: {
+              name: "my-doppler-secrets",
+              key: "GH_TOKEN",
+              optional: true,
+            },
+          },
+        },
+      ],
+    },
+    credentials: { githubTokenEnabled: false },
+  });
+  const rendered = render(["-f", file]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(
+    rendered.stdout,
+    /- name: GITHUB_TOKEN\n\s+valueFrom:\n\s+secretKeyRef:\n\s+key: GH_TOKEN\n\s+name: my-doppler-secrets\n\s+optional: true/,
+  );
+  assert.doesNotMatch(rendered.stdout, /- name: GH_TOKEN\n\s+valueFrom:/);
+});
+
 test("herdrCLI installs herdr from the firstmate image into a shared volume", { skip: skipHelm }, () => {
   const file = valuesFile({ walkieTalkie: { herdrCLI: { enabled: true } } });
   const rendered = render(["-f", file]);
