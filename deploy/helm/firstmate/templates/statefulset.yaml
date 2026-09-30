@@ -93,6 +93,23 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       terminationGracePeriodSeconds: 30
+      {{- if .Values.walkieTalkie.herdrCLI.enabled }}
+      initContainers:
+        - name: install-herdr
+          image: {{ include "firstmate.image" . }}
+          imagePullPolicy: {{ .Values.firstmate.image.pullPolicy }}
+          command:
+            - cp
+            - /usr/local/bin/herdr
+            - {{ printf "%s/%s" (trimSuffix "/" .Values.walkieTalkie.herdrCLI.mountPath) .Values.walkieTalkie.herdrCLI.binary | quote }}
+          volumeMounts:
+            - name: herdr-bin
+              mountPath: {{ .Values.walkieTalkie.herdrCLI.mountPath | quote }}
+          {{- with .Values.walkieTalkie.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}
       containers:
         - name: firstmate
           image: {{ include "firstmate.image" . }}
@@ -180,6 +197,12 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: {{ .Values.credentials.keys.walkieTalkieToken }}
+            {{- if .Values.walkieTalkie.herdrCLI.enabled }}
+            - name: FM_WT_HERDR_BIN
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.walkieTalkie.herdrCLI.mountPath) .Values.walkieTalkie.herdrCLI.binary | quote }}
+            - name: XDG_CONFIG_HOME
+              value: {{ printf "%s/.config" (trimSuffix "/" $home) | quote }}
+            {{- end }}
             {{- with .Values.walkieTalkie.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -205,13 +228,18 @@ spec:
           volumeMounts:
             - name: home
               mountPath: {{ $home }}
+            {{- if .Values.walkieTalkie.herdrCLI.enabled }}
+            - name: herdr-bin
+              mountPath: {{ .Values.walkieTalkie.herdrCLI.mountPath | quote }}
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.walkieTalkie.resources | nindent 12 }}
           {{- with .Values.walkieTalkie.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- if or (not .Values.persistence.enabled) .Values.agents.enabled }}
+      {{- if or (not .Values.persistence.enabled) .Values.agents.enabled .Values.walkieTalkie.herdrCLI.enabled }}
       volumes:
         {{- if not .Values.persistence.enabled }}
         {{- if .Values.persistence.existingClaim }}
@@ -227,6 +255,10 @@ spec:
         - name: agents
           configMap:
             name: {{ include "firstmate.agentsConfigMapName" . }}
+        {{- end }}
+        {{- if .Values.walkieTalkie.herdrCLI.enabled }}
+        - name: herdr-bin
+          emptyDir: {}
         {{- end }}
       {{- end }}
   {{- if .Values.persistence.enabled }}
