@@ -75,12 +75,14 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    # Commit 0ef15d3: the merged read-only Conversations view (PR #15). The
-    # previous running image was d1a06ce0a68b, built from commit d1a06ce.
+    # Commit fed7d3a: merged main carrying the full conversation-history fix
+    # (PR #19), which reads a session's actual message history from the agent
+    # store with a terminal fallback instead of only the visible screen. The
+    # previous running image was 0ef15d3d0f08, built from commit 0ef15d3.
     # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:0ef15d3d0f08 --push .
-    tag: "0ef15d3d0f08"
+    #     -t shimpa/walkie-talkie:fed7d3a6f55e --push .
+    tag: "fed7d3a6f55e"
     pullPolicy: IfNotPresent
   # The Conversations view reads the pod's own herdr session through the herdr
   # CLI; the walkie-talkie image does not bundle it, so the chart installs it
