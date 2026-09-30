@@ -129,6 +129,20 @@ function parseCommandResult(result: RunResult): unknown {
   throw jsonErrorFrom(result.stderr) ?? jsonErrorFrom(result.stdout) ?? new HerdrError(failureMessage(result));
 }
 
+/**
+ * Read a pane's agent name and status. `pane list` reports both as flat,
+ * top-level fields (`agent` string, `agent_status` string); `agent get` nests
+ * them under an `agent` object. Both shapes are accepted so a shape change
+ * cannot silently erase every pane's agent.
+ */
+function parsePaneAgent(raw: Record<string, unknown>): { agent: string | null; status: string | null } {
+  const agent = raw.agent;
+  if (isRecord(agent)) {
+    return { agent: asString(agent.agent), status: asString(agent.agent_status) };
+  }
+  return { agent: asString(agent), status: asString(raw.agent_status) };
+}
+
 function parsePanes(result: unknown): HerdrPane[] {
   if (!isRecord(result) || !Array.isArray(result.panes)) {
     throw new HerdrError("herdr pane list did not return a pane array");
@@ -138,12 +152,13 @@ function parsePanes(result: unknown): HerdrPane[] {
     if (!isRecord(raw)) continue;
     const paneId = asString(raw.pane_id);
     if (paneId === null) continue;
+    const { agent, status } = parsePaneAgent(raw);
     panes.push({
       paneId,
       workspaceId: asString(raw.workspace_id),
       tabId: asString(raw.tab_id),
-      agent: asString(raw.agent),
-      status: asString(raw.agent_status),
+      agent,
+      status,
       title: asString(raw.terminal_title_stripped) ?? asString(raw.terminal_title),
       cwd: asString(raw.cwd),
     });

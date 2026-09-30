@@ -40,6 +40,30 @@ printf '%s' '{"id":"cli:pane:list","result":{"panes":[
   ]);
 });
 
+test("listPanes reads an agent nested as an object, as agent get reports it", async () => {
+  const bin = fakeHerdr(
+    `#!/usr/bin/env bash
+printf '%s' '{"id":"cli:pane:list","result":{"panes":[
+  {"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":{"agent":"opencode","agent_status":"idle"}}]}}'
+`,
+  );
+  const panes = await herdr(bin).listPanes();
+  assert.equal(panes[0]?.agent, "opencode");
+  assert.equal(panes[0]?.status, "idle");
+});
+
+test("listPanes keeps a pane that carries no agent field", async () => {
+  const bin = fakeHerdr(
+    `#!/usr/bin/env bash
+printf '%s' '{"id":"cli:pane:list","result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}'
+`,
+  );
+  const panes = await herdr(bin).listPanes();
+  assert.equal(panes.length, 1);
+  assert.equal(panes[0]?.agent, null);
+  assert.equal(panes[0]?.status, null);
+});
+
 test("every read is scoped to the configured session with a trailing flag", async () => {
   const dir = mkdtempSync(join(tmpdir(), "reach-herdr-"));
   const log = join(dir, "argv.log");

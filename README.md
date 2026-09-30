@@ -411,10 +411,11 @@ Configuration:
   service's `PATH`; the service and herdr's session socket must share the same
   home.
 
-Only panes with a registered agent are listed (an empty shell pane is not a
-conversation), and the detail read is line-bounded, so the view stays cheap on a
-phone. If herdr is not reachable the Conversations view shows the error inline
-and the status, compose, and notification features are unaffected.
+Every pane herdr reports is listed, so a pane with no registered agent still
+appears with an unknown status rather than the list going blank; the detail read
+is line-bounded, so the view stays cheap on a phone. If herdr is not reachable
+the Conversations view shows the error inline and the status, compose, and
+notification features are unaffected.
 
 ## Voice input
 

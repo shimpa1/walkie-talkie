@@ -84,9 +84,8 @@ export function buildSessions(
 
   const sessions: ConversationSession[] = [];
   for (const pane of panes) {
-    // Only panes with a registered agent are conversations; an empty shell pane
-    // is not one.
-    if (pane.agent === null) continue;
+    // Every pane is a session; one without a registered agent is listed with an
+    // unknown status.
     const workspaceLabel = pane.workspaceId === null ? null : workspaceLabels.get(pane.workspaceId) ?? null;
     const tabLabel = pane.tabId === null ? null : tabLabels.get(pane.tabId) ?? null;
     const kind = classify(workspaceLabel, tabLabel);

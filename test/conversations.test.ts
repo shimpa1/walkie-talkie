@@ -51,14 +51,16 @@ test("buildSessions classifies the primary, secondmate, and worker and sorts the
     [
       ["w1:p1", "primary", "firstmate"],
       ["w3:p2", "secondmate", "2ndmate-infra"],
+      ["w9:p9", "worker", "scout-extra"],
       ["w2:p2", "worker", "walkie-talkie-conversations-view"],
     ],
   );
 });
 
-test("buildSessions drops panes without a registered agent", () => {
-  const ids = buildSessions(PANES, WORKSPACES, TABS).map((session) => session.id);
-  assert.equal(ids.includes("w9:p9"), false);
+test("buildSessions lists a pane with no registered agent as unknown status", () => {
+  const session = buildSessions(PANES, WORKSPACES, TABS).find((item) => item.id === "w9:p9");
+  assert.equal(session?.agent, null);
+  assert.equal(session?.status, "unknown");
 });
 
 test("a task tab inside the primary workspace is a worker, not the primary", () => {
@@ -95,7 +97,7 @@ function stubHerdr(): HerdrClient & { readCalls: Array<[string, number]> } {
 
 test("Conversations.list joins the herdr reads into a session list", async () => {
   const result = await new Conversations(stubHerdr()).list();
-  assert.equal(result.sessions.length, 3);
+  assert.equal(result.sessions.length, 4);
   assert.equal(result.sessions[0]?.id, "w1:p1");
 });
 
@@ -111,7 +113,7 @@ test("Conversations.list still lists panes when the label reads fail", async () 
     readPane: async () => "",
   };
   const result = await new Conversations(client).list();
-  assert.equal(result.sessions.length, 3);
+  assert.equal(result.sessions.length, 4);
 });
 
 test("Conversations.read returns the pane output and echoes the line count", async () => {

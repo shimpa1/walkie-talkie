@@ -29,6 +29,7 @@ test("GET /api/sessions returns the fleet's live sessions", async () => {
       [
         ["w1:p1", "primary", "firstmate"],
         ["w3:p2", "secondmate", "2ndmate-infra"],
+        ["w9:p9", "worker", "scout-extra"],
         ["w2:p2", "worker", "walkie-talkie-conversations-view"],
       ],
     );

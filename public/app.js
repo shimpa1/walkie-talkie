@@ -371,6 +371,10 @@ function setConversationHeader(session) {
     parts.push(session.id);
   }
   $("conversation-sub").textContent = parts.join(" · ");
+  const status = $("conversation-status");
+  const text = session && session.status ? session.status : null;
+  status.textContent = text || "—";
+  status.className = text ? `badge ${stateKind(text)}` : "badge";
 }
 
 function selectSession(id) {
