@@ -196,9 +196,9 @@ start_primary_harness() {
 
 # Whether the home workspace's pane has a registered live harness: 0 alive,
 # 1 authoritatively not running, 2 when any read failed. Resolves the workspace
-# and pane fresh each call so a pane recreated by a restart is picked up, and
-# propagates the unknown state so a transient read failure skips the interval
-# instead of restarting the harness.
+# and pane fresh each call so a pane recreated by a restart is picked up; the
+# caller treats 2 as unknown and retries start_primary_harness, which re-reads
+# and only types the command when the server authoritatively finds no agent.
 herdr_home_harness_live() {
   local wsid pane ws_rc=0 pane_rc=0
   wsid=$(herdr_workspace_id) || ws_rc=$?
