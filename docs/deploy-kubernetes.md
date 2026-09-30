@@ -174,13 +174,16 @@ The default command also opens the harness with firstmate's session-start
 prompt, exported by the entrypoint as `FM_PRIMARY_SESSION_START_PROMPT` (the
 output of firstmate's own `bin/fm-sessionstart-nudge.sh`, or a plain fallback
 when that adapter is absent). A bare opencode TUI does not create a session
-until it receives a first prompt, so firstmate's tracked session-start plugin
-never sees a `session.created` event and firstmate never runs; the initial
-prompt both creates the session and starts firstmate. When you set
-`firstmate.harnessCommand` for another harness or posture, keep an initial
-prompt, or set it to `""` to run the herdr server only and start the harness
-yourself after attaching (the supervisor is not started when the command is
-empty).
+until it receives a first prompt, so the initial prompt both creates the session
+and starts firstmate. The entrypoint also removes firstmate's tracked
+session-start nudge plugin
+(`.opencode/plugins/fm-primary-sessionstart-nudge.js`) from the home, so the
+opening prompt is the only delivery and the model never runs firstmate's
+mutating session-start sweeps twice; firstmate's watcher and turn-end plugins
+are left in place for supervision. When you set `firstmate.harnessCommand` for
+another harness or posture, keep an initial prompt, or set it to `""` to run the
+herdr server only and start the harness yourself after attaching (the supervisor
+is not started when the command is empty).
 
 Once created, the walkie-talkie token, GitHub token, and harness credentials are
 preserved across upgrades: you do not need to re-pass them on `helm upgrade`.
@@ -348,7 +351,7 @@ workspace, so an attach lands on a live firstmate rather than an empty server.
 | `firstmate.image.repository` / `.tag` | `firstmate-runtime` / chart version | Runtime image. |
 | `firstmate.home` | `/home/firstmate` | Absolute container path of the firstmate home; also the volume mount and `FM_HOME`. |
 | `firstmate.herdrSession` | `firstmate` | Named herdr session (`HERDR_SESSION`). |
-| `firstmate.harnessCommand` | `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode` | Command that starts the primary harness in the herdr session at container start; the entrypoint restarts it when it exits; `""` runs the server only. |
+| `firstmate.harnessCommand` | `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"` | Command that starts the primary harness in the herdr session at container start; the entrypoint restarts it when it exits and removes firstmate's session-start nudge plugin so this prompt is the only delivery; `""` runs the server only. |
 | `walkieTalkie.image.repository` / `.tag` | `walkie-talkie` / chart version | Companion image. |
 | `walkieTalkie.port` | `8787` | Walkie-talkie port inside the container. |
 | `persistence.storageClass` | `""` (cluster default) | StorageClass for the home claim; `beta3` in the atus example. |
@@ -504,11 +507,13 @@ bash deploy/kubernetes/firstmate/entrypoint.test.sh
 ```
 
 It asserts that the entrypoint creates the primary workspace, starts
-`firstmate.harnessCommand` in that workspace's pane, leaves a live harness
-alone, starts it again when the fake reports it exited, and that harness
-credentials reach both the herdr server environment and the pane call. Starting
-a real herdr server, session, or harness is a cluster/runtime concern and is not
-driven here.
+`firstmate.harnessCommand` in that workspace's pane, exports firstmate's
+session-start prompt to the pane and removes its tracked session-start plugin
+(so the prompt is the only delivery) while leaving the other plugins, leaves a
+live harness alone, starts it again when the fake reports it exited, and that
+harness credentials reach both the herdr server environment and the pane call.
+Starting a real herdr server, session, or harness is a cluster/runtime concern
+and is not driven here.
 
 **What is not verified here.** Steps that require a real cluster — actual PVC
 binding, Gateway attachment and certificate issuance, image pulls, secret
@@ -530,11 +535,12 @@ host.
   is `firstmate.herdrSession`.
 - **Attach shows an empty server (no harness).** Confirm the logs include
   `starting primary harness in`. The entrypoint supervises the harness and
-  restarts it when it exits, logging `primary harness is not running` each time,
-  so an empty pane that stays empty means `firstmate.harnessCommand` names a
-  harness the image did not install or it exits immediately on every attempt;
-  check the repeated restart lines and start a working harness by hand after
-  attaching.
+  restarts it when it exits, logging `primary harness is not running` when it
+  finds none (or `could not confirm the primary harness state` when a herdr read
+  fails and it retries the start path), so an empty pane that stays empty means
+  `firstmate.harnessCommand` names a harness the image did not install or it
+  exits immediately on every attempt; check the repeated restart lines and start
+  a working harness by hand after attaching.
 - **Route not serving.** Check the HTTPRoute status and that its `parentRefs`
   name and namespace match your Gateway and `sectionName` matches a listener
   whose hostname covers `httpRoute.hostnames`.

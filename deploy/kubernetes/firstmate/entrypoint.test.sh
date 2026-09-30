@@ -54,6 +54,12 @@ cat > "$HOME_DIR/bin/fm-sessionstart-nudge.sh" <<'FAKE_NUDGE'
 #!/usr/bin/env bash
 printf '%s\n' 'FM_TEST_SESSION_START_NUDGE'
 FAKE_NUDGE
+# firstmate's tracked OpenCode session-start plugin, which the entrypoint must
+# remove once the opening prompt is its delivery, beside a sibling plugin it must
+# leave in place for supervision.
+mkdir -p "$HOME_DIR/.opencode/plugins"
+printf 'export const X = async () => ({});\n' > "$HOME_DIR/.opencode/plugins/fm-primary-sessionstart-nudge.js"
+printf 'export const Y = async () => ({});\n' > "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js"
 
 cat > "$FAKE_BIN/herdr" <<'FAKE_HERDR'
 #!/usr/bin/env bash
@@ -164,6 +170,10 @@ grep -Fq -- '--prompt "$FM_PRIMARY_SESSION_START_PROMPT"' "$PANE_LOG" \
   || fail "entrypoint did not open the harness with the session-start prompt flag"
 grep -q '^FM_PRIMARY_SESSION_START_PROMPT=FM_TEST_SESSION_START_NUDGE$' "$SERVER_ENV" \
   || fail "entrypoint did not export firstmate's session-start prompt to the pane environment"
+[ ! -e "$HOME_DIR/.opencode/plugins/fm-primary-sessionstart-nudge.js" ] \
+  || fail "entrypoint left firstmate's session-start nudge plugin to deliver the prompt a second time"
+[ -e "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js" ] \
+  || fail "entrypoint removed a plugin other than the session-start nudge"
 grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \

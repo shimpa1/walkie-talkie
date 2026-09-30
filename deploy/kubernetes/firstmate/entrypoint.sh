@@ -7,7 +7,8 @@
 # runs a live firstmate that drains queued instructions instead of only the
 # server. The harness command opens with firstmate's own session-start prompt
 # (exported below), because a bare harness would sit idle and never start
-# firstmate. A supervisor keeps the harness running: `herdr pane run` returns as
+# firstmate; firstmate's tracked session-start plugin is removed so that opening
+# prompt is its only delivery. A supervisor keeps the harness running: `herdr pane run` returns as
 # soon as the command is typed, so a harness that exits (a bad credential, a
 # crash, a quit, an auto-update restart) is started again in the same pane. The
 # server stays in the foreground, so the session stays attachable with
@@ -133,7 +134,7 @@ herdr_pane_has_agent() {  # <pane-id>
 # on first start and reuses it afterwards, so restarts do not leak workspaces
 # or tabs.
 start_primary_harness() {
-  local wsid pane out
+  local wsid pane out sessionstart_plugin
   local ws_rc=0 pane_rc=0 agent_rc=0
   wsid=$(herdr_workspace_id) || ws_rc=$?
   if [ "$ws_rc" -eq 2 ]; then
@@ -172,6 +173,18 @@ start_primary_harness() {
   if [ "$agent_rc" -eq 2 ]; then
     log "could not read the harness state for pane '$pane'"
     return 1
+  fi
+  # firstmate's tracked OpenCode plugin also nudges on session.created. The
+  # command about to be typed already carries firstmate's session-start prompt,
+  # so the plugin would deliver the same instruction a second time and could make
+  # the model run firstmate's mutating startup sweeps twice. The plugin is a
+  # tracked distro file with no stand-down switch, so suppress it in this home
+  # before every start; only the session-start plugin is removed, leaving the
+  # watcher and turn-end plugins in place for supervision.
+  sessionstart_plugin="$HOME_DIR/.opencode/plugins/fm-primary-sessionstart-nudge.js"
+  if [ -e "$sessionstart_plugin" ]; then
+    rm -f "$sessionstart_plugin" 2>/dev/null || true
+    log "removed firstmate's session-start nudge plugin so the opening prompt is its only delivery"
   fi
   log "starting primary harness in $SESSION:$pane: $HARNESS_CMD"
   if ! herdr_cli pane run "$pane" "$HARNESS_CMD" >/dev/null 2>&1; then
@@ -266,15 +279,16 @@ fi
 # 2b. Compute the prompt that starts firstmate when the harness opens. A bare
 #     OpenCode TUI stays on its empty "Ask anything" landing screen and does not
 #     create a session until it receives a first prompt, so firstmate's tracked
-#     .opencode/plugins/fm-primary-sessionstart-nudge.js plugin never sees the
-#     session.created event it nudges on and the session-start never runs. The
-#     entrypoint therefore asks firstmate's own nudge adapter for the exact
-#     session-start prompt and exports it before the server starts, because the
-#     herdr server passes its environment to every pane it creates; the default
-#     harness command passes it as `--prompt`, which both creates the session and
-#     starts firstmate. A home without the adapter (an older or partial seed)
-#     falls back to the same instruction as plain text, so the harness still
-#     starts firstmate instead of idling.
+#     .opencode/plugins/fm-primary-sessionstart-nudge.js plugin never fires and
+#     the session-start never runs. The entrypoint therefore asks firstmate's own
+#     nudge adapter for the exact session-start prompt and exports it before the
+#     server starts, because the herdr server passes its environment to every
+#     pane it creates; the default harness command passes it as `--prompt`, which
+#     both creates the session and starts firstmate. A home without the adapter
+#     (an older or partial seed) falls back to the same instruction as plain
+#     text, so the harness still starts firstmate instead of idling. Because this
+#     prompt is now the session-start delivery, start_primary_harness removes the
+#     plugin (below) so it cannot deliver the same instruction a second time.
 PRIMARY_SESSION_START_PROMPT=
 if [ -f "$HOME_DIR/bin/fm-sessionstart-nudge.sh" ]; then
   PRIMARY_SESSION_START_PROMPT=$(FM_HOME="$HOME_DIR" bash "$HOME_DIR/bin/fm-sessionstart-nudge.sh" 2>/dev/null || true)
