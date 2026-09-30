@@ -16,6 +16,18 @@
 # from HARNESS_PACKAGES. The default is the opencode CLI; override it for
 # another harness, or set it empty and install your own on top.
 #
+# FIRSTMATE_REF pins the distro to one immutable commit so the runtime image is
+# reproducible and no mutable branch can change it on a later build. It is the
+# firstmate commit the deployed image was built from; bump it deliberately and
+# reconcile patches/ against the new tree.
+#
+# patches/ carries the repo's deliberate deltas to that pinned distro. The
+# OpenCode watch-arm plugin is patched so supervision arms on a lock-owned
+# primary even when no state/*.meta task exists. Upstream arms only on a task
+# or x-mode, which left a freshly booted home whose only pending work is a
+# queued inbox note without a watcher, so the note sat undrained. The entrypoint
+# also refreshes the patched plugin into an existing home below.
+#
 # This is one generic way to package the runtime, not a requirement: point the
 # chart's firstmate.image at any image that provides the same contract
 # (firstmate distro, herdr, treehouse, a harness, and this entrypoint's
@@ -26,7 +38,7 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG FIRSTMATE_REPO=https://github.com/kunchenguid/firstmate
-ARG FIRSTMATE_REF=main
+ARG FIRSTMATE_REF=c5f48e4cad279e6acaf14208522c44e28fac6835
 ARG HARNESS_PACKAGES=opencode-ai
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -58,10 +70,23 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && rm -rf /var/lib/apt/lists/*
 
 # firstmate distro seed. The running home is a PersistentVolume seeded from
-# here on first start; AGENTS.md plus bin/ are the distro. FIRSTMATE_REF may be
-# a branch, a tag, or a commit.
+# here on first start; AGENTS.md plus bin/ are the distro. FIRSTMATE_REF is the
+# pinned commit above.
+#
+# Apply the repo's patches to the pinned checkout. `git apply` is strict: if a
+# later FIRSTMATE_REF bump moves the patched context, the build fails here
+# rather than shipping an unpatched watcher gate. The patch is committed in the
+# seed so firstmate's home starts from a clean distro tree; only the runtime
+# image carries this local commit, since the ref above pins the upstream base.
+COPY patches/ /tmp/firstmate-patches/
 RUN git clone "${FIRSTMATE_REPO}" /opt/firstmate \
-  && git -C /opt/firstmate checkout --detach "${FIRSTMATE_REF}"
+  && git -C /opt/firstmate checkout --detach "${FIRSTMATE_REF}" \
+  && git -C /opt/firstmate apply /tmp/firstmate-patches/0001-opencode-arm-without-task.patch \
+  && git -C /opt/firstmate \
+       -c user.name=firstmate-runtime \
+       -c user.email=firstmate-runtime@localhost \
+       commit -am "runtime: arm OpenCode supervision without a task in flight" \
+  && rm -rf /tmp/firstmate-patches
 
 # herdr and treehouse, via firstmate's own pinned installers so the image
 # matches the versions firstmate verifies against.

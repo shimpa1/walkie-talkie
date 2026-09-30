@@ -264,6 +264,23 @@ if [ ! -e "$HOME_DIR/bin/fm-inbox.sh" ]; then
 fi
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/config"
 
+# 1b. Refresh the repo-patched OpenCode watch-arm plugin into the home. The seed
+#     carries the patch (Dockerfile patches/), but the home is a
+#     PersistentVolume seeded only once, so an existing volume would keep
+#     upstream's plugin and never arm supervision for a home whose only pending
+#     work is a queued inbox note. The plugin is a distro file firstmate does
+#     not user-edit, so installing the seed's copy on every start applies the
+#     fix to existing volumes as well as fresh ones. The write only happens when
+#     the bytes differ, so a fresh seed is not rewritten.
+WATCH_ARM_PLUGIN=".opencode/plugins/fm-primary-watch-arm.js"
+if [ -f "$SEED_DIR/$WATCH_ARM_PLUGIN" ]; then
+  mkdir -p "$HOME_DIR/.opencode/plugins"
+  if ! cmp -s "$SEED_DIR/$WATCH_ARM_PLUGIN" "$HOME_DIR/$WATCH_ARM_PLUGIN"; then
+    cp -f "$SEED_DIR/$WATCH_ARM_PLUGIN" "$HOME_DIR/$WATCH_ARM_PLUGIN"
+    log "installed the patched OpenCode watch-arm plugin so supervision arms without an in-flight task"
+  fi
+fi
+
 # 2. git must trust a home owned by the volume's group, and the backend is
 #    written to config/backend so an interactive attach session resolves the
 #    same herdr backend firstmate uses.

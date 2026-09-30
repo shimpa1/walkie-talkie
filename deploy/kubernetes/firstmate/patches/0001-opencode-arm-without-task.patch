@@ -1,0 +1,25 @@
+diff --git a/.opencode/plugins/fm-primary-watch-arm.js b/.opencode/plugins/fm-primary-watch-arm.js
+index 75b0a87..41e782b 100644
+--- a/.opencode/plugins/fm-primary-watch-arm.js
++++ b/.opencode/plugins/fm-primary-watch-arm.js
+@@ -118,12 +118,14 @@ async function isPrimaryRoot(root, home) {
+ 
+ function shouldArm(paths) {
+   if (existsSync(`${paths.state}/.afk`)) return false;
+-  if (existsSync(`${paths.config}/x-mode.env`)) return true;
+-  try {
+-    return readdirSync(paths.state).some((name) => name.endsWith(".meta"));
+-  } catch {
+-    return false;
+-  }
++  // Arm on any primary home this session owns. The watcher is the only
++  // consumer that delivers queued wakes, including the `check` wake a captain
++  // inbox note appends, so gating the arm on state/*.meta left a freshly booted
++  // home whose only pending work is a queued note with no watcher and the note
++  // undrained. Pi and omp already arm unconditionally on lock ownership for
++  // exactly this reason; an in-flight task and x-mode stay valid reasons to
++  // arm, but they are no longer the only ones.
++  return true;
+ }
+ 
+ async function sessionOwnsLock(paths) {
