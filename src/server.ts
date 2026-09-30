@@ -6,6 +6,7 @@ import type { AppConfig } from "./config.js";
 import { bindRefusal, isLoopbackHost } from "./config.js";
 import { isAuthorized } from "./auth.js";
 import { clampLines, type Conversations } from "./conversations.js";
+import { clampHistoryLimit, isValidHistoryCursor } from "./conversation-store.js";
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
 import { HerdrError, isValidPaneId } from "./herdr.js";
 import type { PushApi } from "./push-service.js";
@@ -343,9 +344,18 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
           sendError(res, 400, "invalid session id");
           return;
         }
+        const before = url.searchParams.get("before");
+        if (before !== null && before !== "" && !isValidHistoryCursor(before)) {
+          sendError(res, 400, "invalid history cursor");
+          return;
+        }
         const lines = clampLines(url.searchParams.get("lines"));
         try {
-          const body = await deps.conversations.read(paneId, lines);
+          const body = await deps.conversations.history(paneId, {
+            limit: clampHistoryLimit(url.searchParams.get("limit")),
+            before: before === null || before === "" ? null : before,
+            lines,
+          });
           sendJson(res, 200, JSON.stringify(body));
         } catch (error) {
           sendHerdrError(res, error);

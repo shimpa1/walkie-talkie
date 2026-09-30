@@ -19,9 +19,12 @@ read-only **Conversations** view of the fleet's live sessions.
   Conversations view of the fleet's live sessions, and a notification opt-in.
 - A **Conversations** view: a list of the fleet's live sessions (the primary
   firstmate session and each worker/scout) and, for the selected session, its
-  recent terminal output, refreshed live. It is a herdr-like read on the phone,
-  and it is also the reply channel: firstmate's answers to queued instructions
-  appear in the primary session's output.
+  **full conversation history**, refreshed live and scrollable back through the
+  whole session. The history is read from the coding agent's own session store
+  (opencode's SQLite database), not the terminal, so it is not limited to the
+  visible screen; when a session has no agent store the view falls back to the
+  terminal's visible output. It is also the reply channel: firstmate's answers
+  to queued instructions appear in the primary session's history.
 - Self-hosted Web Push with VAPID: the service generates and holds its own key
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
@@ -30,10 +33,13 @@ It is deliberately narrow. The service:
 
 - invokes firstmate **only** through its documented scripts, using
   `child_process.execFile` with an argument array and `shell: false`;
-- reads the Conversations view **only** through herdr's read-only
-  `pane list` / `pane read` / `workspace list` / `tab list` commands, also via
-  `execFile` with an argument array and `shell: false`, and refuses every other
-  herdr subcommand before a process is spawned;
+- reads the live session list and the terminal fallback through herdr's
+  read-only `pane list` / `pane read` / `workspace list` / `tab list` commands,
+  also via `execFile` with an argument array and `shell: false`, and refuses
+  every other herdr subcommand before a process is spawned;
+- opens the agent's SQLite session store **read-only** (and pins the connection
+  with `PRAGMA query_only`) to render a full conversation, never writing to it,
+  and degrades to the terminal read when the store is absent;
 - never changes a project and never performs crew, merge, or deploy actions;
 - has exactly one write: it queues a note through `fm-inbox note`, exactly as
   firstmate already accepts one;
@@ -47,7 +53,9 @@ decision/approval/merge action.
 ## Requirements
 
 - Node.js 22 or newer (developed on Node 22+; uses the built-in `http`,
-  `crypto`, and `child_process` modules).
+  `crypto`, and `child_process` modules). The Conversations history uses the
+  built-in `node:sqlite`, which is unflagged from Node 22.13; on an older
+  runtime the view falls back to the terminal read.
 - A firstmate home with its `bin/` scripts, including `fm-inbox.sh` and
   `fm-bearings-snapshot.sh`.
 - For the Conversations view only: a reachable `herdr` CLI and a running herdr
@@ -88,6 +96,7 @@ cp walkie-talkie.config.example.json walkie-talkie.config.json
 | push state file | `FM_WT_PUSH_STORE` | `pushStore` | `./walkie-talkie.push.json` |
 | herdr session | `FM_WT_HERDR_SESSION` | `herdrSession` | `$HERDR_SESSION`, else `default` |
 | herdr executable | `FM_WT_HERDR_BIN` | `herdrBin` | `herdr` |
+| opencode session store | `FM_WT_OPENCODE_DB` | `opencodeDbPath` | `$FM_HOME/.local/share/opencode/opencode.db` |
 | config file path | `FM_WT_CONFIG` | — | `./walkie-talkie.config.json` |
 
 `walkie-talkie.config.json` is gitignored. Do not commit a token.
@@ -387,14 +396,42 @@ Enable on this device**. A plain Safari tab cannot receive notifications.
 
 ## Conversations
 
-**Conversations** is a read-only, herdr-like view of the fleet from the phone:
-a list of every live session and, for the selected one, its recent terminal
-output, refreshed live. The list is the primary firstmate session plus each
-worker/scout session, and the primary session's output is also the reply
-channel, so firstmate's answers to queued instructions can be read in the app.
+**Conversations** is a read-only view of the fleet from the phone: a list of
+every live session and, for the selected one, its **full conversation history**,
+refreshed live and scrollable back through the whole session. The list is the
+primary firstmate session plus each worker/scout session, and the primary
+session's history is also the reply channel, so firstmate's answers to queued
+instructions can be read in the app.
+
+A coding agent's terminal keeps no scrollback: herdr's `pane read` returns only
+the visible viewport (roughly one screen, even with a large `--lines`). The
+conversation itself is recorded by the agent, so the history comes from the
+agent's own session store - opencode's SQLite database - rather than the
+terminal:
+
+- The service maps the selected pane to the agent session id the pane reported
+  (`herdr pane list` exposes the agent's session as `agent_session.value`, for
+  example opencode's `ses_...`), then reads that session's user and assistant
+  text messages, oldest to newest, from the store.
+- Reads are bounded and cursor-paginated: the view opens on the most recent
+  page, polls for newer messages, and a **Load older messages** control walks
+  back through the session a page at a time. The read is cheap on a phone and a
+  single huge message is truncated rather than bloating the page.
+- The store is opened **read-only** and additionally pinned with
+  `PRAGMA query_only`, so the service can never write to it. The agent's tool
+  calls, reasoning steps, and step markers are not shown; the rendered
+  conversation is the user/assistant text.
+- When the store, the database, or a session is absent - or the pane reports no
+  agent session, such as a plain shell - the view degrades to the terminal's
+  visible output for that pane instead of erroring.
+
+The store is read directly (bounded, indexed queries) rather than by shelling
+out to the agent. The walkie-talkie image deliberately does not bundle the
+coding agent's CLI, and an `opencode export` per poll would return the whole
+session each time; a read-only SQLite read is both available and cheap.
 
 The service enumerates sessions with herdr's read-only `pane list`,
-`workspace list`, and `tab list`, and reads one session with `pane read`,
+`workspace list`, and `tab list`, and reads a pane's terminal with `pane read`,
 always scoped to one named session with `--session <name>`. It never calls a
 mutating herdr subcommand: the client refuses anything outside that read-only
 set before spawning a process, so the view can only read a session, never steer
@@ -410,12 +447,16 @@ Configuration:
   `herdr` on `PATH`. Set it to an absolute path when the binary is not on the
   service's `PATH`; the service and herdr's session socket must share the same
   home.
+- The agent store is `FM_WT_OPENCODE_DB` (config key `opencodeDbPath`),
+  defaulting to `$FM_HOME/.local/share/opencode/opencode.db`. It is read through
+  Node's built-in `node:sqlite` (Node 22.13 or newer), with no extra dependency;
+  if the module or the database is unavailable the view simply uses the terminal
+  fallback.
 
 Every pane herdr reports is listed, so a pane with no registered agent still
-appears with an unknown status rather than the list going blank; the detail read
-is line-bounded, so the view stays cheap on a phone. If herdr is not reachable
-the Conversations view shows the error inline and the status, compose, and
-notification features are unaffected.
+appears with an unknown status rather than the list going blank. If herdr is not
+reachable the Conversations view shows the error inline and the status, compose,
+and notification features are unaffected.
 
 ## Voice input
 
@@ -474,7 +515,7 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `GET` | `/api/status` | `bin/fm-bearings-snapshot.sh --json` (`fm-bearings.v1`) |
 | `GET` | `/api/receipts?after=<cursor>` | `bin/fm-inbox.sh receipts [--after <cursor>]` |
 | `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list` |
-| `GET` | `/api/sessions/<pane-id>?lines=<n>` | `herdr pane read <pane-id> --lines <n> --source recent --format text` |
+| `GET` | `/api/sessions/<pane-id>?limit=<n>&before=<cursor>` | the agent's session store (read-only), else `herdr pane read <pane-id> --lines <n> --source recent --format text` |
 | `POST` | `/api/note` | `bin/fm-inbox.sh note --request-id <id> --json -` with text on stdin |
 | `GET` | `/api/push/config` | returns `{"publicKey"}` (open; see below) |
 | `POST` | `/api/push/subscribe` | stores a browser push subscription |
@@ -485,10 +526,23 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 Firstmate's JSON is passed through unchanged. The two Conversations endpoints
 are the service's own shape rather than a firstmate passthrough:
 `GET /api/sessions` returns `{"sessions": [...]}` with `id`, `name`, `kind`
-(`primary`/`secondmate`/`worker`), `status`, `agent`, `title`, `cwd`,
-`workspace_id`, and `tab_id`, and `GET /api/sessions/<pane-id>` returns
-`{"id", "lines", "output"}`. `<pane-id>` is herdr's pane id (for example
-`w1:p1`); `lines` is clamped to a bounded range.
+(`primary`/`secondmate`/`worker`), `status`, `agent`, `agent_session`, `title`,
+`cwd`, `workspace_id`, and `tab_id`.
+
+`GET /api/sessions/<pane-id>` returns one of two shapes, distinguished by
+`source`:
+
+- `{"source": "history", "id", "agent_session", "messages", "has_older",
+  "oldest_cursor"}` - the session's conversation from the agent store.
+  `messages` is ordered oldest-to-newest, each `{"id", "role", "time", "text"}`.
+  `limit` bounds the message rows per page (default 200, clamped); pass
+  `oldest_cursor` as `before` to load older messages.
+- `{"source": "terminal", "id", "agent_session", "lines", "output"}` - the
+  fallback when no agent store or session is available; `lines` is clamped to a
+  bounded range.
+
+`<pane-id>` is herdr's pane id (for example `w1:p1`). A `before` cursor that is
+not a well-formed cursor is a 400.
 
 `GET /api/push/config` is intentionally **open**. It returns only the VAPID
 public key, which is not a secret: the browser must fetch it before it can
@@ -535,10 +589,10 @@ handling, and error handling are covered without a microphone.
 ## Dependencies
 
 Runtime dependencies: **none**. The service uses only Node built-ins (`http`,
-`crypto`, `fs`, `path`, `child_process`), and the web app is plain HTML/CSS/JS
-with no framework or build step. Web Push encryption (RFC 8291) and VAPID
-signing (RFC 8292) are implemented directly on `node:crypto` rather than pulling
-in a push library.
+`crypto`, `fs`, `path`, `child_process`, and `node:sqlite` for the read-only
+Conversations history), and the web app is plain HTML/CSS/JS with no framework
+or build step. Web Push encryption (RFC 8291) and VAPID signing (RFC 8292) are
+implemented directly on `node:crypto` rather than pulling in a push library.
 
 Dev dependencies (build/test only): `typescript` (compiles the service) and
 `@types/node` (Node type definitions). Nothing else is added, so there is no
@@ -556,6 +610,11 @@ transitive supply-chain surface in production.
   other subcommand before a process is spawned. A session id that is not a
   well-formed pane id (option-like or containing a path separator) is refused
   before any herdr call.
+- The agent session store is opened read-only and pinned with
+  `PRAGMA query_only`, so the service can only read conversations, never write
+  to or steer them. Session ids and pagination cursors are validated before any
+  query, and every query is parameterized. A malformed cursor is rejected with a
+  400.
 - Request ids are validated against firstmate's own contract before use.
 - The service binds loopback by default and refuses a public bind unless
   explicitly overridden.

@@ -10,5 +10,6 @@
   "pushPollSeconds": 20,
   "pushStore": "walkie-talkie.push.json",
   "herdrSession": "default",
-  "herdrBin": "herdr"
+  "herdrBin": "herdr",
+  "opencodeDbPath": "/Users/you/firstmate/.local/share/opencode/opencode.db"
 }

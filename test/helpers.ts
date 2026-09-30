@@ -6,6 +6,7 @@ import { createServer, type Server } from "node:http";
 
 import type { AppConfig } from "../src/config.js";
 import { Conversations } from "../src/conversations.js";
+import type { ConversationStore } from "../src/conversation-store.js";
 import { Firstmate } from "../src/firstmate.js";
 import { Herdr } from "../src/herdr.js";
 import type { PushApi } from "../src/push-service.js";
@@ -37,6 +38,8 @@ export async function startTestServer(options: {
   /** Fake herdr CLI for the Conversations routes; omit to leave herdr unresolved. */
   herdrBin?: string;
   herdrSession?: string;
+  /** Optional agent store double for the Conversations history route. */
+  conversationStore?: ConversationStore;
 } = {}): Promise<TestServer> {
   const home = options.home ?? makeHome();
   const token = options.token ?? "test-token";
@@ -58,10 +61,12 @@ export async function startTestServer(options: {
     pushStorePath: join(home, "walkie-talkie.push.json"),
     herdrSession: options.herdrSession ?? "default",
     herdrBin: options.herdrBin ?? "herdr",
+    opencodeDbPath: join(home, ".local", "share", "opencode", "opencode.db"),
   };
   const firstmate = new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
   const conversations = new Conversations(
     new Herdr({ binPath: config.herdrBin, session: config.herdrSession, env: { ...process.env, FM_HOME: home } }),
+    options.conversationStore ?? null,
   );
   const server: Server = createServer(
     createRequestHandler({
@@ -80,7 +85,11 @@ export async function startTestServer(options: {
   return {
     url,
     home,
-    close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())),
+    close: () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      }),
   };
 }
 

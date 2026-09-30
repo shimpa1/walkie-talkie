@@ -1,4 +1,9 @@
 import type { HerdrClient, HerdrPane, HerdrTab, HerdrWorkspace } from "./herdr.js";
+import {
+  DEFAULT_HISTORY_LIMIT,
+  type ConversationStore,
+  type StoredConversationMessage,
+} from "./conversation-store.js";
 
 export type ConversationKind = "primary" | "secondmate" | "worker";
 
@@ -9,6 +14,8 @@ export interface ConversationSession {
   kind: ConversationKind;
   status: string;
   agent: string | null;
+  /** The agent session the pane reported (opencode's `ses_...`), when known. */
+  agent_session: string | null;
   title: string | null;
   cwd: string | null;
   workspace_id: string | null;
@@ -19,10 +26,34 @@ export interface ConversationList {
   sessions: ConversationSession[];
 }
 
-export interface ConversationOutput {
+/** A session's full conversation, read from the agent's own session store. */
+export interface ConversationHistory {
   id: string;
+  agent_session: string | null;
+  source: "history";
+  messages: StoredConversationMessage[];
+  has_older: boolean;
+  oldest_cursor: string | null;
+}
+
+/** Fallback for a session with no agent store: the terminal's visible screen. */
+export interface ConversationTerminal {
+  id: string;
+  agent_session: string | null;
+  source: "terminal";
   lines: number;
   output: string;
+}
+
+export type ConversationDetail = ConversationHistory | ConversationTerminal;
+
+export interface HistoryOptions {
+  /** Message rows to read per page (the store's own bound). */
+  limit?: number;
+  /** Read messages older than this opaque cursor. */
+  before?: string | null;
+  /** Lines to request from the terminal when history is unavailable. */
+  lines?: number;
 }
 
 export const DEFAULT_CONVERSATION_LINES = 200;
@@ -95,6 +126,7 @@ export function buildSessions(
       kind,
       status: pane.status ?? "unknown",
       agent: pane.agent,
+      agent_session: pane.agentSession,
       title: pane.title,
       cwd: pane.cwd,
       workspace_id: pane.workspaceId,
@@ -123,15 +155,19 @@ export function clampLines(value: unknown): number {
 
 /**
  * The read-only Conversations view. `list` joins herdr's panes, workspaces, and
- * tabs into a fleet session list; `read` returns one session's recent output.
- * Both delegate to the read-only herdr client, so the service never steers a
- * session.
+ * tabs into a fleet session list; `history` reads a session's full conversation
+ * from the agent's own store, falling back to the terminal's visible screen
+ * when no store or agent session is available. Every read delegates to a
+ * read-only client, so the service never steers a session.
  */
 export class Conversations {
   private readonly herdr: HerdrClient;
+  private readonly store: ConversationStore | null;
+  private paneAgents = new Map<string, string | null>();
 
-  constructor(herdr: HerdrClient) {
+  constructor(herdr: HerdrClient, store: ConversationStore | null = null) {
     this.herdr = herdr;
+    this.store = store;
   }
 
   async list(): Promise<ConversationList> {
@@ -139,6 +175,7 @@ export class Conversations {
     // add labels and classification, so a failure there degrades the view
     // rather than hiding every session.
     const panes = await this.herdr.listPanes();
+    this.rememberPanes(panes);
     const [workspaces, tabs] = await Promise.all([
       this.herdr.listWorkspaces().catch(() => [] as HerdrWorkspace[]),
       this.herdr.listTabs().catch(() => [] as HerdrTab[]),
@@ -146,8 +183,34 @@ export class Conversations {
     return { sessions: buildSessions(panes, workspaces, tabs) };
   }
 
-  async read(paneId: string, lines: number = DEFAULT_CONVERSATION_LINES): Promise<ConversationOutput> {
+  /**
+   * Read one session's detail: its full conversation from the agent store when
+   * possible, else the terminal's visible screen. The pane-to-agent-session map
+   * comes from the most recent `list`; a miss refreshes it once.
+   */
+  async history(paneId: string, options: HistoryOptions = {}): Promise<ConversationDetail> {
+    const agentSession = await this.resolveAgentSession(paneId);
+    if (agentSession !== null && this.store !== null) {
+      const page = await this.store.readHistory(agentSession, {
+        limit: options.limit ?? DEFAULT_HISTORY_LIMIT,
+        before: options.before ?? null,
+      });
+      if (page !== null) {
+        return { id: paneId, agent_session: agentSession, source: "history", ...page };
+      }
+    }
+    const lines = options.lines ?? DEFAULT_CONVERSATION_LINES;
     const output = await this.herdr.readPane(paneId, lines);
-    return { id: paneId, lines, output };
+    return { id: paneId, agent_session: agentSession, source: "terminal", lines, output };
+  }
+
+  private rememberPanes(panes: readonly HerdrPane[]): void {
+    this.paneAgents = new Map(panes.map((pane) => [pane.paneId, pane.agentSession]));
+  }
+
+  private async resolveAgentSession(paneId: string): Promise<string | null> {
+    if (this.paneAgents.has(paneId)) return this.paneAgents.get(paneId) ?? null;
+    this.rememberPanes(await this.herdr.listPanes());
+    return this.paneAgents.get(paneId) ?? null;
   }
 }

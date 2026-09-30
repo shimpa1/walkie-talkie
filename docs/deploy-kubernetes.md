@@ -53,7 +53,7 @@ The two containers share the home volume:
 - **walkie-talkie** — the PWA + API on the configured port, invoking firstmate
   only through its own `bin/` scripts.
 
-The **Conversations** view reads this pod's own herdr session through the
+The **Conversations** view lists this pod's own herdr session through the
 read-only `herdr pane list` / `herdr pane read` commands, so the walkie-talkie
 container needs the `herdr` CLI and the session's socket reachable. Since the
 repository-root `walkie-talkie` image does not bundle herdr, set
@@ -65,8 +65,14 @@ under the mounted home rather than the container's own HOME. (Alternatively,
 point `walkieTalkie.image` at an image that already provides herdr, or add it to
 the image, and set `FM_WT_HERDR_BIN` yourself.) The chart already exports
 `HERDR_SESSION` to both containers, so the session is picked up automatically.
-Status, compose, and push notifications work without herdr; the Conversations
-view reports the missing dependency inline.
+
+A session's **full conversation history** comes from the coding agent's own
+session store (opencode's SQLite database), which lives under the firstmate home
+the two containers share in this pod (`$FM_HOME/.local/share/opencode/opencode.db`,
+read read-only with Node's built-in `node:sqlite`). No extra mount or environment
+is needed; when the store is absent the view falls back to the terminal output
+from `herdr pane read`. Status, compose, and push notifications work without
+herdr; the Conversations view reports the missing dependency inline.
 
 ## Prerequisites
 

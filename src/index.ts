@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { ConfigError, resolveConfig, type AppConfig } from "./config.js";
 import { Conversations } from "./conversations.js";
+import { OpencodeStore } from "./conversation-store.js";
 import { Firstmate } from "./firstmate.js";
 import { Herdr } from "./herdr.js";
 import { PushStore } from "./push-store.js";
@@ -69,12 +70,15 @@ function main(): void {
 
   // The read-only Conversations view reads this pod's own herdr session. It
   // never steers a session: the client only permits pane/tab/workspace reads.
+  // The agent's SQLite session store supplies the full conversation history; a
+  // missing store falls back to the terminal's visible screen, read-only.
   const conversations = new Conversations(
     new Herdr({
       binPath: config.herdrBin,
       session: config.herdrSession,
       env: { ...process.env, FM_HOME: config.fmHome },
     }),
+    new OpencodeStore({ dbPath: config.opencodeDbPath, log }),
   );
 
   let pushService: PushService | null = null;

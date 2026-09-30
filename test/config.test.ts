@@ -117,6 +117,17 @@ test("herdr settings default and accept overrides", () => {
   assert.equal(overridden.herdrBin, "/opt/herdr/herdr");
 });
 
+test("the opencode store path defaults under the firstmate home and accepts an override", () => {
+  const base = resolveConfig({ env: { FM_WT_TOKEN: "t" }, cwd: tmpdir() });
+  assert.equal(base.opencodeDbPath, join(base.fmHome, ".local", "share", "opencode", "opencode.db"));
+
+  const overridden = resolveConfig({
+    env: { FM_WT_TOKEN: "t", FM_HOME: "/srv/fm", FM_WT_OPENCODE_DB: "/data/opencode.db" },
+    cwd: tmpdir(),
+  });
+  assert.equal(overridden.opencodeDbPath, "/data/opencode.db");
+});
+
 test("loopback detection covers the usual spellings", () => {
   assert.equal(isLoopbackHost("127.0.0.1"), true);
   assert.equal(isLoopbackHost("::1"), true);

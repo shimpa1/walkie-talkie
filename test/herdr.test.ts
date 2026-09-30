@@ -33,11 +33,25 @@ printf '%s' '{"id":"cli:pane:list","result":{"panes":[
       workspaceId: "w1",
       tabId: "w1:t1",
       agent: "opencode",
+      agentSession: null,
       status: "working",
       title: "hello",
       cwd: null,
     },
   ]);
+});
+
+test("listPanes reads the agent session a pane reported", async () => {
+  const bin = fakeHerdr(
+    `#!/usr/bin/env bash
+printf '%s' '{"id":"cli:pane:list","result":{"panes":[
+  {"pane_id":"w1:p1","agent":"opencode","agent_session":{"agent":"opencode","kind":"id","value":"ses_abc123"}},
+  {"pane_id":"w2:p2","agent":"opencode","agent_session":"ses_plain"}]}}'
+`,
+  );
+  const panes = await herdr(bin).listPanes();
+  assert.equal(panes[0]?.agentSession, "ses_abc123");
+  assert.equal(panes[1]?.agentSession, "ses_plain");
 });
 
 test("listPanes reads an agent nested as an object, as agent get reports it", async () => {

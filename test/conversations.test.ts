@@ -8,6 +8,7 @@ import {
   buildSessions,
   clampLines,
 } from "../src/conversations.js";
+import type { ConversationStore } from "../src/conversation-store.js";
 import type { HerdrClient, HerdrPane, HerdrTab, HerdrWorkspace } from "../src/herdr.js";
 
 function pane(overrides: Partial<HerdrPane> = {}): HerdrPane {
@@ -16,6 +17,7 @@ function pane(overrides: Partial<HerdrPane> = {}): HerdrPane {
     workspaceId: "w1",
     tabId: "w1:t1",
     agent: "opencode",
+    agentSession: "ses_test",
     status: "working",
     title: "title",
     cwd: "/home/firstmate",
@@ -28,7 +30,7 @@ const PANES: HerdrPane[] = [
   pane({ paneId: "w2:p2", workspaceId: "w2", tabId: "w2:t2" }),
   pane({ paneId: "w3:p2", workspaceId: "w3", tabId: "w3:t2" }),
   // A plain shell pane is not a conversation.
-  pane({ paneId: "w9:p9", workspaceId: "w1", tabId: "w9:t1", agent: null, status: null }),
+  pane({ paneId: "w9:p9", workspaceId: "w1", tabId: "w9:t1", agent: null, agentSession: null, status: null }),
 ];
 
 const WORKSPACES: HerdrWorkspace[] = [
@@ -116,9 +118,64 @@ test("Conversations.list still lists panes when the label reads fail", async () 
   assert.equal(result.sessions.length, 4);
 });
 
-test("Conversations.read returns the pane output and echoes the line count", async () => {
+function stubStore(): ConversationStore & { calls: Array<[string, unknown]> } {
+  const calls: Array<[string, unknown]> = [];
+  return {
+    calls,
+    readHistory: async (sessionId: string, query: unknown) => {
+      calls.push([sessionId, query]);
+      return {
+        messages: [{ id: "msg_1", role: "user", time: 1, text: "hello" }],
+        has_older: false,
+        oldest_cursor: "1:msg_1",
+      };
+    },
+  };
+}
+
+test("buildSessions carries each pane's agent session id", () => {
+  const sessions = buildSessions([pane({ paneId: "w1:p1", agentSession: "ses_x" })], WORKSPACES, TABS);
+  assert.equal(sessions[0]?.agent_session, "ses_x");
+});
+
+test("Conversations.history reads the agent store for the pane's session", async () => {
+  const store = stubStore();
+  const conversations = new Conversations(stubHerdr(), store);
+  await conversations.list();
+  const result = await conversations.history("w1:p1", { limit: 10 });
+  assert.deepEqual(store.calls, [["ses_test", { limit: 10, before: null }]]);
+  assert.equal(result.source, "history");
+  if (result.source === "history") {
+    assert.equal(result.agent_session, "ses_test");
+    assert.deepEqual(result.messages.map((message) => message.text), ["hello"]);
+  }
+});
+
+test("Conversations.history falls back to the terminal when the store is absent", async () => {
   const client = stubHerdr();
-  const result = await new Conversations(client).read("w1:p1", 50);
-  assert.deepEqual(result, { id: "w1:p1", lines: 50, output: "output for w1:p1\n" });
-  assert.deepEqual(client.readCalls, [["w1:p1", 50]]);
+  const result = await new Conversations(client, null).history("w1:p1", { lines: 20 });
+  assert.equal(result.source, "terminal");
+  if (result.source === "terminal") {
+    assert.equal(result.agent_session, "ses_test");
+    assert.equal(result.output, "output for w1:p1\n");
+    assert.deepEqual(client.readCalls, [["w1:p1", 20]]);
+  }
+});
+
+test("Conversations.history falls back to the terminal when the store has no session", async () => {
+  const client = stubHerdr();
+  const store: ConversationStore = { readHistory: async () => null };
+  const result = await new Conversations(client, store).history("w1:p1");
+  assert.equal(result.source, "terminal");
+});
+
+test("Conversations.history falls back to the terminal for a pane with no agent session", async () => {
+  const client = stubHerdr();
+  const store = stubStore();
+  const conversations = new Conversations(client, store);
+  await conversations.list();
+  const result = await conversations.history("w9:p9");
+  assert.equal(result.source, "terminal");
+  assert.equal(result.agent_session, null);
+  assert.deepEqual(store.calls, []);
 });
