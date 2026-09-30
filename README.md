@@ -33,10 +33,10 @@ It is deliberately narrow. The service:
 
 - invokes firstmate **only** through its documented scripts, using
   `child_process.execFile` with an argument array and `shell: false`;
-- reads the Conversations view **only** through herdr's read-only
-  `pane list` / `pane read` / `workspace list` / `tab list` commands, also via
-  `execFile` with an argument array and `shell: false`, and refuses every other
-  herdr subcommand before a process is spawned;
+- reads the live session list and the terminal fallback through herdr's
+  read-only `pane list` / `pane read` / `workspace list` / `tab list` commands,
+  also via `execFile` with an argument array and `shell: false`, and refuses
+  every other herdr subcommand before a process is spawned;
 - opens the agent's SQLite session store **read-only** (and pins the connection
   with `PRAGMA query_only`) to render a full conversation, never writing to it,
   and degrades to the terminal read when the store is absent;
