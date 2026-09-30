@@ -2,32 +2,48 @@
 # StorageClass `beta3` (Rook-Ceph), TLS terminated at the shared Gateway with
 # the wildcard `*.atus.hr` certificate.
 #
+# Fresh install:
+#
 #   helm upgrade --install firstmate deploy/helm/firstmate \
 #     --namespace firstmate --create-namespace \
 #     -f deploy/helm/firstmate/examples/values-atus.yaml \
 #     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
-#     --set credentials.create.githubToken=github_pat_xxx \
-#     --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx \
-#     --set credentials.create.harness.OPENROUTER_API_KEY=sk-or-xxx
+#     --set credentials.create.githubToken=github_pat_xxx
 #
-# The harness credentials become environment variables in the firstmate
-# container, where the primary harness reads them. The runtime image's default
-# harness is opencode, which reads DEEPSEEK_API_KEY / OPENROUTER_API_KEY; a
-# Claude harness reads ANTHROPIC_API_KEY instead.
+# The atus deployment does not take harness/model credentials from `--set`: the
+# Doppler operator syncs them into Secret `firstmate-doppler-secrets`, wired in
+# as `firstmate.extraEnvFrom` below, where the default opencode harness reads
+# DEEPSEEK_API_KEY / OPENROUTER_API_KEY (a Claude harness reads
+# ANTHROPIC_API_KEY instead). Upgrading the live release therefore passes only
+# the values file; the chart preserves the existing credential Secret and never
+# re-supplies or rotates a credential unless one is explicitly passed.
 #
 # The runtime starts the primary harness in the herdr session and restarts it
 # in the same pane if it exits, so the pod keeps a live firstmate draining
 # queued instructions.
 
-# Images. Build and push these to a registry the cluster can pull from, then
-# replace the repositories (the defaults are local build names).
+# Images. Published to Docker Hub as shimpa/<image> (the atus convention; the
+# cluster pulls these without an imagePullSecret). Tags are immutable and
+# build-specific: the firstmate runtime tag is the git commit the image was
+# built from, and the walkie-talkie tag is reused unchanged while the app source
+# is unchanged.
 firstmate:
   image:
-    repository: registry.atus.hr/firstmate-runtime
-    tag: "0.1.0"
+    repository: shimpa/firstmate-runtime
+    # Commit b78d9d679e00: the jq 1.6 workspace-lookup fix on top of the merged
+    # runtime fix. Built with:
+    #   docker buildx build --platform linux/amd64 \
+    #     -t shimpa/firstmate-runtime:b78d9d679e00 --push deploy/kubernetes/firstmate
+    tag: "b78d9d679e00"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate
+  # Harness/model credentials for the atus deployment are synced into the
+  # namespace by the Doppler operator (DopplerSecret doppler-firstmate ->
+  # Secret firstmate-doppler-secrets), not committed here.
+  extraEnvFrom:
+    - secretRef:
+        name: firstmate-doppler-secrets
   resources:
     requests:
       cpu: 500m
@@ -37,8 +53,8 @@ firstmate:
 
 walkieTalkie:
   image:
-    repository: registry.atus.hr/walkie-talkie
-    tag: "0.1.0"
+    repository: shimpa/walkie-talkie
+    tag: "d1a06ce0a68b"
     pullPolicy: IfNotPresent
 
 persistence:
@@ -60,7 +76,7 @@ httpRoute:
       namespace: nginx-gateway
       sectionName: https-atus-wildcard
   hostnames:
-    - walkie.atus.hr
+    - walkie-talkie.atus.hr
   redirect:
     enabled: true
     parentRefs:

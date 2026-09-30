@@ -88,8 +88,11 @@ herdr_workspace_id() {
   if printf '%s' "$out" | jq -e 'has("error")' >/dev/null 2>&1; then
     return 2
   fi
-  id=$(printf '%s' "$out" | jq -r --arg label "$WORKSPACE_LABEL" \
-    '[.result.workspaces[]? | select(.label == $label) | .workspace_id][0] // empty' 2>/dev/null) \
+  # The jq variable is named `want`, not `label`: `label` is a jq keyword, and
+  # jq 1.6 (the Debian package the runtime image installs) rejects `$label` with
+  # a syntax error, so a `--arg label` / `$label` pair fails the whole read.
+  id=$(printf '%s' "$out" | jq -r --arg want "$WORKSPACE_LABEL" \
+    '[.result.workspaces[]? | select(.label == $want) | .workspace_id][0] // empty' 2>/dev/null) \
     || return 2
   [ -n "$id" ] || return 1
   printf '%s' "$id"

@@ -420,7 +420,7 @@ example is
 
 - Gateway `gateway` in namespace `nginx-gateway`, HTTPS listener
   `https-atus-wildcard` (hostname `*.atus.hr`), HTTP listener `http`.
-- Host `walkie.atus.hr`, with an HTTP → HTTPS redirect.
+- Host `walkie-talkie.atus.hr`, with an HTTP → HTTPS redirect.
 - StorageClass `beta3` (Rook-Ceph), 20Gi.
 - TLS terminates at the Gateway using the existing wildcard certificate, so no
   in-namespace Certificate.
