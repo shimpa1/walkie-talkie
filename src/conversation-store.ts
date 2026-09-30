@@ -27,17 +27,13 @@ export interface StoredConversationMessage {
 export interface StoredConversationPage {
   messages: StoredConversationMessage[];
   has_older: boolean;
-  has_newer: boolean;
   oldest_cursor: string | null;
-  newest_cursor: string | null;
 }
 
 export interface HistoryQuery {
   limit: number;
   /** Load messages older than this cursor. */
   before?: string | null;
-  /** Load messages newer than this cursor. */
-  after?: string | null;
 }
 
 export interface ConversationStore {
@@ -216,33 +212,27 @@ export class OpencodeStore implements ConversationStore {
       if (!this.sessionExists(db, sessionId)) return null;
 
       const before = decodeCursor(query.before ?? null);
-      const after = decodeCursor(query.after ?? null);
-      const descending = after === null;
-      const cursor = after ?? before;
 
       const conditions = ["session_id = ?"];
       const params: Array<string | number> = [sessionId];
-      if (cursor !== null) {
-        const operator = descending ? "<" : ">";
-        conditions.push(`(time_created ${operator} ? OR (time_created = ? AND id ${operator} ?))`);
-        params.push(cursor.time, cursor.time, cursor.id);
+      if (before !== null) {
+        conditions.push("(time_created < ? OR (time_created = ? AND id < ?))");
+        params.push(before.time, before.time, before.id);
       }
-      const order = descending ? "DESC" : "ASC";
       params.push(limit + 1);
 
       let rows = db
         .prepare(
           "SELECT id, time_created AS time, " +
             "CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END AS role FROM message " +
-            `WHERE ${conditions.join(" AND ")} ORDER BY time_created ${order}, id ${order} LIMIT ?`,
+            `WHERE ${conditions.join(" AND ")} ORDER BY time_created DESC, id DESC LIMIT ?`,
         )
         .all(...params) as unknown as MessageRow[];
       const hasExtra = rows.length > limit;
       rows = rows.slice(0, limit);
-      if (descending) rows.reverse();
+      rows.reverse();
 
       const oldest = rows[0] ?? null;
-      const newest = rows[rows.length - 1] ?? null;
       const texts = this.textByMessage(
         db,
         rows.map((row) => row.id),
@@ -257,10 +247,8 @@ export class OpencodeStore implements ConversationStore {
 
       return {
         messages,
-        has_older: descending ? hasExtra : true,
-        has_newer: descending ? before !== null : hasExtra,
+        has_older: hasExtra,
         oldest_cursor: oldest === null ? null : encodeCursor(oldest.time, oldest.id),
-        newest_cursor: newest === null ? null : encodeCursor(newest.time, newest.id),
       };
     } catch (error) {
       this.log(

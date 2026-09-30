@@ -441,6 +441,7 @@ function messageCards(messages) {
 function renderHistory() {
   const box = conversationOutput();
   const nearBottom = conversationNearBottom(box);
+  const previousScrollTop = box.scrollTop;
   box.textContent = "";
   if (conversationState.hasOlder) {
     const button = el("button", "ghost small load-older", "Load older messages");
@@ -456,17 +457,22 @@ function renderHistory() {
   if (nearBottom || conversationState.forceScroll) {
     box.scrollTop = box.scrollHeight;
     conversationState.forceScroll = false;
+  } else {
+    box.scrollTop = previousScrollTop;
   }
 }
 
 function renderTerminal(payload) {
   const box = conversationOutput();
   const nearBottom = conversationNearBottom(box);
+  const previousScrollTop = box.scrollTop;
   box.textContent = "";
   box.appendChild(el("pre", "terminal", payload.output || "(no output yet)"));
   if (nearBottom || conversationState.forceScroll) {
     box.scrollTop = box.scrollHeight;
     conversationState.forceScroll = false;
+  } else {
+    box.scrollTop = previousScrollTop;
   }
 }
 

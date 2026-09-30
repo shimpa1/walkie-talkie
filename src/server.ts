@@ -345,23 +345,15 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
           return;
         }
         const before = url.searchParams.get("before");
-        const after = url.searchParams.get("after");
-        if (before !== null && after !== null) {
-          sendError(res, 400, "specify before or after, not both");
+        if (before !== null && before !== "" && !isValidHistoryCursor(before)) {
+          sendError(res, 400, "invalid history cursor");
           return;
-        }
-        for (const cursor of [before, after]) {
-          if (cursor !== null && cursor !== "" && !isValidHistoryCursor(cursor)) {
-            sendError(res, 400, "invalid history cursor");
-            return;
-          }
         }
         const lines = clampLines(url.searchParams.get("lines"));
         try {
           const body = await deps.conversations.history(paneId, {
             limit: clampHistoryLimit(url.searchParams.get("limit")),
             before: before === null || before === "" ? null : before,
-            after: after === null || after === "" ? null : after,
             lines,
           });
           sendJson(res, 200, JSON.stringify(body));

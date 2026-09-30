@@ -16,9 +16,7 @@ function stubStore(): ConversationStore {
           { id: "msg_2", role: "assistant", time: 2, text: "on it" },
         ],
         has_older: false,
-        has_newer: false,
         oldest_cursor: "1:msg_1",
-        newest_cursor: "2:msg_2",
       };
     },
   };
@@ -105,8 +103,6 @@ test("a malformed history cursor is a 400 before any read", async () => {
   try {
     const bad = await getJson(server.url, "/api/sessions/w1:p1?before=nope", "t");
     assert.equal(bad.status, 400);
-    const both = await getJson(server.url, "/api/sessions/w1:p1?before=1:msg_1&after=2:msg_2", "t");
-    assert.equal(both.status, 400);
   } finally {
     await server.close();
   }

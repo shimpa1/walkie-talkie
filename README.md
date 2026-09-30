@@ -515,7 +515,7 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `GET` | `/api/status` | `bin/fm-bearings-snapshot.sh --json` (`fm-bearings.v1`) |
 | `GET` | `/api/receipts?after=<cursor>` | `bin/fm-inbox.sh receipts [--after <cursor>]` |
 | `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list` |
-| `GET` | `/api/sessions/<pane-id>?limit=<n>&before=<cursor>&after=<cursor>` | the agent's session store (read-only), else `herdr pane read <pane-id> --lines <n> --source recent --format text` |
+| `GET` | `/api/sessions/<pane-id>?limit=<n>&before=<cursor>` | the agent's session store (read-only), else `herdr pane read <pane-id> --lines <n> --source recent --format text` |
 | `POST` | `/api/note` | `bin/fm-inbox.sh note --request-id <id> --json -` with text on stdin |
 | `GET` | `/api/push/config` | returns `{"publicKey"}` (open; see below) |
 | `POST` | `/api/push/subscribe` | stores a browser push subscription |
@@ -533,17 +533,16 @@ are the service's own shape rather than a firstmate passthrough:
 `source`:
 
 - `{"source": "history", "id", "agent_session", "messages", "has_older",
-  "has_newer", "oldest_cursor", "newest_cursor"}` - the session's conversation
-  from the agent store. `messages` is ordered oldest-to-newest, each
-  `{"id", "role", "time", "text"}`. `limit` bounds the message rows per page
-  (default 200, clamped); pass `oldest_cursor` as `before` to load older
-  messages and `newest_cursor` as `after` to load newer ones.
+  "oldest_cursor"}` - the session's conversation from the agent store.
+  `messages` is ordered oldest-to-newest, each `{"id", "role", "time", "text"}`.
+  `limit` bounds the message rows per page (default 200, clamped); pass
+  `oldest_cursor` as `before` to load older messages.
 - `{"source": "terminal", "id", "agent_session", "lines", "output"}` - the
   fallback when no agent store or session is available; `lines` is clamped to a
   bounded range.
 
-`<pane-id>` is herdr's pane id (for example `w1:p1`). A `before` or `after`
-cursor that is not a well-formed cursor is a 400, and supplying both is a 400.
+`<pane-id>` is herdr's pane id (for example `w1:p1`). A `before` cursor that is
+not a well-formed cursor is a 400.
 
 `GET /api/push/config` is intentionally **open**. It returns only the VAPID
 public key, which is not a secret: the browser must fetch it before it can

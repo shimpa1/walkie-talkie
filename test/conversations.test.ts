@@ -118,13 +118,6 @@ test("Conversations.list still lists panes when the label reads fail", async () 
   assert.equal(result.sessions.length, 4);
 });
 
-test("Conversations.read returns the pane output and echoes the line count", async () => {
-  const client = stubHerdr();
-  const result = await new Conversations(client).read("w1:p1", 50);
-  assert.deepEqual(result, { id: "w1:p1", lines: 50, output: "output for w1:p1\n" });
-  assert.deepEqual(client.readCalls, [["w1:p1", 50]]);
-});
-
 function stubStore(): ConversationStore & { calls: Array<[string, unknown]> } {
   const calls: Array<[string, unknown]> = [];
   return {
@@ -134,9 +127,7 @@ function stubStore(): ConversationStore & { calls: Array<[string, unknown]> } {
       return {
         messages: [{ id: "msg_1", role: "user", time: 1, text: "hello" }],
         has_older: false,
-        has_newer: false,
         oldest_cursor: "1:msg_1",
-        newest_cursor: "1:msg_1",
       };
     },
   };
@@ -152,7 +143,7 @@ test("Conversations.history reads the agent store for the pane's session", async
   const conversations = new Conversations(stubHerdr(), store);
   await conversations.list();
   const result = await conversations.history("w1:p1", { limit: 10 });
-  assert.deepEqual(store.calls, [["ses_test", { limit: 10, before: null, after: null }]]);
+  assert.deepEqual(store.calls, [["ses_test", { limit: 10, before: null }]]);
   assert.equal(result.source, "history");
   if (result.source === "history") {
     assert.equal(result.agent_session, "ses_test");

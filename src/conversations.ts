@@ -26,12 +26,6 @@ export interface ConversationList {
   sessions: ConversationSession[];
 }
 
-export interface ConversationOutput {
-  id: string;
-  lines: number;
-  output: string;
-}
-
 /** A session's full conversation, read from the agent's own session store. */
 export interface ConversationHistory {
   id: string;
@@ -39,9 +33,7 @@ export interface ConversationHistory {
   source: "history";
   messages: StoredConversationMessage[];
   has_older: boolean;
-  has_newer: boolean;
   oldest_cursor: string | null;
-  newest_cursor: string | null;
 }
 
 /** Fallback for a session with no agent store: the terminal's visible screen. */
@@ -60,8 +52,6 @@ export interface HistoryOptions {
   limit?: number;
   /** Read messages older than this opaque cursor. */
   before?: string | null;
-  /** Read messages newer than this opaque cursor. */
-  after?: string | null;
   /** Lines to request from the terminal when history is unavailable. */
   lines?: number;
 }
@@ -167,8 +157,8 @@ export function clampLines(value: unknown): number {
  * The read-only Conversations view. `list` joins herdr's panes, workspaces, and
  * tabs into a fleet session list; `history` reads a session's full conversation
  * from the agent's own store, falling back to the terminal's visible screen
- * (`read`) when no store or agent session is available. Every read delegates to
- * a read-only client, so the service never steers a session.
+ * when no store or agent session is available. Every read delegates to a
+ * read-only client, so the service never steers a session.
  */
 export class Conversations {
   private readonly herdr: HerdrClient;
@@ -193,11 +183,6 @@ export class Conversations {
     return { sessions: buildSessions(panes, workspaces, tabs) };
   }
 
-  async read(paneId: string, lines: number = DEFAULT_CONVERSATION_LINES): Promise<ConversationOutput> {
-    const output = await this.herdr.readPane(paneId, lines);
-    return { id: paneId, lines, output };
-  }
-
   /**
    * Read one session's detail: its full conversation from the agent store when
    * possible, else the terminal's visible screen. The pane-to-agent-session map
@@ -209,7 +194,6 @@ export class Conversations {
       const page = await this.store.readHistory(agentSession, {
         limit: options.limit ?? DEFAULT_HISTORY_LIMIT,
         before: options.before ?? null,
-        after: options.after ?? null,
       });
       if (page !== null) {
         return { id: paneId, agent_session: agentSession, source: "history", ...page };

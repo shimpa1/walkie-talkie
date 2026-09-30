@@ -106,9 +106,7 @@ test("readHistory returns the latest page oldest-first with cursors", async () =
     ],
   );
   assert.equal(page.has_older, true);
-  assert.equal(page.has_newer, false);
   assert.equal(page.oldest_cursor, "1003:msg_3");
-  assert.equal(page.newest_cursor, "1004:msg_4");
 });
 
 test("readHistory paginates older messages with a before cursor", async () => {
@@ -126,27 +124,7 @@ test("readHistory paginates older messages with a before cursor", async () => {
     ["msg_0", "msg_1"],
   );
   assert.equal(page.has_older, false);
-  assert.equal(page.has_newer, true);
   assert.equal(page.oldest_cursor, "1000:msg_0");
-});
-
-test("readHistory returns newer messages with an after cursor", async () => {
-  const { db, path } = makeStore();
-  for (let index = 0; index < 5; index += 1) {
-    addMessage(db, `msg_${index}`, 1000 + index, "assistant", [{ type: "text", text: `message ${index}` }]);
-  }
-  db.close();
-
-  const store = new OpencodeStore({ dbPath: path });
-  const page = await store.readHistory(SESSION, { limit: 10, after: "1001:msg_1" });
-  assert.ok(page);
-  assert.deepEqual(
-    page.messages.map((message) => message.id),
-    ["msg_2", "msg_3", "msg_4"],
-  );
-  assert.equal(page.has_newer, false);
-  assert.equal(page.has_older, true);
-  assert.equal(page.newest_cursor, "1004:msg_4");
 });
 
 test("readHistory joins a message's text parts and ignores non-text parts", async () => {
