@@ -280,9 +280,10 @@ The chart validates `agents` at render time and fails with a specific message
 instead of writing a config firstmate or opencode cannot read: a missing harness
 name or provider id, a duplicate, a provider field the schema does not allow, an
 `apiKeyEnv` no harness declares, a dispatch profile naming an undeclared
-harness, a provider catalog without the `opencode` harness, or an enabled block
-that declares neither a provider nor a dispatch.
-`dispatch.default` (and a rule's `use`) accepts either the array form or a
+harness, an explicitly empty `dispatch.default`, a provider catalog without the
+`opencode` harness, or an enabled block that declares neither a provider nor a
+dispatch.
+`dispatch.default` (and a rule's `use`) accepts either a non-empty array or a
 single profile object, matching firstmate's own schema.
 
 A profile needs only `harness` for the default, non-typed deployment; the
