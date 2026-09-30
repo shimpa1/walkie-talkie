@@ -6,7 +6,8 @@ reach your fleet and direct it from a phone.
 The first slice, **Walkie-Talkie**, let you see what the fleet is doing and drop an
 instruction into firstmate's existing intake, end to end. This slice adds
 **push notifications**: firstmate can ping the phone when a pull request is
-ready for review, a decision is waiting, or a worker is blocked.
+ready for review, a decision is waiting, or a worker is blocked, plus a
+read-only **Conversations** view of the fleet's live sessions.
 
 ## What it does
 
@@ -14,8 +15,13 @@ ready for review, a decision is waiting, or a worker is blocked.
   firstmate home, queues instructions into it, and pushes notifications to the
   installed web app.
 - A minimal installable web app served by the same service at `/` with a status
-  view, an instruction composer (with hold-to-talk voice input), and a
-  notification opt-in.
+  view, an instruction composer (with hold-to-talk voice input), a read-only
+  Conversations view of the fleet's live sessions, and a notification opt-in.
+- A **Conversations** view: a list of the fleet's live sessions (the primary
+  firstmate session and each worker/scout) and, for the selected session, its
+  recent terminal output, refreshed live. It is a herdr-like read on the phone,
+  and it is also the reply channel: firstmate's answers to queued instructions
+  appear in the primary session's output.
 - Self-hosted Web Push with VAPID: the service generates and holds its own key
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
@@ -24,6 +30,10 @@ It is deliberately narrow. The service:
 
 - invokes firstmate **only** through its documented scripts, using
   `child_process.execFile` with an argument array and `shell: false`;
+- reads the Conversations view **only** through herdr's read-only
+  `pane list` / `pane read` / `workspace list` / `tab list` commands, also via
+  `execFile` with an argument array and `shell: false`, and refuses every other
+  herdr subcommand before a process is spawned;
 - never changes a project and never performs crew, merge, or deploy actions;
 - has exactly one write: it queues a note through `fm-inbox note`, exactly as
   firstmate already accepts one;
@@ -31,7 +41,7 @@ It is deliberately narrow. The service:
   exactly once per new event.
 
 It does **not** ship a native app, terminate TLS, support multiple users, steer
-individual workers, carry notification actions, or perform any
+or type into individual workers, carry notification actions, or perform any
 decision/approval/merge action.
 
 ## Requirements
@@ -40,6 +50,9 @@ decision/approval/merge action.
   `crypto`, and `child_process` modules).
 - A firstmate home with its `bin/` scripts, including `fm-inbox.sh` and
   `fm-bearings-snapshot.sh`.
+- For the Conversations view only: a reachable `herdr` CLI and a running herdr
+  session (see [Conversations](#conversations)). The status, compose, and
+  notification features do not need it.
 
 ## Install
 
@@ -73,6 +86,8 @@ cp walkie-talkie.config.example.json walkie-talkie.config.json
 | VAPID contact | `FM_WT_VAPID_SUBJECT` | `vapidSubject` | `mailto:admin@localhost` |
 | push poll interval | `FM_WT_PUSH_POLL_SECONDS` | `pushPollSeconds` | `20` |
 | push state file | `FM_WT_PUSH_STORE` | `pushStore` | `./walkie-talkie.push.json` |
+| herdr session | `FM_WT_HERDR_SESSION` | `herdrSession` | `$HERDR_SESSION`, else `default` |
+| herdr executable | `FM_WT_HERDR_BIN` | `herdrBin` | `herdr` |
 | config file path | `FM_WT_CONFIG` | — | `./walkie-talkie.config.json` |
 
 `walkie-talkie.config.json` is gitignored. Do not commit a token.
@@ -370,6 +385,38 @@ the Home Screen**, and only on **iOS 16.4 or newer**. In Safari, tap Share ->
 **Add to Home Screen**, open the app from the new icon, then use **Settings ->
 Enable on this device**. A plain Safari tab cannot receive notifications.
 
+## Conversations
+
+**Conversations** is a read-only, herdr-like view of the fleet from the phone:
+a list of every live session and, for the selected one, its recent terminal
+output, refreshed live. The list is the primary firstmate session plus each
+worker/scout session, and the primary session's output is also the reply
+channel, so firstmate's answers to queued instructions can be read in the app.
+
+The service enumerates sessions with herdr's read-only `pane list`,
+`workspace list`, and `tab list`, and reads one session with `pane read`,
+always scoped to one named session with `--session <name>`. It never calls a
+mutating herdr subcommand: the client refuses anything outside that read-only
+set before spawning a process, so the view can only read a session, never steer
+or type into one. This is deliberately the first version; steering is a later
+slice.
+
+Configuration:
+
+- The session is `FM_WT_HERDR_SESSION` (config key `herdrSession`), falling back
+  to the ambient `HERDR_SESSION`, then to `default`. In the co-deployed pod
+  `HERDR_SESSION` is already exported, so it is picked up automatically.
+- The executable is `FM_WT_HERDR_BIN` (config key `herdrBin`), defaulting to
+  `herdr` on `PATH`. Set it to an absolute path when the binary is not on the
+  service's `PATH`; the service and herdr's session socket must share the same
+  home.
+
+Every pane herdr reports is listed, so a pane with no registered agent still
+appears with an unknown status rather than the list going blank; the detail read
+is line-bounded, so the view stays cheap on a phone. If herdr is not reachable
+the Conversations view shows the error inline and the status, compose, and
+notification features are unaffected.
+
 ## Voice input
 
 The instruction composer has a **Hold to talk** microphone button, and it works
@@ -426,6 +473,8 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `GET` | `/api/health` | `bin/fm-inbox.sh ready` (`fm-primary-ready.v1`), open |
 | `GET` | `/api/status` | `bin/fm-bearings-snapshot.sh --json` (`fm-bearings.v1`) |
 | `GET` | `/api/receipts?after=<cursor>` | `bin/fm-inbox.sh receipts [--after <cursor>]` |
+| `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list` |
+| `GET` | `/api/sessions/<pane-id>?lines=<n>` | `herdr pane read <pane-id> --lines <n> --source recent --format text` |
 | `POST` | `/api/note` | `bin/fm-inbox.sh note --request-id <id> --json -` with text on stdin |
 | `GET` | `/api/push/config` | returns `{"publicKey"}` (open; see below) |
 | `POST` | `/api/push/subscribe` | stores a browser push subscription |
@@ -433,7 +482,13 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `POST` | `/api/push/test` | sends one test notification to all subscriptions |
 | `GET` | `/` | the web app |
 
-Firstmate's JSON is passed through unchanged.
+Firstmate's JSON is passed through unchanged. The two Conversations endpoints
+are the service's own shape rather than a firstmate passthrough:
+`GET /api/sessions` returns `{"sessions": [...]}` with `id`, `name`, `kind`
+(`primary`/`secondmate`/`worker`), `status`, `agent`, `title`, `cwd`,
+`workspace_id`, and `tab_id`, and `GET /api/sessions/<pane-id>` returns
+`{"id", "lines", "output"}`. `<pane-id>` is herdr's pane id (for example
+`w1:p1`); `lines` is clamped to a bounded range.
 
 `GET /api/push/config` is intentionally **open**. It returns only the VAPID
 public key, which is not a secret: the browser must fetch it before it can
@@ -493,9 +548,14 @@ transitive supply-chain surface in production.
 
 - The bearer token is compared in constant time (`crypto.timingSafeEqual` over
   SHA-256 digests, so unequal lengths do not throw or leak).
-- All firstmate invocations use `execFile` with an argument array and
+- All firstmate and herdr invocations use `execFile` with an argument array and
   `shell: false`. Request input is passed as a literal argument or on stdin and
   is never interpolated into a shell string.
+- The Conversations view is read-only: the herdr client permits only
+  `pane list`, `pane read`, `workspace list`, and `tab list`, and refuses every
+  other subcommand before a process is spawned. A session id that is not a
+  well-formed pane id (option-like or containing a path separator) is refused
+  before any herdr call.
 - Request ids are validated against firstmate's own contract before use.
 - The service binds loopback by default and refuses a public bind unless
   explicitly overridden.

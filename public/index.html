@@ -26,6 +26,7 @@
 
     <nav class="tabs" aria-label="Sections">
       <button class="tab is-active" data-view="status" type="button">Status</button>
+      <button class="tab" data-view="conversations" type="button">Conversations</button>
       <button class="tab" data-view="compose" type="button">Compose</button>
       <button class="tab" data-view="receipts" type="button">Receipts</button>
       <button class="tab" data-view="settings" type="button">Settings</button>
@@ -37,6 +38,30 @@
         <h2 id="status-heading" class="visually-hidden">Fleet status</h2>
         <div id="status-meta" class="meta"></div>
         <div id="status-body" class="cards"></div>
+      </section>
+
+      <section id="view-conversations" class="view" aria-labelledby="conversations-heading">
+        <h2 id="conversations-heading" class="visually-hidden">Conversations</h2>
+        <div id="conversations-pane" class="conversations">
+          <div class="conversation-list">
+            <div class="conversation-list-head">
+              <span class="section-title">Live sessions</span>
+              <button id="conversations-refresh" class="ghost small" type="button">Refresh</button>
+            </div>
+            <div id="sessions-body" class="sessions"></div>
+          </div>
+          <div id="conversation-detail" class="conversation-detail" hidden>
+            <div class="conversation-detail-head">
+              <button id="conversation-back" class="ghost small conversation-back" type="button">Back</button>
+              <div class="conversation-detail-title">
+                <strong id="conversation-name">—</strong>
+                <span id="conversation-sub" class="hint"></span>
+              </div>
+              <span id="conversation-status" class="badge">—</span>
+            </div>
+            <pre id="conversation-output" class="terminal">Select a session to read its recent output.</pre>
+          </div>
+        </div>
       </section>
 
       <section id="view-compose" class="view" aria-labelledby="compose-heading">

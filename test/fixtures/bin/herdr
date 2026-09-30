@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Test double for the herdr CLI's read-only surface. Implements just enough of
+# `pane list`, `workspace list`, `tab list`, and `pane read` to exercise the
+# Conversations routes/backend against a real child process without a live herdr
+# server.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FIXTURES="$(cd "$HERE/.." && pwd)"
+
+if [ -n "${FM_TEST_HERDR_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$FM_TEST_HERDR_LOG"
+fi
+
+args=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--session" ]; then
+    shift 2
+    continue
+  fi
+  args+=("$1")
+  shift
+done
+
+cmd="${args[0]:-} ${args[1]:-}"
+case "$cmd" in
+  "pane list")
+    cat "$FIXTURES/herdr-panes.json"
+    ;;
+  "workspace list")
+    cat "$FIXTURES/herdr-workspaces.json"
+    ;;
+  "tab list")
+    cat "$FIXTURES/herdr-tabs.json"
+    ;;
+  "pane read")
+    pane="${args[2]:-}"
+    if [ "$pane" = "missing" ]; then
+      printf '{"id":"cli:pane:read","error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$pane" >&2
+      exit 1
+    fi
+    cat "$FIXTURES/herdr-output.txt"
+    ;;
+  *)
+    printf 'fake herdr: unsupported test subcommand: %s\n' "$cmd" >&2
+    exit 1
+    ;;
+esac

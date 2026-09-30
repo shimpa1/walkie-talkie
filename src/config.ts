@@ -20,6 +20,10 @@ export interface AppConfig {
   pushPollSeconds: number;
   /** Gitignored file holding the VAPID keys, subscriptions, and event cursor. */
   pushStorePath: string;
+  /** Named herdr session whose panes the read-only Conversations view enumerates. */
+  herdrSession: string;
+  /** herdr CLI executable: a name resolved on PATH or an absolute path. */
+  herdrBin: string;
 }
 
 interface FileConfig {
@@ -35,6 +39,8 @@ interface FileConfig {
   vapidPrivateKey?: unknown;
   pushPollSeconds?: unknown;
   pushStore?: unknown;
+  herdrSession?: unknown;
+  herdrBin?: unknown;
 }
 
 export class ConfigError extends Error {
@@ -49,6 +55,8 @@ export const DEFAULT_PUSH_POLL_SECONDS = 20;
 export const DEFAULT_PUSH_STORE = "walkie-talkie.push.json";
 export const MIN_PUSH_POLL_SECONDS = 5;
 export const MAX_PUSH_POLL_SECONDS = 24 * 60 * 60;
+export const DEFAULT_HERDR_SESSION = "default";
+export const DEFAULT_HERDR_BIN = "herdr";
 
 export function defaultPublicDir(from: string): string {
   return resolve(from, "public");
@@ -178,6 +186,17 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     env.FM_WT_PUSH_STORE?.trim() || asString(file.pushStore, "pushStore") || DEFAULT_PUSH_STORE;
   const pushStorePath = isAbsolute(pushStoreRaw) ? pushStoreRaw : resolve(cwd, pushStoreRaw);
 
+  // The Conversations view reads the pod's own herdr session. In the co-deployed
+  // pod HERDR_SESSION is already exported to both containers, so it is the
+  // ambient default; FM_WT_HERDR_SESSION (or the config file) overrides it.
+  const herdrSession =
+    env.FM_WT_HERDR_SESSION?.trim() ||
+    asString(file.herdrSession, "herdrSession") ||
+    env.HERDR_SESSION?.trim() ||
+    DEFAULT_HERDR_SESSION;
+  const herdrBin =
+    env.FM_WT_HERDR_BIN?.trim() || asString(file.herdrBin, "herdrBin") || DEFAULT_HERDR_BIN;
+
   return {
     fmHome,
     fmBin,
@@ -192,6 +211,8 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     vapidPrivateKey,
     pushPollSeconds,
     pushStorePath,
+    herdrSession,
+    herdrBin,
   };
 }
 
