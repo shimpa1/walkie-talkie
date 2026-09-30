@@ -141,7 +141,7 @@ export class OpencodeStore implements ConversationStore {
   private readonly dbPath: string;
   private readonly log: (line: string) => void;
   private db: SqliteDatabase | null = null;
-  private opened = false;
+  private opening: Promise<SqliteDatabase | null> | null = null;
 
   constructor(options: OpencodeStoreOptions) {
     this.dbPath = options.dbPath;
@@ -149,8 +149,19 @@ export class OpencodeStore implements ConversationStore {
   }
 
   private async open(): Promise<SqliteDatabase | null> {
-    if (this.opened) return this.db;
-    this.opened = true;
+    if (this.db !== null) return this.db;
+    // Share one in-flight attempt so concurrent callers cannot race a half-open
+    // connection, and only latch on success: a failed open is retried.
+    if (this.opening !== null) return this.opening;
+    this.opening = this.connect();
+    try {
+      return await this.opening;
+    } finally {
+      this.opening = null;
+    }
+  }
+
+  private async connect(): Promise<SqliteDatabase | null> {
     try {
       // Dynamic import so a runtime without node:sqlite degrades instead of
       // crashing the whole service at startup.
@@ -161,11 +172,11 @@ export class OpencodeStore implements ConversationStore {
       db.exec("PRAGMA query_only = ON");
       db.exec("PRAGMA busy_timeout = 5000");
       this.db = db;
+      return db;
     } catch (error) {
-      this.db = null;
       this.log(`conversation history disabled: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
-    return this.db;
   }
 
   private sessionExists(db: SqliteDatabase, sessionId: string): boolean {

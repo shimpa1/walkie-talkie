@@ -20,9 +20,7 @@ interface Seeder {
   path: string;
 }
 
-function makeStore(): Seeder {
-  const dir = mkdtempSync(join(tmpdir(), "reach-store-"));
-  const path = join(dir, "opencode.db");
+function seedStore(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec(`
     CREATE TABLE session (id text PRIMARY KEY);
@@ -43,7 +41,13 @@ function makeStore(): Seeder {
     );
   `);
   db.prepare("INSERT INTO session (id) VALUES (?)").run(SESSION);
-  return { db, path };
+  return db;
+}
+
+function makeStore(): Seeder {
+  const dir = mkdtempSync(join(tmpdir(), "reach-store-"));
+  const path = join(dir, "opencode.db");
+  return { db: seedStore(path), path };
 }
 
 function addMessage(
@@ -177,6 +181,22 @@ test("readHistory returns null for an unknown session, bad id, or missing store"
     limit: 10,
   });
   assert.equal(missing, null);
+});
+
+test("readHistory retries and recovers once the store appears", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reach-store-late-"));
+  const path = join(dir, "opencode.db");
+  const store = new OpencodeStore({ dbPath: path });
+
+  assert.equal(await store.readHistory(SESSION, { limit: 10 }), null);
+
+  const db = seedStore(path);
+  addMessage(db, "msg_0", 1000, "assistant", [{ type: "text", text: "appeared later" }]);
+  db.close();
+
+  const page = await store.readHistory(SESSION, { limit: 10 });
+  assert.ok(page);
+  assert.deepEqual(page.messages.map((message) => message.text), ["appeared later"]);
 });
 
 test("readHistory is read-only: a query cannot mutate the store", async () => {

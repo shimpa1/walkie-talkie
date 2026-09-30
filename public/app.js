@@ -544,7 +544,10 @@ async function fetchLatestConversation() {
 
 async function fetchNewerMessages() {
   const cursor = conversationState.newestCursor;
-  if (!cursor) return;
+  if (!cursor) {
+    await fetchLatestConversation();
+    return;
+  }
   const payload = await fetchConversation({ after: cursor });
   if (payload === null) return;
   if (payload.source !== "history") {
