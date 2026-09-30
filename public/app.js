@@ -575,6 +575,7 @@ async function refreshHistoryMessages() {
   const changed = mergeMessages(normalizeMessages(payload.messages));
   if (conversationState.oldestCursor === null && payload.oldest_cursor) {
     conversationState.oldestCursor = payload.oldest_cursor;
+    conversationState.hasOlder = Boolean(payload.has_older);
   }
   if (changed > 0) renderHistory();
 }

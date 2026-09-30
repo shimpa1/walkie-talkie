@@ -447,3 +447,97 @@ test("a history poll replaces the view when the pane's agent session changes", a
     await server.close();
   }
 });
+
+function seedEmptyHistoryStore(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE session (id text PRIMARY KEY);
+    CREATE TABLE message (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      time_created integer NOT NULL,
+      data text NOT NULL
+    );
+    CREATE TABLE part (
+      id text PRIMARY KEY,
+      message_id text NOT NULL,
+      session_id text NOT NULL,
+      time_created integer NOT NULL,
+      data text NOT NULL
+    );
+  `);
+  db.prepare("INSERT INTO session (id) VALUES (?)").run("ses_primary");
+  db.close();
+}
+
+function appendHistoryMessages(dbPath: string, sessionId: string, count: number): void {
+  const db = new DatabaseSync(dbPath);
+  const insertMessage = db.prepare(
+    "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+  );
+  const insertPart = db.prepare(
+    "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+  );
+  for (let index = 0; index < count; index += 1) {
+    const id = `msg_${String(index).padStart(3, "0")}`;
+    insertMessage.run(id, sessionId, 1000 + index, JSON.stringify({ role: "assistant" }));
+    insertPart.run(
+      `${id}_p0`,
+      id,
+      sessionId,
+      1000 + index,
+      JSON.stringify({ type: "text", text: `message ${index}` }),
+    );
+  }
+  db.close();
+}
+
+test("a history poll adopts has_older so messages beyond the latest window stay reachable", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const dir = mkdtempSync(join(tmpdir(), "reach-app-has-older-"));
+  const dbPath = join(dir, "opencode.db");
+  seedEmptyHistoryStore(dbPath);
+
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: HERDR_BIN,
+    conversationStore: new OpencodeStore({ dbPath }),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some((element) => element.className === "session-card" && element.dataset.id === "w1:p1"),
+    );
+    const card = created.find(
+      (element) => element.className === "session-card" && element.dataset.id === "w1:p1",
+    );
+    assert.ok(card);
+    card.dispatch("click");
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className === "hint" && element.textContent === "No conversation messages yet.",
+      ),
+    );
+    assert.ok(
+      !created.some((element) => element.className.includes("load-older")),
+      "no older-messages button before older messages exist",
+    );
+
+    appendHistoryMessages(dbPath, "ses_primary", 201);
+
+    getElement("conversations-refresh").dispatch("click");
+
+    await waitFor(() => created.some((element) => element.className.includes("load-older")));
+  } finally {
+    await server.close();
+  }
+});
