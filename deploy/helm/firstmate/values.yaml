@@ -36,6 +36,19 @@ firstmate:
   # for it.
   herdrSession: firstmate
 
+  # Command that starts firstmate's primary harness inside the herdr session at
+  # container start. The entrypoint supervises it and starts it again in the
+  # same pane when it exits, so the pod runs a live firstmate that drains queued
+  # instructions rather than only the herdr server. The default matches the
+  # runtime image's default harness (opencode) and auto-approves its tool calls,
+  # which an unattended primary needs; override it for another harness or a
+  # different posture. Set it empty to run the herdr server only and start the
+  # harness yourself after attaching. Harness credentials are passed to it
+  # through `credentials.create.harness` (or an existing Secret), which become
+  # environment variables in this container.
+  harnessCommand: >-
+    OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode
+
   # Extra environment variables for the firstmate container. Harness and model
   # credentials belong under `credentials`, not here.
   extraEnv: []
@@ -213,9 +226,11 @@ credentials:
     # Token for the GitHub CLI inside the firstmate container.
     githubToken: ""
     # Harness/model credentials: map of environment-variable name to value.
-    # Each becomes an environment variable in the firstmate container, read
-    # from the created Secret. A name that collides with a reserved name makes
-    # the chart fail at render instead of silently overwriting the built-in
+    # Each becomes an environment variable in the firstmate container, where
+    # the primary harness reads it (for the default opencode harness, e.g.
+    # DEEPSEEK_API_KEY or OPENROUTER_API_KEY; for a Claude harness,
+    # ANTHROPIC_API_KEY). A name that collides with a reserved name makes the
+    # chart fail at render instead of silently overwriting the built-in
     # credential: the `walkieTalkieToken`/`githubToken` key names (see
     # `keys`) and the `GH_TOKEN`/`GITHUB_TOKEN` env names are all reserved.
     harness: {}
@@ -225,10 +240,12 @@ credentials:
   keys:
     walkieTalkieToken: walkie-talkie-token
     githubToken: github-token
-    # Map of environment-variable name to key in the existing Secret. Ignored
-    # in created-Secret mode (the env-var name is the key there). The env
-    # names `GH_TOKEN`/`GITHUB_TOKEN` are reserved and make the chart fail at
-    # render if reused here.
+    # Map of environment-variable name to key in the existing Secret, e.g.
+    # `DEEPSEEK_API_KEY: deepseek-api-key` or
+    # `ANTHROPIC_API_KEY: anthropic-api-key`. Ignored in created-Secret mode
+    # (the env-var name is the key there). The env names
+    # `GH_TOKEN`/`GITHUB_TOKEN` are reserved and make the chart fail at render
+    # if reused here.
     harness: {}
 
 # ---------------------------------------------------------------------------

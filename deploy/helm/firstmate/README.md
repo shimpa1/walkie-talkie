@@ -26,6 +26,15 @@ path, `storageClass` (empty by default; the atus example sets `beta3`), storage
 size, resources, `httpRoute` parentRefs and hostnames, TLS, and the credential
 Secret.
 
+At container start the firstmate container seeds its home, runs the herdr
+headless server, and starts the primary harness inside the session from
+`firstmate.harnessCommand` (default the image's opencode harness); it restarts
+the harness in the same pane when it exits, so the pod keeps a live firstmate
+draining queued instructions. The harness reads its provider credentials from
+the container environment, which the chart fills from
+`credentials.create.harness` or `credentials.keys.harness` (for opencode, e.g.
+`DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY`; for Claude, `ANTHROPIC_API_KEY`).
+
 Harness/model credentials (`credentials.create.harness` / `credentials.keys.harness`)
 may not use the reserved names the chart manages for itself — the
 `credentials.keys.walkieTalkieToken` and `credentials.keys.githubToken` key
