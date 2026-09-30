@@ -3,6 +3,8 @@
 {{- $githubKey := .Values.credentials.keys.githubToken -}}
 {{- $tokenKey := .Values.credentials.keys.walkieTalkieToken -}}
 {{- $includeGithub := .Values.credentials.githubTokenEnabled -}}
+{{- $agentsProviders := and .Values.agents.enabled (gt (len (default (list) .Values.agents.providers)) 0) -}}
+{{- $agentsDispatch := and .Values.agents.enabled .Values.agents.dispatch -}}
 {{- $harness := dict -}}
 {{- if .Values.credentials.existingSecret -}}
 {{- $harness = .Values.credentials.keys.harness -}}
@@ -53,6 +55,9 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.agents.enabled }}
+        checksum/agents: {{ include (print $.Template.BasePath "/configmap-agents.yaml") . | sha256sum }}
+        {{- end }}
         {{- if and $explicitCredential (not .Values.credentials.existingSecret) }}
         checksum/secret: {{ include "firstmate.secretChecksum" . | sha256sum }}
         {{- end }}
@@ -138,6 +143,18 @@ spec:
           volumeMounts:
             - name: home
               mountPath: {{ $home }}
+            {{- if $agentsDispatch }}
+            - name: agents
+              mountPath: {{ printf "%s/config/crew-dispatch.json" $home | quote }}
+              subPath: crew-dispatch.json
+              readOnly: true
+            {{- end }}
+            {{- if $agentsProviders }}
+            - name: agents
+              mountPath: {{ printf "%s/.config/opencode/opencode.json" $home | quote }}
+              subPath: opencode.json
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.firstmate.resources | nindent 12 }}
           {{- with .Values.firstmate.securityContext }}
@@ -194,8 +211,9 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- if not .Values.persistence.enabled }}
+      {{- if or (not .Values.persistence.enabled) .Values.agents.enabled }}
       volumes:
+        {{- if not .Values.persistence.enabled }}
         {{- if .Values.persistence.existingClaim }}
         - name: home
           persistentVolumeClaim:
@@ -203,6 +221,12 @@ spec:
         {{- else }}
         - name: home
           emptyDir: {}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.agents.enabled }}
+        - name: agents
+          configMap:
+            name: {{ include "firstmate.agentsConfigMapName" . }}
         {{- end }}
       {{- end }}
   {{- if .Values.persistence.enabled }}

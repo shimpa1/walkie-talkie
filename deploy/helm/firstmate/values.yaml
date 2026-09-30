@@ -249,6 +249,83 @@ credentials:
     harness: {}
 
 # ---------------------------------------------------------------------------
+# Agent configuration: which harnesses, providers/models, and per-task
+# dispatch defaults the deployed firstmate may use.
+# ---------------------------------------------------------------------------
+# When `enabled`, the chart renders a ConfigMap and mounts it into the
+# firstmate home so no image rebuild is needed to add or remove an agent:
+#   * <home>/.config/opencode/opencode.json  the provider/model catalog the
+#     opencode harness reads (its global config);
+#   * <home>/config/crew-dispatch.json       firstmate's per-task dispatch
+#     profiles that choose a harness and model.
+# Authorization env vars are still delivered through the credential Secret
+# (credentials.create.harness / credentials.keys.harness); `harnesses[].env`
+# declares the names and the chart fails the render if a provider references
+# an undeclared one. See docs/deploy-kubernetes.md.
+agents:
+  enabled: false
+
+  # Harnesses firstmate may launch, and the env vars that authorize each. The
+  # harness executable must already exist in the runtime image (the
+  # HARNESS_PACKAGES build arg); this declares which are usable and how.
+  # Every dispatch profile's `harness` must be declared here.
+  harnesses: []
+  #  - name: opencode
+  #    env:
+  #      - DEEPSEEK_API_KEY
+  #      - OPENROUTER_API_KEY
+
+  # Provider/model catalog rendered to the opencode global config. Any
+  # models.dev provider id or OpenAI-compatible endpoint can be declared, so
+  # no vendor is baked in.
+  #   id       (required) provider id, e.g. deepseek, openrouter, local3090
+  #   name     display name
+  #   npm      provider package, e.g. "@ai-sdk/openai-compatible"
+  #   baseURL  OpenAI-compatible endpoint base URL
+  #   apiKeyEnv  env var name for the key; the value comes from the credential
+  #              Secret and must be declared under some harnesses[].env. A
+  #              provider that needs no key (a local OpenAI-compatible server)
+  #              omits it.
+  #   models   map of model id to model config (name and any provider fields)
+  #   options  extra provider options passed through, except `apiKey`; declare
+  #              the key with apiKeyEnv instead
+  providers: []
+  #  - id: deepseek
+  #    apiKeyEnv: DEEPSEEK_API_KEY
+  #  - id: openrouter
+  #    apiKeyEnv: OPENROUTER_API_KEY
+  #  - id: local3090
+  #    name: Local 3090 (Qwen3.8-27B)
+  #    npm: "@ai-sdk/openai-compatible"
+  #    baseURL: http://10.4.0.20:8000/v1
+  #    models:
+  #      qwen3.8-27b:
+  #        name: Qwen3.8-27B (3090)
+
+  # firstmate's per-task dispatch profiles (its crew-dispatch schema): `rules`
+  # with natural-language `when` and `use` profiles, plus an optional `default`
+  # profile array (or a single profile object; a rule's `use` takes either form
+  # too). Each profile names a declared harness and an optional model as
+  # "<provider>/<model-id>".
+  #
+  # A profile needs only `harness` for the default, non-typed deployment. When
+  # typed dispatch is enabled (TYPESAFE_API_KEY), firstmate additionally
+  # requires `provider` on every profile whose harness has no built-in
+  # single-provider mapping - opencode, pi, pi-signed, and omp - naming the
+  # quota-axi provider family; otherwise it rejects the rules file as malformed.
+  # Harnesses with a built-in mapping (claude, codex, grok, kimi, cursor, agy,
+  # muse) need no provider.
+  dispatch: {}
+  #  rules:
+  #    - when: "Mechanical or routine implementation along an existing pattern."
+  #      use:
+  #        - harness: opencode
+  #          model: local3090/qwen3.8-27b
+  #  default:
+  #    - harness: opencode
+  #      model: deepseek/deepseek-chat
+
+# ---------------------------------------------------------------------------
 # Pod scheduling and identity
 # ---------------------------------------------------------------------------
 serviceAccount:

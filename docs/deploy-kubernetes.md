@@ -41,6 +41,7 @@ path when you want a single VM.
 | `Certificate` (optional) | cert-manager Certificate for clusters that terminate TLS in-namespace. |
 | `Secret` (optional) | Credentials, when you do not point at an existing Secret. |
 | `ConfigMap` | Non-secret configuration (paths, session, bind, port). |
+| `ConfigMap` (optional) | Agent configuration (`agents.enabled`): the opencode provider/model catalog and firstmate's dispatch profiles. |
 | `ServiceAccount` | Pod identity; no API permissions are granted. |
 
 The two containers share the home volume:
@@ -185,6 +186,118 @@ extra roll (it settles afterward), and changing the live Secret out-of-band
 does not roll the pod — run
 `kubectl -n <namespace> rollout restart statefulset/<name>` to pick it up.
 
+## Agent configuration
+
+`agents` is a declarative description of the harnesses, provider/model catalog,
+and per-task dispatch defaults the deployed firstmate may use. The chart renders
+it into a ConfigMap mounted on the firstmate home, so adding or removing an
+agent is a values change and a `helm upgrade`, never an image rebuild. It is off
+by default; set `agents.enabled: true` and declare the parts below.
+
+```yaml
+agents:
+  enabled: true
+  harnesses:
+    - name: opencode
+      env:
+        - DEEPSEEK_API_KEY
+        - OPENROUTER_API_KEY
+  providers:
+    - id: deepseek
+      apiKeyEnv: DEEPSEEK_API_KEY
+    - id: openrouter
+      apiKeyEnv: OPENROUTER_API_KEY
+    - id: local3090
+      name: Local 3090 (Qwen3.8-27B)
+      npm: "@ai-sdk/openai-compatible"
+      baseURL: http://10.4.0.20:8000/v1
+      models:
+        qwen3.8-27b:
+          name: Qwen3.8-27B (3090)
+  dispatch:
+    rules:
+      - when: "Mechanical or routine implementation with a settled plan."
+        use:
+          - harness: opencode
+            model: local3090/qwen3.8-27b
+      - when: "Complex, ambiguous, or high-blast-radius work."
+        use:
+          - harness: opencode
+            model: deepseek/deepseek-flash
+    default:
+      - harness: opencode
+        model: deepseek/deepseek-flash
+```
+
+| Value | What it declares | Where it lands |
+| --- | --- | --- |
+| `agents.harnesses` | The harness adapters firstmate may launch and the environment variables that authorize each. The executable must already be in the runtime image (the `HARNESS_PACKAGES` build arg). | Declarative; validated against the dispatch profiles. |
+| `agents.providers` | The provider/model catalog the opencode harness can call, provider-agnostically: any models.dev provider id or OpenAI-compatible endpoint. | `<home>/.config/opencode/opencode.json` (opencode's global config). |
+| `agents.dispatch` | firstmate's per-task dispatch profiles, in its `crew-dispatch.json` schema, that choose a harness and model. A profile needs only `harness` unless typed dispatch is enabled, which also requires `provider` for harnesses without a built-in mapping such as `opencode`. | `<home>/config/crew-dispatch.json`. |
+
+A provider sets `apiKeyEnv` (an environment-variable name, rendered as
+opencode's `{env:NAME}`), or neither for a built-in models.dev provider or a
+local server that needs no key. `models` is a map of model id to its config,
+and `options` is passed through for provider-specific fields except `apiKey`,
+which the chart rejects; declare the key with `apiKeyEnv` instead.
+`agents.providers` renders only to the opencode harness config, so declaring a
+catalog requires `opencode` in `agents.harnesses`; firstmate can dispatch
+opencode crewmates from any primary harness, so the catalog is useful either
+way.
+
+The harness *executables* are an image concern: install every harness you may
+want at build time with `HARNESS_PACKAGES` (for example
+`opencode-ai @openai/codex`), then select, authorize, and route them per
+deployment with `agents`. Adding a model or provider to an installed harness is
+a values-only change.
+
+### Authorization and adding an agent
+
+Provider credentials still reach the container through the credential Secret
+([Credentials](#credentials)); `agents.harnesses[].env` names the variables that
+authorize each harness, and the chart fails the render if a provider references
+a variable no harness declares. `apiKeyEnv` is only the name - the value comes
+from the Secret.
+
+To **add an agent**:
+
+1. add the provider under `agents.providers` (with its `models`), or reference
+   an already-declared provider from a dispatch profile;
+2. add its API-key env var to the relevant `agents.harnesses[].env` and set the
+   value through `credentials.create.harness.<NAME>` (or the existing Secret);
+3. add or adjust a profile in `agents.dispatch` to route work to it;
+4. `helm upgrade` - the agent ConfigMap's checksum rolls the pod.
+
+To **remove an agent**, delete its provider, dispatch profile, and env
+declaration; no image rebuild is involved. The local GPU server is just the
+`local3090` provider above: an OpenAI-compatible `baseURL` and models listed by
+id, with no API key because the server needs none. The network path to it
+(a firewall change) is out of scope here, and so is any app UI for choosing an
+agent per instruction; this chart only makes the agents available and sets
+dispatch defaults.
+
+The chart validates `agents` at render time and fails with a specific message
+instead of writing a config firstmate or opencode cannot read: a missing harness
+name or provider id, a duplicate, a provider field the schema does not allow, an
+`apiKeyEnv` no harness declares, a dispatch profile naming an undeclared
+harness, an explicitly empty `dispatch.default`, a provider catalog without the
+`opencode` harness, or an enabled block that declares neither a provider nor a
+dispatch.
+`dispatch.default` (and a rule's `use`) accepts either a non-empty array or a
+single profile object, matching firstmate's own schema.
+
+A profile needs only `harness` for the default, non-typed deployment; the
+example above omits `provider` for that reason. When firstmate runs with typed
+dispatch enabled (`TYPESAFE_API_KEY`), its resolver also requires `provider` on
+every profile whose harness has no built-in single-provider mapping:
+`claude`, `codex`, `grok`, `kimi`, `cursor`, `agy`, and `muse` have one, while
+`opencode` (and `pi`, `pi-signed`, `omp`) do not, so every such profile must
+name the quota-axi provider family to use (for example `provider: deepseek`).
+If you enable typed dispatch without adding `provider` to the example's
+`opencode` profiles, firstmate rejects the rendered `crew-dispatch.json` as a
+malformed rules file and dispatch stops. Either add `provider` to each profile
+or leave typed dispatch off.
+
 ## Install
 
 ```sh
@@ -238,13 +351,15 @@ workspace, so an attach lands on a live firstmate rather than an empty server.
 | `httpRoute.redirect.enabled` | `false` | Add an HTTP → HTTPS redirect route. |
 | `certificate.enabled` | `false` | Create a cert-manager Certificate in-namespace. |
 | `credentials.*` | — | Secret reference or values (see above). |
+| `agents.*` | `enabled: false` | Declarative harnesses, provider/model catalog, and dispatch profiles (see [Agent configuration](#agent-configuration)). |
 | `firstmate.resources` / `walkieTalkie.resources` | small requests | Per-container resources. |
 | `networkPolicy.enabled` | `false` | Restrict ingress to the Gateway namespace. |
 | `nodeSelector` / `tolerations` / `affinity` / `priorityClassName` | empty | Scheduling. |
 | `firstmate.podSecurityContext` / `firstmate.securityContext` / `walkieTalkie.securityContext` | non-root, uid/gid 1000, fsGroup 1000 | Change to match your Pod Security Admission and volume ownership. |
 
-Add harness/model configuration through `firstmate.extraEnv` or
-`firstmate.extraEnvFrom`, and more credentials through
+Add harness/model configuration through `agents` (see
+[Agent configuration](#agent-configuration)), ambient environment through
+`firstmate.extraEnv` or `firstmate.extraEnvFrom`, and more credentials through
 `credentials.create.harness` / `credentials.keys.harness`. Harness entries may
 not reuse the reserved names the chart manages — the
 `credentials.keys.walkieTalkieToken`/`credentials.keys.githubToken` key names and
@@ -297,6 +412,10 @@ example is
 - StorageClass `beta3` (Rook-Ceph), 20Gi.
 - TLS terminates at the Gateway using the existing wildcard certificate, so no
   in-namespace Certificate.
+- `agents.enabled: true` with opencode as the harness, DeepSeek and OpenRouter
+  as API-key providers, and the self-hosted Qwen on the 3090 box as the
+  `local3090` OpenAI-compatible provider (see
+  [Agent configuration](#agent-configuration)).
 
 ```sh
 helm upgrade --install firstmate deploy/helm/firstmate \
@@ -304,7 +423,8 @@ helm upgrade --install firstmate deploy/helm/firstmate \
   -f deploy/helm/firstmate/examples/values-atus.yaml \
   --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
   --set credentials.create.githubToken=github_pat_xxx \
-  --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx
+  --set credentials.create.harness.DEEPSEEK_API_KEY=sk-xxx \
+  --set credentials.create.harness.OPENROUTER_API_KEY=sk-or-xxx
 ```
 
 That example is a starting point; adjust the host, the listener `sectionName`,

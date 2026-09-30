@@ -85,6 +85,14 @@ walkie-talkie image reference.
 {{- end -}}
 
 {{/*
+Name of the ConfigMap carrying the declarative agent configuration that is
+mounted into the firstmate home (harness provider catalog and dispatch rules).
+*/}}
+{{- define "firstmate.agentsConfigMapName" -}}
+{{- printf "%s-agents" (include "firstmate.fullname" .) -}}
+{{- end -}}
+
+{{/*
 Name of the headless Service governing the StatefulSet.
 */}}
 {{- define "firstmate.headlessServiceName" -}}
