@@ -35,21 +35,18 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit 95b569cfba40: the runtime that makes a session's full history
-    # readable. It builds on 67d745f75397 (which brings the deployed firstmate
-    # current) and additionally bakes OpenCode's herdr integration plugin into
-    # the seed's .opencode/plugins/, refreshed into the home on every start, so
-    # the primary pane reports its agent_session id and the walkie-talkie
-    # Conversations view reads the real message history from the agent store
-    # instead of only the visible terminal screen. It pins firstmate to
-    # eb77f02b16aeca9533102070de34b1f8812f4fa2, applies the committed patches/
-    # OpenCode watch-arm fix, and bakes the tools a firstmate home expects
-    # (no-mistakes and the AXI family: gh-axi, chrome-devtools-axi, tasks-axi,
-    # quota-axi, lavish-axi) at pinned versions. The previous running image was
-    # 67d745f75397. Built with:
+    # Commit e5c59151fbcd: the runtime that keeps supervision draining captain
+    # notes after the first watcher cycle. It builds on 95b569cfba40 (the
+    # agent-session runtime) and adds patches/
+    # 0002-handling-successor-resurface-downtime.patch, so a watcher re-armed as
+    # a handling successor still surfaces the durable wake a queued inbox note
+    # appends instead of leaving it in state/.wake-queue forever. The entrypoint
+    # refreshes the patched watcher into the home on every start, so a retained
+    # volume picks it up. The previous running image was 95b569cfba40. Built
+    # with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:95b569cfba40 --push deploy/kubernetes/firstmate
-    tag: "95b569cfba40"
+    #     -t shimpa/firstmate-runtime:e5c59151fbcd --push deploy/kubernetes/firstmate
+    tag: "e5c59151fbcd"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate
