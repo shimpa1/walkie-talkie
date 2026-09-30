@@ -24,9 +24,8 @@
 
 # Images. Published to Docker Hub as shimpa/<image> (the atus convention; the
 # cluster pulls these without an imagePullSecret). Tags are immutable and
-# build-specific: the firstmate runtime tag is the git commit the image was
-# built from, and the walkie-talkie tag is reused unchanged while the app source
-# is unchanged.
+# build-specific: each tag is the git commit its image was built from, reused
+# unchanged while that image's source is unchanged.
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
@@ -54,7 +53,12 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    tag: "d1a06ce0a68b"
+    # Commit 0ef15d3: the merged read-only Conversations view (PR #15). The
+    # previous running image was d1a06ce0a68b, built from commit d1a06ce.
+    # Built with:
+    #   docker buildx build --platform linux/amd64 \
+    #     -t shimpa/walkie-talkie:0ef15d3d0f08 --push .
+    tag: "0ef15d3d0f08"
     pullPolicy: IfNotPresent
 
 persistence:
