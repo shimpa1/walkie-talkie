@@ -65,6 +65,11 @@ printf 'export const Y = async () => ({});\n' > "$HOME_DIR/.opencode/plugins/fm-
 # volume carries an older copy, so the entrypoint must refresh it from the seed.
 mkdir -p "$SEED_DIR/.opencode/plugins"
 printf 'export const PATCHED_WATCH_ARM = true;\n' > "$SEED_DIR/.opencode/plugins/fm-primary-watch-arm.js"
+# The image's patched watcher also lives in the seed; a home on an existing
+# volume carries upstream's watcher, so the entrypoint must refresh it too.
+mkdir -p "$SEED_DIR/bin"
+printf '#!/bin/sh\nprintf "PATCHED_WATCHER\\n"\n' > "$SEED_DIR/bin/fm-watch.sh"
+chmod 0755 "$SEED_DIR/bin/fm-watch.sh"
 
 cat > "$FAKE_BIN/herdr" <<'FAKE_HERDR'
 #!/usr/bin/env bash
@@ -182,6 +187,10 @@ grep -q '^FM_PRIMARY_SESSION_START_PROMPT=FM_TEST_SESSION_START_NUDGE$' "$SERVER
   || fail "entrypoint removed a plugin other than the session-start nudge"
 grep -q 'PATCHED_WATCH_ARM' "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js" \
   || fail "entrypoint did not refresh the seed's patched watch-arm plugin into the home"
+grep -q 'PATCHED_WATCHER' "$HOME_DIR/bin/fm-watch.sh" \
+  || fail "entrypoint did not refresh the seed's patched watcher into the home"
+[ -x "$HOME_DIR/bin/fm-watch.sh" ] \
+  || fail "entrypoint refreshed the patched watcher without its executable bit"
 grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \

@@ -281,6 +281,31 @@ if [ -f "$SEED_DIR/$WATCH_ARM_PLUGIN" ]; then
   fi
 fi
 
+# 1b2. Refresh the repo-patched watcher into the home. The seed carries the
+#      patch (Dockerfile patches/), but the home is a PersistentVolume seeded
+#      only once, so an existing volume would keep upstream's watcher and, in a
+#      home whose only work is queued notes, every note after the first watcher
+#      cycle would sit in the wake queue forever. bin/ is the distro firstmate
+#      does not user-edit, so installing the seed's copy on every start applies
+#      the fix to existing volumes as well as fresh ones. The watcher is
+#      replaced atomically because a concurrently armed watcher may exec it
+#      while this runs. The write only happens when the bytes differ, so a fresh
+#      seed is not rewritten.
+WATCH_WATCHER="bin/fm-watch.sh"
+if [ -f "$SEED_DIR/$WATCH_WATCHER" ]; then
+  if ! cmp -s "$SEED_DIR/$WATCH_WATCHER" "$HOME_DIR/$WATCH_WATCHER"; then
+    mkdir -p "$HOME_DIR/bin"
+    tmp="$HOME_DIR/$WATCH_WATCHER.tmp.$$"
+    if cp -f "$SEED_DIR/$WATCH_WATCHER" "$tmp" \
+      && chmod 0755 "$tmp" \
+      && mv -f "$tmp" "$HOME_DIR/$WATCH_WATCHER"; then
+      log "installed the patched watcher so a queued note resurfaces after any watcher cycle"
+    else
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # 1c. Refresh the OpenCode herdr integration into the home. It reports the pane's
 #     agent session id to herdr, which the walkie-talkie Conversations view maps
 #     to the agent store to render the session's real history. The home is a

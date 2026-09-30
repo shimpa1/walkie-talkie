@@ -29,12 +29,24 @@
 # firstmate commit the deployed image was built from; bump it deliberately and
 # reconcile patches/ against the new tree.
 #
-# patches/ carries the repo's deliberate deltas to that pinned distro. The
-# OpenCode watch-arm plugin is patched so supervision arms on a lock-owned
-# primary even when no state/*.meta task exists. Upstream arms only on a task
-# or x-mode, which left a freshly booted home whose only pending work is a
-# queued inbox note without a watcher, so the note sat undrained. The entrypoint
-# also refreshes the patched plugin into an existing home below.
+# patches/ carries the repo's deliberate deltas to that pinned distro.
+#
+# 0001-opencode-arm-without-task.patch: the OpenCode watch-arm plugin is patched
+# so supervision arms on a lock-owned primary even when no state/*.meta task
+# exists. Upstream arms only on a task or x-mode, which left a freshly booted
+# home whose only pending work is a queued inbox note without a watcher, so the
+# note sat undrained.
+#
+# 0002-handling-successor-resurface-downtime.patch: the watcher's
+# resurface_after_downtime no longer skips handling successors. Upstream skipped
+# the durable recovery resurface for a re-armed watcher, which removed the only
+# wake path for a queued inbox note; in a deployed home whose only work is
+# captain notes, every note after the first sat in the wake queue forever. The
+# once-per-generation arm check already prevents the re-announce loop the skip
+# was guarding against.
+#
+# The entrypoint refreshes both patched files into an existing home below, so a
+# retained volume gets the deltas too.
 #
 # This is one generic way to package the runtime, not a requirement: point the
 # chart's firstmate.image at any image that provides the same contract
@@ -99,11 +111,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 COPY patches/ /tmp/firstmate-patches/
 RUN git clone "${FIRSTMATE_REPO}" /opt/firstmate \
   && git -C /opt/firstmate checkout --detach "${FIRSTMATE_REF}" \
-  && git -C /opt/firstmate apply /tmp/firstmate-patches/0001-opencode-arm-without-task.patch \
+  && for p in /tmp/firstmate-patches/*.patch; do git -C /opt/firstmate apply "$p"; done \
   && git -C /opt/firstmate \
        -c user.name=firstmate-runtime \
        -c user.email=firstmate-runtime@localhost \
-       commit -am "runtime: arm OpenCode supervision without a task in flight" \
+       commit -am "runtime: carry the repo's deliberate firstmate deltas" \
   && rm -rf /tmp/firstmate-patches
 
 # herdr and treehouse, via firstmate's own pinned installers so the image

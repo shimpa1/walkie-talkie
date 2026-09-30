@@ -156,13 +156,20 @@ update `firstmate.image.tag` in your values to that tag, and roll the release
 with `helm upgrade`. The image tag must be immutable and build-specific; the
 atus example uses the git commit the image was built from.
 
-The committed patch set currently has one entry,
-`0001-opencode-arm-without-task.patch`: upstream's OpenCode watch-arm plugin
-only armed supervision when a `state/*.meta` task existed or x-mode was set, so
-a freshly booted home whose only pending work was a queued inbox note never got
-a watcher and the note sat undrained. The patch arms on any lock-owned primary,
-matching Pi and omp, and the entrypoint refreshes the patched plugin into an
-existing home so a retained volume picks the fix up too.
+The committed patch set has two entries. `0001-opencode-arm-without-task.patch`
+fixes upstream's OpenCode watch-arm plugin, which only armed supervision when a
+`state/*.meta` task existed or x-mode was set, so a freshly booted home whose
+only pending work was a queued inbox note never got a watcher and the note sat
+undrained; the patch arms on any lock-owned primary, matching Pi and omp.
+`0002-handling-successor-resurface-downtime.patch` fixes the watcher: after the
+first cycle it re-arms as a handling successor, and upstream skipped the durable
+recovery resurface for a handling successor, which was the only wake path for a
+queued inbox note. In a deployed home whose only work is captain notes, every
+note after the first cycle then sat in the wake queue forever; the patch makes a
+handling successor surface new durable work while the once-per-generation arm
+check still prevents the re-announce loop. The entrypoint refreshes both patched
+files into an existing home on every start, so a retained volume picks the fixes
+up too.
 
 Override build args for a different harness or to bump the pinned firstmate ref
 (reconcile the patches against the new tree):

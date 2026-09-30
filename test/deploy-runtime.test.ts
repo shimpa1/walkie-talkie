@@ -13,6 +13,11 @@ const PATCH = join(
   "patches",
   "0001-opencode-arm-without-task.patch",
 );
+const PATCH2 = join(
+  RUNTIME_DIR,
+  "patches",
+  "0002-handling-successor-resurface-downtime.patch",
+);
 
 /**
  * The deployed firstmate runs upstream's OpenCode watch-arm plugin, which only
@@ -76,9 +81,11 @@ test("the runtime Dockerfile installs the tools a firstmate expects, pinned", ()
 test("the runtime Dockerfile applies the committed patch set", () => {
   const dockerfile = readFileSync(DOCKERFILE, "utf8");
   assert.match(dockerfile, /^COPY patches\/ /m);
+  // Every committed patch is applied in order, so a new delta cannot be shipped
+  // unapplied by forgetting to name it here.
   assert.match(
     dockerfile,
-    /git -C \/opt\/firstmate apply .*0001-opencode-arm-without-task\.patch/,
+    /for p in \/tmp\/firstmate-patches\/\*\.patch; do git -C \/opt\/firstmate apply "\$p"; done/,
   );
 });
 
@@ -96,6 +103,18 @@ test("the watch-arm patch arms supervision without a task in flight", () => {
   assert.match(patch, /if \(existsSync\(`\$\{paths\.state\}\/\.afk`\)\) return false;/);
 });
 
+test("the watcher patch makes a handling successor surface queued work", () => {
+  const patch = readFileSync(PATCH2, "utf8");
+  assert.match(patch, /bin\/fm-watch\.sh/);
+  assert.match(patch, /resurface_after_downtime\(\)/);
+  // The unconditional handling-successor skip is removed; the once-per-generation
+  // arm check below remains the loop guard.
+  assert.match(patch, /^-\s*if \[ "\$\{FM_WATCH_HANDLING_SUCCESSOR:-0\}" = 1 \]; then$/m);
+  assert.match(patch, /^-\s*return 0$/m);
+  assert.doesNotMatch(patch, /^\+\s*if \[ "\$\{FM_WATCH_HANDLING_SUCCESSOR:-0\}" = 1 \]/m);
+  assert.match(patch, /fm_recovery_marker_arm_check "\$WATCHER_DOWNTIME_MARKER"/);
+});
+
 test("the entrypoint refreshes the patched watch-arm plugin into the home", () => {
   const entrypoint = readFileSync(ENTRYPOINT, "utf8");
   assert.match(entrypoint, /fm-primary-watch-arm\.js/);
@@ -103,4 +122,13 @@ test("the entrypoint refreshes the patched watch-arm plugin into the home", () =
     entrypoint,
     /cp -f "\$SEED_DIR\/\$WATCH_ARM_PLUGIN" "\$HOME_DIR\/\$WATCH_ARM_PLUGIN"/,
   );
+});
+
+test("the entrypoint refreshes the patched watcher into the home", () => {
+  const entrypoint = readFileSync(ENTRYPOINT, "utf8");
+  assert.match(entrypoint, /WATCH_WATCHER="bin\/fm-watch\.sh"/);
+  // The watcher is replaced atomically: a concurrently armed watcher may exec
+  // it while the entrypoint refreshes a retained volume on start.
+  assert.match(entrypoint, /mv -f "\$tmp" "\$HOME_DIR\/\$WATCH_WATCHER"/);
+  assert.match(entrypoint, /chmod 0755 "\$tmp"/);
 });
