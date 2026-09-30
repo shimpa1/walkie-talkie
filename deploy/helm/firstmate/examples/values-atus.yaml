@@ -35,15 +35,15 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit a65e3c022457: the OpenCode watch-arm fix, so a freshly booted home
-    # arms supervision and drains queued inbox notes with no task in flight. It
-    # builds the pinned firstmate commit
-    # c5f48e4cad279e6acaf14208522c44e28fac6835 (the commit the previous running
-    # image b78d9d679e00 was also built from) plus the committed patches/ arm
-    # patch. Built with:
+    # Commit 67d745f75397: the runtime that brings the deployed firstmate current.
+    # It pins firstmate to eb77f02b16aeca9533102070de34b1f8812f4fa2, applies the
+    # committed patches/ OpenCode watch-arm fix, and bakes the tools a firstmate
+    # home expects (no-mistakes and the AXI family: gh-axi, chrome-devtools-axi,
+    # tasks-axi, quota-axi, lavish-axi) at pinned versions. The previous running
+    # image was a65e3c022457. Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:a65e3c022457 --push deploy/kubernetes/firstmate
-    tag: "a65e3c022457"
+    #     -t shimpa/firstmate-runtime:67d745f75397 --push deploy/kubernetes/firstmate
+    tag: "67d745f75397"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate
