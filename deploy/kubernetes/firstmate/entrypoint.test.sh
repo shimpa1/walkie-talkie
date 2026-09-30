@@ -48,6 +48,12 @@ WS_FAIL="$TMP/ws-fail"
 # Pre-seed the home so the entrypoint skips copying the baked distro.
 mkdir -p "$HOME_DIR/bin" "$HOME_DIR/config" "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$FAKE_BIN"
 printf '#!/bin/sh\n' > "$HOME_DIR/bin/fm-inbox.sh"
+# Stand in for firstmate's bin/fm-sessionstart-nudge.sh so the test can assert
+# the entrypoint exports its output as the harness's opening prompt.
+cat > "$HOME_DIR/bin/fm-sessionstart-nudge.sh" <<'FAKE_NUDGE'
+#!/usr/bin/env bash
+printf '%s\n' 'FM_TEST_SESSION_START_NUDGE'
+FAKE_NUDGE
 
 cat > "$FAKE_BIN/herdr" <<'FAKE_HERDR'
 #!/usr/bin/env bash
@@ -112,7 +118,9 @@ esac
 FAKE_HERDR
 chmod +x "$FAKE_BIN/herdr"
 
-HARNESS_CMD="OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode"
+# The chart default: opencode auto-approved and opened with firstmate's
+# session-start prompt, which the entrypoint exports for the pane to expand.
+HARNESS_CMD="OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode --prompt \"\$FM_PRIMARY_SESSION_START_PROMPT\""
 
 # The harness is "starting" (no agent registered) until the test removes this
 # marker, so the supervisor's start-grace window is exercised.
@@ -151,6 +159,11 @@ grep -q '^pane_run pane=w1:p1 ' "$PANE_LOG" \
   || fail "entrypoint did not run the harness in the workspace pane"
 grep -Fq "command=$HARNESS_CMD" "$PANE_LOG" \
   || fail "entrypoint did not pass firstmate.harnessCommand to the pane"
+# shellcheck disable=SC2016 # The flag is matched literally; the pane expands it.
+grep -Fq -- '--prompt "$FM_PRIMARY_SESSION_START_PROMPT"' "$PANE_LOG" \
+  || fail "entrypoint did not open the harness with the session-start prompt flag"
+grep -q '^FM_PRIMARY_SESSION_START_PROMPT=FM_TEST_SESSION_START_NUDGE$' "$SERVER_ENV" \
+  || fail "entrypoint did not export firstmate's session-start prompt to the pane environment"
 grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \
@@ -204,5 +217,70 @@ done
 restarted_runs=$(grep -c '^pane_run pane=' "$PANE_LOG" || true)
 [ "$restarted_runs" -ge 2 ] \
   || fail "supervisor did not restart the primary harness after it exited"
+
+# A transient or stubbornly-unknown herdr read at boot must not strand
+# supervision. With the workspace list unavailable, the boot start fails and
+# every liveness read is unknown, so a supervisor that parked on unknown would
+# never start the harness; once the read recovers it must still start it.
+kill -TERM "$EP_PID" 2>/dev/null || true
+wait "$EP_PID" 2>/dev/null || true
+EP_PID=
+
+HOME2="$TMP/home2"
+HERDR_LOG2="$TMP/herdr2.log"
+PANE_LOG2="$TMP/pane2.log"
+SERVER_ENV2="$TMP/server2.env"
+EP2_ERR="$TMP/ep2.err"
+WS_FAIL2="$TMP/ws-fail2"
+STARTING2="$TMP/starting2"
+mkdir -p "$HOME2/bin" "$HOME2/config" "$HOME2/state" "$HOME2/data" "$HOME2/projects"
+printf '#!/bin/sh\n' > "$HOME2/bin/fm-inbox.sh"
+: > "$HERDR_LOG2"
+: > "$PANE_LOG2"
+: > "$WS_FAIL2"
+: > "$STARTING2"
+
+PATH="$FAKE_BIN:$PATH" \
+  HOME="$HOME2" \
+  FM_HOME="$HOME2" \
+  HERDR_SESSION=firstmate \
+  FM_HARNESS_COMMAND="$HARNESS_CMD" \
+  FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
+  FM_HARNESS_SUPERVISION_GRACE=3 \
+  DEEPSEEK_API_KEY=test-deepseek-key \
+  FAKE_HERDR_LOG="$HERDR_LOG2" \
+  FAKE_HERDR_PANE_LOG="$PANE_LOG2" \
+  FAKE_HERDR_SERVER_ENV="$SERVER_ENV2" \
+  FAKE_HERDR_FORCE_DEAD="$TMP/force-dead2" \
+  FAKE_HERDR_STARTING="$STARTING2" \
+  FAKE_HERDR_STATUS_FAIL_ONCE="$TMP/status-fail-once2" \
+  FAKE_HERDR_READ_FAIL="$TMP/read-fail2" \
+  FAKE_HERDR_WS_FAIL="$WS_FAIL2" \
+  bash "$ENTRYPOINT" >"$TMP/ep2.out" 2>"$EP2_ERR" &
+EP_PID=$!
+
+# Let the boot start (which fails on the workspace read) and several unknown
+# supervision intervals run; the supervisor must not have typed over a state it
+# could not read.
+sleep 1.5
+if grep -q '^pane_run ' "$PANE_LOG2" 2>/dev/null; then
+  fail "supervisor started the harness while the home state was unknown"
+fi
+grep -q 'could not read the herdr workspace list' "$EP2_ERR" \
+  || fail "expected the boot harness start to fail on the workspace read"
+grep -q 'could not confirm the primary harness state' "$EP2_ERR" \
+  || fail "supervisor did not retry the start path on the unknown read"
+
+# The read recovers: the supervisor must now start the harness in the empty home.
+rm -f "$WS_FAIL2"
+for _ in $(seq 1 100); do
+  grep -q '^pane_run ' "$PANE_LOG2" 2>/dev/null && break
+  kill -0 "$EP_PID" 2>/dev/null || break
+  sleep 0.1
+done
+grep -q '^pane_run ' "$PANE_LOG2" \
+  || fail "supervisor never recovered the harness after the herdr read came back"
+grep -q 'workspace create' "$HERDR_LOG2" \
+  || fail "supervisor never created the home workspace after the read recovered"
 
 echo "ok"

@@ -40,14 +40,19 @@ firstmate:
   # container start. The entrypoint supervises it and starts it again in the
   # same pane when it exits, so the pod runs a live firstmate that drains queued
   # instructions rather than only the herdr server. The default matches the
-  # runtime image's default harness (opencode) and auto-approves its tool calls,
-  # which an unattended primary needs; override it for another harness or a
-  # different posture. Set it empty to run the herdr server only and start the
+  # runtime image's default harness (opencode), auto-approves its tool calls
+  # (which an unattended primary needs), and opens with firstmate's session-start
+  # prompt: a bare opencode TUI does not create a session until it receives a
+  # first prompt, so without it the session-start plugin never fires and
+  # firstmate never starts. `FM_PRIMARY_SESSION_START_PROMPT` is exported by the
+  # entrypoint and inherited by the pane. Override this for another harness or a
+  # different posture; keep an initial prompt so the pod runs firstmate rather
+  # than an idle TUI. Set it empty to run the herdr server only and start the
   # harness yourself after attaching. Harness credentials are passed to it
   # through `credentials.create.harness` (or an existing Secret), which become
   # environment variables in this container.
   harnessCommand: >-
-    OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode
+    OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"
 
   # Extra environment variables for the firstmate container. Harness and model
   # credentials belong under `credentials`, not here.

@@ -161,17 +161,26 @@ real tokens to a values file.
 
 The firstmate container starts its primary harness inside the herdr session at
 container start, from `firstmate.harnessCommand` (default
-`OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode`), and keeps it
-running: the entrypoint supervises the harness and starts it again in the same
-pane whenever it exits (a bad or missing credential, a crash, a quit, an
-auto-update restart), so the pod keeps a live firstmate draining queued
+`OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"`),
+and keeps it running: the entrypoint supervises the harness and starts it again
+in the same pane whenever it exits (a bad or missing credential, a crash, a
+quit, an auto-update restart), so the pod keeps a live firstmate draining queued
 instructions instead of only the herdr server. The harness runs in the firstmate
 home with the container's environment, so the harness credentials above are
 exactly the provider credentials it reads. The default auto-approves opencode's
-tool calls because the primary runs unattended; set `firstmate.harnessCommand`
-to another command for a different harness or posture, or to `""` to run the
-herdr server only and start the harness yourself after attaching (the supervisor
-is not started when the command is empty).
+tool calls because the primary runs unattended.
+
+The default command also opens the harness with firstmate's session-start
+prompt, exported by the entrypoint as `FM_PRIMARY_SESSION_START_PROMPT` (the
+output of firstmate's own `bin/fm-sessionstart-nudge.sh`, or a plain fallback
+when that adapter is absent). A bare opencode TUI does not create a session
+until it receives a first prompt, so firstmate's tracked session-start plugin
+never sees a `session.created` event and firstmate never runs; the initial
+prompt both creates the session and starts firstmate. When you set
+`firstmate.harnessCommand` for another harness or posture, keep an initial
+prompt, or set it to `""` to run the herdr server only and start the harness
+yourself after attaching (the supervisor is not started when the command is
+empty).
 
 Once created, the walkie-talkie token, GitHub token, and harness credentials are
 preserved across upgrades: you do not need to re-pass them on `helm upgrade`.

@@ -5,7 +5,9 @@
 # explicit, starts the herdr headless server for the configured named session,
 # and then starts firstmate's primary harness inside that session so the pod
 # runs a live firstmate that drains queued instructions instead of only the
-# server. A supervisor keeps the harness running: `herdr pane run` returns as
+# server. The harness command opens with firstmate's own session-start prompt
+# (exported below), because a bare harness would sit idle and never start
+# firstmate. A supervisor keeps the harness running: `herdr pane run` returns as
 # soon as the command is typed, so a harness that exits (a bad credential, a
 # crash, a quit, an auto-update restart) is started again in the same pane. The
 # server stays in the foreground, so the session stays attachable with
@@ -198,11 +200,16 @@ herdr_home_harness_live() {
 # exits immediately (a bad or missing credential) or later (a crash, a quit, an
 # auto-update restart) would leave the server up, the pod Ready, and queued
 # instructions pending. Each interval it checks the home pane and starts the
-# harness again when nothing is registered there, but never before the harness
-# it last started has had its grace period to register, so a slow start is not
-# mistaken for a dead harness. A read that fails or cannot be parsed is unknown,
-# not evidence the harness is gone, so it skips the interval and keeps
-# supervising; only an authoritative absent-harness answer restarts it.
+# harness again when it cannot confirm a live harness there, but never before the
+# harness it last started has had its grace period to register, so a slow start
+# is not mistaken for a dead harness. `live` is 1 when the server authoritatively
+# reports no harness and 2 when a read failed, so the state is unknown. An
+# unknown read is not evidence the harness is gone and must never type over a
+# live pane, but it also must not park supervision forever: a start that failed
+# at boot on a transient read, or a read that stays unknown, would otherwise
+# leave the home with no harness and no retry. Both states therefore fall
+# through to start_primary_harness, which re-reads the state and only types the
+# command when it authoritatively finds no agent.
 supervise_primary_harness() {
   local live
   while kill -0 "$SERVER_PID" 2>/dev/null; do
@@ -214,14 +221,15 @@ supervise_primary_harness() {
     else
       live=$?
     fi
-    if [ "$live" -eq 2 ]; then
-      continue
-    fi
     if [ -n "$HARNESS_STARTED_AT" ] \
       && [ $(( $(date +%s) - HARNESS_STARTED_AT )) -lt "$HARNESS_START_GRACE" ]; then
       continue
     fi
-    log "primary harness is not running in session '$SESSION'; starting it again"
+    if [ "$live" -eq 2 ]; then
+      log "could not confirm the primary harness state in session '$SESSION'; retrying the start path"
+    else
+      log "primary harness is not running in session '$SESSION'; starting it again"
+    fi
     start_primary_harness \
       || log "warning: failed to start the primary harness again"
   done
@@ -254,6 +262,29 @@ if [ "${FIRSTMATE_SEED_ONLY:-0}" = "1" ]; then
   log "seed-only mode: home is ready at $HOME_DIR"
   exit 0
 fi
+
+# 2b. Compute the prompt that starts firstmate when the harness opens. A bare
+#     OpenCode TUI stays on its empty "Ask anything" landing screen and does not
+#     create a session until it receives a first prompt, so firstmate's tracked
+#     .opencode/plugins/fm-primary-sessionstart-nudge.js plugin never sees the
+#     session.created event it nudges on and the session-start never runs. The
+#     entrypoint therefore asks firstmate's own nudge adapter for the exact
+#     session-start prompt and exports it before the server starts, because the
+#     herdr server passes its environment to every pane it creates; the default
+#     harness command passes it as `--prompt`, which both creates the session and
+#     starts firstmate. A home without the adapter (an older or partial seed)
+#     falls back to the same instruction as plain text, so the harness still
+#     starts firstmate instead of idling.
+PRIMARY_SESSION_START_PROMPT=
+if [ -f "$HOME_DIR/bin/fm-sessionstart-nudge.sh" ]; then
+  PRIMARY_SESSION_START_PROMPT=$(FM_HOME="$HOME_DIR" bash "$HOME_DIR/bin/fm-sessionstart-nudge.sh" 2>/dev/null || true)
+fi
+if [ -z "$PRIMARY_SESSION_START_PROMPT" ]; then
+  # shellcheck disable=SC2016 # Backticks are literal prompt markup, not expansion.
+  PRIMARY_SESSION_START_PROMPT='Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.'
+fi
+export FM_PRIMARY_SESSION_START_PROMPT="$PRIMARY_SESSION_START_PROMPT"
+log "primary harness will open with firstmate's session-start prompt"
 
 # 3. Start the herdr headless server in the background so the entrypoint can
 #    make control calls (create the home workspace, start the harness) against
