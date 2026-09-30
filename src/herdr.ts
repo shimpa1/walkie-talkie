@@ -11,6 +11,8 @@ export interface HerdrPane {
   workspaceId: string | null;
   tabId: string | null;
   agent: string | null;
+  /** Agent session id the pane's agent reported, e.g. opencode's `ses_...`. */
+  agentSession: string | null;
   status: string | null;
   title: string | null;
   cwd: string | null;
@@ -143,6 +145,17 @@ function parsePaneAgent(raw: Record<string, unknown>): { agent: string | null; s
   return { agent: asString(agent), status: asString(raw.agent_status) };
 }
 
+/**
+ * Read the agent session id a pane's agent reported. `pane list` reports it as
+ * an `agent_session` object with a `value` (for example opencode's `ses_...`);
+ * a bare string is accepted too so a shape change cannot erase the mapping.
+ */
+function parseAgentSession(raw: Record<string, unknown>): string | null {
+  const value = raw.agent_session;
+  if (isRecord(value)) return asString(value.value);
+  return asString(value);
+}
+
 function parsePanes(result: unknown): HerdrPane[] {
   if (!isRecord(result) || !Array.isArray(result.panes)) {
     throw new HerdrError("herdr pane list did not return a pane array");
@@ -158,6 +171,7 @@ function parsePanes(result: unknown): HerdrPane[] {
       workspaceId: asString(raw.workspace_id),
       tabId: asString(raw.tab_id),
       agent,
+      agentSession: parseAgentSession(raw),
       status,
       title: asString(raw.terminal_title_stripped) ?? asString(raw.terminal_title),
       cwd: asString(raw.cwd),

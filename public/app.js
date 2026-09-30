@@ -23,13 +23,20 @@ const conversationState = {
   selectedId: null,
   listTimer: null,
   outputTimer: null,
-  loadingOutput: false,
+  busy: false,
   forceScroll: false,
+  source: null,
+  agentSession: null,
+  messages: [],
+  oldestCursor: null,
+  newestCursor: null,
+  hasOlder: false,
 };
 
 const CONVERSATION_LIST_INTERVAL_MS = 5000;
 const CONVERSATION_OUTPUT_INTERVAL_MS = 3000;
 const CONVERSATION_OUTPUT_LINES = 400;
+const CONVERSATION_HISTORY_LIMIT = 200;
 
 const $ = (id) => document.getElementById(id);
 
@@ -380,44 +387,209 @@ function setConversationHeader(session) {
 function selectSession(id) {
   conversationState.selectedId = id;
   conversationState.forceScroll = true;
+  conversationState.source = null;
+  conversationState.agentSession = null;
+  conversationState.messages = [];
+  conversationState.oldestCursor = null;
+  conversationState.newestCursor = null;
+  conversationState.hasOlder = false;
   $("conversation-detail").hidden = false;
   $("conversations-pane").classList.add("is-detail");
   setConversationHeader(selectedSession());
   renderSessions({ sessions: conversationState.sessions });
-  $("conversation-output").textContent = "Loading…";
-  void loadConversationOutput();
+  showConversationMessage("Loading…");
+  void refreshConversation();
 }
 
 function closeConversation() {
   conversationState.selectedId = null;
+  conversationState.source = null;
+  conversationState.agentSession = null;
+  conversationState.messages = [];
+  conversationState.oldestCursor = null;
+  conversationState.newestCursor = null;
+  conversationState.hasOlder = false;
   $("conversation-detail").hidden = true;
   $("conversations-pane").classList.remove("is-detail");
   renderSessions({ sessions: conversationState.sessions });
 }
 
-function renderConversationOutput(payload) {
-  const box = $("conversation-output");
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  box.textContent = payload && payload.output ? payload.output : "(no output yet)";
+function conversationOutput() {
+  return $("conversation-output");
+}
+
+function showConversationMessage(text) {
+  const box = conversationOutput();
+  box.textContent = "";
+  box.appendChild(el("p", "hint", text));
+}
+
+function conversationNearBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+}
+
+function messageCards(messages) {
+  const nodes = [];
+  for (const message of messages) {
+    const role = message.role === "user" ? "user" : "assistant";
+    const card = el("article", `msg msg-${role}`);
+    const label = role === "user" ? "firstmate" : message.role === "assistant" ? "agent" : message.role;
+    card.appendChild(el("div", "msg-role", label));
+    card.appendChild(el("div", "msg-text", message.text));
+    nodes.push(card);
+  }
+  return nodes;
+}
+
+function renderHistory() {
+  const box = conversationOutput();
+  const nearBottom = conversationNearBottom(box);
+  box.textContent = "";
+  if (conversationState.hasOlder) {
+    const button = el("button", "ghost small load-older", "Load older messages");
+    button.type = "button";
+    button.addEventListener("click", () => void loadOlderMessages());
+    box.appendChild(button);
+  }
+  if (conversationState.messages.length === 0) {
+    box.appendChild(el("p", "hint", "No conversation messages yet."));
+  } else {
+    for (const node of messageCards(conversationState.messages)) box.appendChild(node);
+  }
   if (nearBottom || conversationState.forceScroll) {
     box.scrollTop = box.scrollHeight;
     conversationState.forceScroll = false;
   }
 }
 
-async function loadConversationOutput() {
+function renderTerminal(payload) {
+  const box = conversationOutput();
+  const nearBottom = conversationNearBottom(box);
+  box.textContent = "";
+  box.appendChild(el("pre", "terminal", payload.output || "(no output yet)"));
+  if (nearBottom || conversationState.forceScroll) {
+    box.scrollTop = box.scrollHeight;
+    conversationState.forceScroll = false;
+  }
+}
+
+function applyTerminal(payload) {
+  conversationState.source = "terminal";
+  conversationState.agentSession = payload.agent_session || null;
+  setConversationHeader(selectedSession());
+  renderTerminal(payload);
+}
+
+function normalizeMessages(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((message) => message && typeof message.id === "string" && typeof message.text === "string")
+    .map((message) => ({
+      id: message.id,
+      role: typeof message.role === "string" ? message.role : "assistant",
+      time: Number(message.time) || 0,
+      text: message.text,
+    }));
+}
+
+function mergeMessages(incoming) {
+  const seen = new Set(conversationState.messages.map((message) => message.id));
+  let added = 0;
+  for (const message of incoming) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    conversationState.messages.push(message);
+    added += 1;
+  }
+  if (added > 0) {
+    conversationState.messages.sort(
+      (a, b) => a.time - b.time || a.id.localeCompare(b.id),
+    );
+  }
+  return added;
+}
+
+function conversationUrl(params) {
+  const query = new URLSearchParams();
+  query.set("limit", String(CONVERSATION_HISTORY_LIMIT));
+  query.set("lines", String(CONVERSATION_OUTPUT_LINES));
+  if (params && params.before) query.set("before", params.before);
+  if (params && params.after) query.set("after", params.after);
+  return `/api/sessions/${encodeURIComponent(conversationState.selectedId)}?${query.toString()}`;
+}
+
+async function fetchConversation(params) {
   const id = conversationState.selectedId;
-  if (!id || conversationState.loadingOutput) return;
-  conversationState.loadingOutput = true;
+  const payload = await api(conversationUrl(params));
+  if (!id || conversationState.selectedId !== id) return null;
+  return payload;
+}
+
+async function fetchLatestConversation() {
+  const payload = await fetchConversation({});
+  if (payload === null) return;
+  if (payload.source !== "history") {
+    applyTerminal(payload);
+    return;
+  }
+  conversationState.source = "history";
+  conversationState.agentSession = payload.agent_session || null;
+  conversationState.messages = normalizeMessages(payload.messages);
+  conversationState.oldestCursor = payload.oldest_cursor || null;
+  conversationState.newestCursor = payload.newest_cursor || null;
+  conversationState.hasOlder = Boolean(payload.has_older);
+  setConversationHeader(selectedSession());
+  renderHistory();
+}
+
+async function fetchNewerMessages() {
+  const cursor = conversationState.newestCursor;
+  if (!cursor) return;
+  const payload = await fetchConversation({ after: cursor });
+  if (payload === null) return;
+  if (payload.source !== "history") {
+    applyTerminal(payload);
+    return;
+  }
+  const added = mergeMessages(normalizeMessages(payload.messages));
+  if (payload.newest_cursor) conversationState.newestCursor = payload.newest_cursor;
+  if (added > 0) renderHistory();
+}
+
+async function loadOlderMessages() {
+  const cursor = conversationState.oldestCursor;
+  if (!cursor || conversationState.busy) return;
+  conversationState.busy = true;
+  const box = conversationOutput();
+  const previousHeight = box.scrollHeight;
   try {
-    const payload = await api(`/api/sessions/${encodeURIComponent(id)}?lines=${CONVERSATION_OUTPUT_LINES}`);
-    if (conversationState.selectedId !== id) return;
-    renderConversationOutput(payload);
+    const payload = await fetchConversation({ before: cursor });
+    if (payload === null || payload.source !== "history") return;
+    mergeMessages(normalizeMessages(payload.messages));
+    conversationState.oldestCursor = payload.oldest_cursor || conversationState.oldestCursor;
+    conversationState.hasOlder = Boolean(payload.has_older);
+    renderHistory();
+    box.scrollTop += box.scrollHeight - previousHeight;
+  } catch (error) {
+    // Keep the conversation already on screen; the next poll can retry.
+    if (error && error.status === 401) return;
+  } finally {
+    conversationState.busy = false;
+  }
+}
+
+async function refreshConversation() {
+  if (!conversationState.selectedId || conversationState.busy) return;
+  conversationState.busy = true;
+  try {
+    if (conversationState.source === "history") await fetchNewerMessages();
+    else await fetchLatestConversation();
   } catch (error) {
     if (error && error.status === 401) return;
-    $("conversation-output").textContent = `Could not read this conversation: ${error.message}`;
+    if (conversationState.source === "history" && conversationState.messages.length > 0) return;
+    showConversationMessage(`Could not read this conversation: ${error.message}`);
   } finally {
-    conversationState.loadingOutput = false;
+    conversationState.busy = false;
   }
 }
 
@@ -439,7 +611,7 @@ function startConversationsPolling() {
   stopConversationsPolling();
   conversationState.listTimer = setInterval(() => void loadSessions(), CONVERSATION_LIST_INTERVAL_MS);
   conversationState.outputTimer = setInterval(
-    () => void loadConversationOutput(),
+    () => void refreshConversation(),
     CONVERSATION_OUTPUT_INTERVAL_MS,
   );
 }
@@ -601,7 +773,7 @@ function showView(name) {
   if (name === "settings") void refreshPushStatus();
   if (name === "conversations") {
     void loadSessions();
-    void loadConversationOutput();
+    void refreshConversation();
     startConversationsPolling();
   } else {
     stopConversationsPolling();
@@ -667,12 +839,12 @@ function init() {
     void loadHealth();
     if (state.view === "conversations") {
       void loadSessions();
-      void loadConversationOutput();
+      void refreshConversation();
     }
   });
   $("conversations-refresh").addEventListener("click", () => {
     void loadSessions();
-    void loadConversationOutput();
+    void refreshConversation();
   });
   $("conversation-back").addEventListener("click", closeConversation);
   $("note-form").addEventListener("submit", submitNote);

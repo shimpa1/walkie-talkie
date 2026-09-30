@@ -24,6 +24,11 @@ export interface AppConfig {
   herdrSession: string;
   /** herdr CLI executable: a name resolved on PATH or an absolute path. */
   herdrBin: string;
+  /**
+   * opencode's session store (SQLite), read read-only for the Conversations
+   * history view. Defaults to `<fmHome>/.local/share/opencode/opencode.db`.
+   */
+  opencodeDbPath: string;
 }
 
 interface FileConfig {
@@ -41,6 +46,7 @@ interface FileConfig {
   pushStore?: unknown;
   herdrSession?: unknown;
   herdrBin?: unknown;
+  opencodeDbPath?: unknown;
 }
 
 export class ConfigError extends Error {
@@ -57,6 +63,11 @@ export const MIN_PUSH_POLL_SECONDS = 5;
 export const MAX_PUSH_POLL_SECONDS = 24 * 60 * 60;
 export const DEFAULT_HERDR_SESSION = "default";
 export const DEFAULT_HERDR_BIN = "herdr";
+
+/** The opencode session store that lives under a firstmate home. */
+export function defaultOpencodeDbPath(fmHome: string): string {
+  return join(fmHome, ".local", "share", "opencode", "opencode.db");
+}
 
 export function defaultPublicDir(from: string): string {
   return resolve(from, "public");
@@ -197,6 +208,15 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
   const herdrBin =
     env.FM_WT_HERDR_BIN?.trim() || asString(file.herdrBin, "herdrBin") || DEFAULT_HERDR_BIN;
 
+  // The agent's own session store (opencode SQLite) is read read-only to show a
+  // session's full conversation instead of the terminal's visible screen. It
+  // lives under the firstmate home in the co-deployed pod.
+  const opencodeDbRaw =
+    env.FM_WT_OPENCODE_DB?.trim() ||
+    asString(file.opencodeDbPath, "opencodeDbPath") ||
+    defaultOpencodeDbPath(fmHome);
+  const opencodeDbPath = isAbsolute(opencodeDbRaw) ? opencodeDbRaw : resolve(cwd, opencodeDbRaw);
+
   return {
     fmHome,
     fmBin,
@@ -213,6 +233,7 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     pushStorePath,
     herdrSession,
     herdrBin,
+    opencodeDbPath,
   };
 }
 
