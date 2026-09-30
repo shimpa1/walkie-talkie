@@ -29,11 +29,15 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit b78d9d679e00: the jq 1.6 workspace-lookup fix on top of the merged
-    # runtime fix. Built with:
+    # Commit a65e3c022457: the OpenCode watch-arm fix, so a freshly booted home
+    # arms supervision and drains queued inbox notes with no task in flight. It
+    # builds the pinned firstmate commit
+    # c5f48e4cad279e6acaf14208522c44e28fac6835 (the commit the previous running
+    # image b78d9d679e00 was also built from) plus the committed patches/ arm
+    # patch. Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:b78d9d679e00 --push deploy/kubernetes/firstmate
-    tag: "b78d9d679e00"
+    #     -t shimpa/firstmate-runtime:a65e3c022457 --push deploy/kubernetes/firstmate
+    tag: "a65e3c022457"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate

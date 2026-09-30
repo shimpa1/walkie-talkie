@@ -107,16 +107,30 @@ docker push registry.example.com/firstmate-runtime:0.1.0
 ```
 
 The build installs firstmate from `FIRSTMATE_REPO`/`FIRSTMATE_REF` (defaults to
-the public firstmate repo at `main`), then uses firstmate's own pinned
-installers for herdr and treehouse. The primary harness is installed from
-`HARNESS_PACKAGES` (default `opencode-ai`), and the chart's
-`firstmate.harnessCommand` default starts that same opencode harness; when you
-build a different harness, set `firstmate.harnessCommand` to match. Override
-build args for a different harness or a pinned firstmate ref:
+the public firstmate repo at a pinned commit, not a branch), then uses
+firstmate's own pinned installers for herdr and treehouse. It then applies this
+repo's patches under `deploy/kubernetes/firstmate/patches/` to that pinned
+checkout, so every runtime image carries the repo's deliberate deltas and a
+later ref bump that moves the patched context fails the build instead of
+shipping silently. The primary harness is installed from `HARNESS_PACKAGES`
+(default `opencode-ai`), and the chart's `firstmate.harnessCommand` default
+starts that same opencode harness; when you build a different harness, set
+`firstmate.harnessCommand` to match.
+
+The committed patch set currently has one entry,
+`0001-opencode-arm-without-task.patch`: upstream's OpenCode watch-arm plugin
+only armed supervision when a `state/*.meta` task existed or x-mode was set, so
+a freshly booted home whose only pending work was a queued inbox note never got
+a watcher and the note sat undrained. The patch arms on any lock-owned primary,
+matching Pi and omp, and the entrypoint refreshes the patched plugin into an
+existing home so a retained volume picks the fix up too.
+
+Override build args for a different harness or to bump the pinned firstmate ref
+(reconcile the patches against the new tree):
 
 ```sh
 docker build \
-  --build-arg FIRSTMATE_REF=v1.2.3 \
+  --build-arg FIRSTMATE_REF=<40-char-commit> \
   --build-arg HARNESS_PACKAGES="@openai/codex" \
   -t registry.example.com/firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
 ```

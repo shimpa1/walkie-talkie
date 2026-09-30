@@ -33,6 +33,7 @@ trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 HOME_DIR="$TMP/home"
+SEED_DIR="$TMP/seed"
 FAKE_BIN="$TMP/bin"
 HERDR_LOG="$TMP/herdr.log"
 PANE_LOG="$TMP/pane.log"
@@ -60,6 +61,10 @@ FAKE_NUDGE
 mkdir -p "$HOME_DIR/.opencode/plugins"
 printf 'export const X = async () => ({});\n' > "$HOME_DIR/.opencode/plugins/fm-primary-sessionstart-nudge.js"
 printf 'export const Y = async () => ({});\n' > "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js"
+# The image's patched watch-arm plugin lives in the seed; a home on an existing
+# volume carries an older copy, so the entrypoint must refresh it from the seed.
+mkdir -p "$SEED_DIR/.opencode/plugins"
+printf 'export const PATCHED_WATCH_ARM = true;\n' > "$SEED_DIR/.opencode/plugins/fm-primary-watch-arm.js"
 
 cat > "$FAKE_BIN/herdr" <<'FAKE_HERDR'
 #!/usr/bin/env bash
@@ -135,6 +140,7 @@ HARNESS_CMD="OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' openco
 PATH="$FAKE_BIN:$PATH" \
   HOME="$HOME_DIR" \
   FM_HOME="$HOME_DIR" \
+  FIRSTMATE_SEED_DIR="$SEED_DIR" \
   HERDR_SESSION=firstmate \
   FM_HARNESS_COMMAND="$HARNESS_CMD" \
   FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
@@ -174,6 +180,8 @@ grep -q '^FM_PRIMARY_SESSION_START_PROMPT=FM_TEST_SESSION_START_NUDGE$' "$SERVER
   || fail "entrypoint left firstmate's session-start nudge plugin to deliver the prompt a second time"
 [ -e "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js" ] \
   || fail "entrypoint removed a plugin other than the session-start nudge"
+grep -q 'PATCHED_WATCH_ARM' "$HOME_DIR/.opencode/plugins/fm-primary-watch-arm.js" \
+  || fail "entrypoint did not refresh the seed's patched watch-arm plugin into the home"
 grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \
@@ -253,6 +261,7 @@ printf '#!/bin/sh\n' > "$HOME2/bin/fm-inbox.sh"
 PATH="$FAKE_BIN:$PATH" \
   HOME="$HOME2" \
   FM_HOME="$HOME2" \
+  FIRSTMATE_SEED_DIR="$SEED_DIR" \
   HERDR_SESSION=firstmate \
   FM_HARNESS_COMMAND="$HARNESS_CMD" \
   FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
