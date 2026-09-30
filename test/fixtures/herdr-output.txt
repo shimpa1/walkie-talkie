@@ -1,0 +1,3 @@
+  ┃ firstmate: I queued the instruction and started the crew.
+  ┃
+  ┃ reply: the Conversations view is now wired to the pod's herdr session.

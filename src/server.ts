@@ -5,7 +5,9 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import type { AppConfig } from "./config.js";
 import { bindRefusal, isLoopbackHost } from "./config.js";
 import { isAuthorized } from "./auth.js";
+import { clampLines, type Conversations } from "./conversations.js";
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
+import { HerdrError, isValidPaneId } from "./herdr.js";
 import type { PushApi } from "./push-service.js";
 import {
   isValidPushEndpoint,
@@ -20,6 +22,8 @@ export interface AppDeps {
   firstmate: FirstmateClient;
   /** Present when push is configured; push routes answer 503 without it. */
   push?: PushApi;
+  /** Read-only Conversations view; routes answer 503 without it. */
+  conversations?: Conversations;
   log?: (line: string) => void;
 }
 
@@ -59,6 +63,19 @@ function sendJson(res: ServerResponse, status: number, body: string): void {
 function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, JSON.stringify({ error: message }));
 }
+
+/**
+ * Map a herdr read failure to an HTTP status: an unknown pane is 404, an
+ * unreachable herdr server is 503, and any other read failure is 502. A
+ * non-herdr error is rethrown for the outer handler to report as a 500.
+ */
+function sendHerdrError(res: ServerResponse, error: unknown): void {
+  if (!(error instanceof HerdrError)) throw error;
+  const status = error.code === "pane_not_found" ? 404 : error.code === "server_not_running" ? 503 : 502;
+  sendError(res, status, error.message);
+}
+
+const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
 
 function readBody(req: IncomingMessage, limit: number): Promise<string> {
   return new Promise((resolvePromise, reject) => {
@@ -283,6 +300,56 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
           return;
         }
         sendJson(res, 200, body);
+        return;
+      }
+
+      if (pathname === "/api/sessions") {
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.conversations === undefined) {
+          sendError(res, 503, "conversations are not available");
+          return;
+        }
+        try {
+          const body = await deps.conversations.list();
+          sendJson(res, 200, JSON.stringify(body));
+        } catch (error) {
+          sendHerdrError(res, error);
+        }
+        return;
+      }
+
+      const sessionMatch = SESSION_PATH.exec(pathname);
+      if (sessionMatch) {
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.conversations === undefined) {
+          sendError(res, 503, "conversations are not available");
+          return;
+        }
+        const rawId = sessionMatch[1];
+        let paneId: string;
+        try {
+          paneId = rawId === undefined ? "" : decodeURIComponent(rawId);
+        } catch {
+          sendError(res, 400, "invalid session id");
+          return;
+        }
+        if (!isValidPaneId(paneId)) {
+          sendError(res, 400, "invalid session id");
+          return;
+        }
+        const lines = clampLines(url.searchParams.get("lines"));
+        try {
+          const body = await deps.conversations.read(paneId, lines);
+          sendJson(res, 200, JSON.stringify(body));
+        } catch (error) {
+          sendHerdrError(res, error);
+        }
         return;
       }
 

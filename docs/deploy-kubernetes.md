@@ -53,6 +53,17 @@ The two containers share the home volume:
 - **walkie-talkie** — the PWA + API on the configured port, invoking firstmate
   only through its own `bin/` scripts.
 
+The **Conversations** view reads this pod's own herdr session through the
+read-only `herdr pane list` / `herdr pane read` commands, so the walkie-talkie
+container needs the `herdr` CLI and the session's socket reachable. The
+repository-root `walkie-talkie` image does not bundle herdr: point
+`walkieTalkie.image` at an image that provides it (or add it to the image),
+mount the binary into the container, and set `FM_WT_HERDR_BIN` to its absolute
+path when it is not on `PATH`. The chart already exports `HERDR_SESSION` to
+both containers, so the session is picked up automatically. Status, compose,
+and push notifications work without herdr; the Conversations view reports the
+missing dependency inline.
+
 ## Prerequisites
 
 Provisioning these is **out of scope** for this chart; the cluster must already
@@ -369,7 +380,9 @@ workspace, so an attach lands on a live firstmate rather than an empty server.
 | `nodeSelector` / `tolerations` / `affinity` / `priorityClassName` | empty | Scheduling. |
 | `firstmate.podSecurityContext` / `firstmate.securityContext` / `walkieTalkie.securityContext` | non-root, uid/gid 1000, fsGroup 1000 | Change to match your Pod Security Admission and volume ownership. |
 
-Add harness/model configuration through `agents` (see
+Set `FM_WT_HERDR_BIN` (and, if needed, `FM_WT_HERDR_SESSION`) through
+`walkieTalkie.extraEnv` to point the Conversations view at the herdr binary and
+session it should read. Add harness/model configuration through `agents` (see
 [Agent configuration](#agent-configuration)), ambient environment through
 `firstmate.extraEnv` or `firstmate.extraEnvFrom`, and more credentials through
 `credentials.create.harness` / `credentials.keys.harness`. Harness entries may

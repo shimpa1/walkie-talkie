@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 
 import type { AppConfig } from "../src/config.js";
+import { Conversations } from "../src/conversations.js";
 import { Firstmate } from "../src/firstmate.js";
+import { Herdr } from "../src/herdr.js";
 import type { PushApi } from "../src/push-service.js";
 import { createRequestHandler } from "../src/server.js";
 
@@ -32,6 +34,9 @@ export async function startTestServer(options: {
   home?: string;
   binDir?: string;
   push?: PushApi;
+  /** Fake herdr CLI for the Conversations routes; omit to leave herdr unresolved. */
+  herdrBin?: string;
+  herdrSession?: string;
 } = {}): Promise<TestServer> {
   const home = options.home ?? makeHome();
   const token = options.token ?? "test-token";
@@ -51,10 +56,20 @@ export async function startTestServer(options: {
     vapidPrivateKey: null,
     pushPollSeconds: 20,
     pushStorePath: join(home, "walkie-talkie.push.json"),
+    herdrSession: options.herdrSession ?? "default",
+    herdrBin: options.herdrBin ?? "herdr",
   };
   const firstmate = new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
+  const conversations = new Conversations(
+    new Herdr({ binPath: config.herdrBin, session: config.herdrSession, env: { ...process.env, FM_HOME: home } }),
+  );
   const server: Server = createServer(
-    createRequestHandler({ config, firstmate, ...(options.push ? { push: options.push } : {}) }),
+    createRequestHandler({
+      config,
+      firstmate,
+      conversations,
+      ...(options.push ? { push: options.push } : {}),
+    }),
   );
 
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));

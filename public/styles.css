@@ -369,3 +369,139 @@ button.mic.is-listening {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+button.small {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.conversations {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+
+.conversation-list,
+.conversation-detail {
+  min-width: 0;
+}
+
+.conversation-list-head,
+.conversation-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.conversation-list-head {
+  justify-content: space-between;
+}
+
+.conversation-list-head .section-title {
+  margin: 0;
+}
+
+.conversation-detail-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.conversation-detail-title strong {
+  overflow-wrap: anywhere;
+}
+
+.conversation-detail-title .hint {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.session-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.session-card.is-selected {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.session-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-card-head strong {
+  overflow-wrap: anywhere;
+}
+
+.session-card .sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.session-card-meta {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.terminal {
+  margin: 0;
+  background: #05080f;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: 62vh;
+  min-height: 220px;
+  color: var(--text);
+}
+
+@media (min-width: 720px) {
+  .conversations {
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  }
+
+  .conversation-detail {
+    position: sticky;
+    top: 92px;
+  }
+
+  .conversation-back {
+    display: none;
+  }
+}
+
+@media (max-width: 719px) {
+  .conversations.is-detail .conversation-list {
+    display: none;
+  }
+}

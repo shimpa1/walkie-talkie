@@ -96,6 +96,27 @@ test("an out-of-range poll interval is a configuration error", () => {
   );
 });
 
+test("herdr settings default and accept overrides", () => {
+  const base = resolveConfig({ env: { FM_WT_TOKEN: "t" }, cwd: tmpdir() });
+  assert.equal(base.herdrSession, "default");
+  assert.equal(base.herdrBin, "herdr");
+
+  const ambient = resolveConfig({ env: { FM_WT_TOKEN: "t", HERDR_SESSION: "firstmate" }, cwd: tmpdir() });
+  assert.equal(ambient.herdrSession, "firstmate");
+
+  const overridden = resolveConfig({
+    env: {
+      FM_WT_TOKEN: "t",
+      HERDR_SESSION: "firstmate",
+      FM_WT_HERDR_SESSION: "other",
+      FM_WT_HERDR_BIN: "/opt/herdr/herdr",
+    },
+    cwd: tmpdir(),
+  });
+  assert.equal(overridden.herdrSession, "other");
+  assert.equal(overridden.herdrBin, "/opt/herdr/herdr");
+});
+
 test("loopback detection covers the usual spellings", () => {
   assert.equal(isLoopbackHost("127.0.0.1"), true);
   assert.equal(isLoopbackHost("::1"), true);

@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ConfigError, resolveConfig, type AppConfig } from "./config.js";
+import { Conversations } from "./conversations.js";
 import { Firstmate } from "./firstmate.js";
+import { Herdr } from "./herdr.js";
 import { PushStore } from "./push-store.js";
 import { FirstmateEventSource, PushService } from "./push-service.js";
 import { describeBind, startServer } from "./server.js";
@@ -65,6 +67,16 @@ function main(): void {
     env: { ...process.env, FM_HOME: config.fmHome },
   });
 
+  // The read-only Conversations view reads this pod's own herdr session. It
+  // never steers a session: the client only permits pane/tab/workspace reads.
+  const conversations = new Conversations(
+    new Herdr({
+      binPath: config.herdrBin,
+      session: config.herdrSession,
+      env: { ...process.env, FM_HOME: config.fmHome },
+    }),
+  );
+
   let pushService: PushService | null = null;
   try {
     const store = new PushStore(config.pushStorePath);
@@ -87,6 +99,7 @@ function main(): void {
   const server = startServer({
     config,
     firstmate,
+    conversations,
     ...(pushService !== null ? { push: pushService } : {}),
     log,
     onListen: (port) => {

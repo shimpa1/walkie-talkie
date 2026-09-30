@@ -15,7 +15,21 @@ const state = {
   pendingRequestText: null,
   status: null,
   voice: null,
+  view: null,
 };
+
+const conversationState = {
+  sessions: [],
+  selectedId: null,
+  listTimer: null,
+  outputTimer: null,
+  loadingOutput: false,
+  forceScroll: false,
+};
+
+const CONVERSATION_LIST_INTERVAL_MS = 5000;
+const CONVERSATION_OUTPUT_INTERVAL_MS = 3000;
+const CONVERSATION_OUTPUT_LINES = 400;
 
 const $ = (id) => document.getElementById(id);
 
@@ -316,6 +330,127 @@ async function loadReceipts() {
   }
 }
 
+function selectedSession() {
+  return conversationState.sessions.find((session) => session.id === conversationState.selectedId) || null;
+}
+
+function renderSessions(payload) {
+  const body = $("sessions-body");
+  body.textContent = "";
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  conversationState.sessions = sessions;
+
+  if (sessions.length === 0) {
+    body.appendChild(el("div", "card empty", "No live conversations found."));
+    return;
+  }
+
+  for (const session of sessions) {
+    const card = el("button", "session-card");
+    card.type = "button";
+    card.dataset.id = session.id;
+    if (session.id === conversationState.selectedId) card.classList.add("is-selected");
+
+    const head = el("div", "session-card-head");
+    head.appendChild(el("strong", null, session.name || session.id));
+    head.appendChild(el("span", `badge ${stateKind(session.status)}`, session.status || "unknown"));
+    card.appendChild(head);
+    card.appendChild(el("div", "sub", session.title || session.kind));
+    card.appendChild(el("div", "session-card-meta", `${session.kind} · ${session.agent || "agent"} · ${session.id}`));
+    card.addEventListener("click", () => selectSession(session.id));
+    body.appendChild(card);
+  }
+}
+
+function setConversationHeader(session) {
+  $("conversation-name").textContent = session ? session.name || session.id : "—";
+  const parts = [];
+  if (session) {
+    parts.push(session.kind);
+    if (session.cwd) parts.push(session.cwd);
+    parts.push(session.id);
+  }
+  $("conversation-sub").textContent = parts.join(" · ");
+}
+
+function selectSession(id) {
+  conversationState.selectedId = id;
+  conversationState.forceScroll = true;
+  $("conversation-detail").hidden = false;
+  $("conversations-pane").classList.add("is-detail");
+  setConversationHeader(selectedSession());
+  renderSessions({ sessions: conversationState.sessions });
+  $("conversation-output").textContent = "Loading…";
+  void loadConversationOutput();
+}
+
+function closeConversation() {
+  conversationState.selectedId = null;
+  $("conversation-detail").hidden = true;
+  $("conversations-pane").classList.remove("is-detail");
+  renderSessions({ sessions: conversationState.sessions });
+}
+
+function renderConversationOutput(payload) {
+  const box = $("conversation-output");
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent = payload && payload.output ? payload.output : "(no output yet)";
+  if (nearBottom || conversationState.forceScroll) {
+    box.scrollTop = box.scrollHeight;
+    conversationState.forceScroll = false;
+  }
+}
+
+async function loadConversationOutput() {
+  const id = conversationState.selectedId;
+  if (!id || conversationState.loadingOutput) return;
+  conversationState.loadingOutput = true;
+  try {
+    const payload = await api(`/api/sessions/${encodeURIComponent(id)}?lines=${CONVERSATION_OUTPUT_LINES}`);
+    if (conversationState.selectedId !== id) return;
+    renderConversationOutput(payload);
+  } catch (error) {
+    if (error && error.status === 401) return;
+    $("conversation-output").textContent = `Could not read this conversation: ${error.message}`;
+  } finally {
+    conversationState.loadingOutput = false;
+  }
+}
+
+async function loadSessions() {
+  const body = $("sessions-body");
+  try {
+    const payload = await api("/api/sessions");
+    renderSessions(payload);
+    if (conversationState.selectedId && !selectedSession()) closeConversation();
+    else setConversationHeader(selectedSession());
+  } catch (error) {
+    if (error && error.status === 401) return;
+    body.textContent = "";
+    body.appendChild(el("div", "card empty", `Could not load conversations: ${error.message}`));
+  }
+}
+
+function startConversationsPolling() {
+  stopConversationsPolling();
+  conversationState.listTimer = setInterval(() => void loadSessions(), CONVERSATION_LIST_INTERVAL_MS);
+  conversationState.outputTimer = setInterval(
+    () => void loadConversationOutput(),
+    CONVERSATION_OUTPUT_INTERVAL_MS,
+  );
+}
+
+function stopConversationsPolling() {
+  if (conversationState.listTimer !== null) {
+    clearInterval(conversationState.listTimer);
+    conversationState.listTimer = null;
+  }
+  if (conversationState.outputTimer !== null) {
+    clearInterval(conversationState.outputTimer);
+    conversationState.outputTimer = null;
+  }
+}
+
 function urlBase64ToUint8Array(base64Url) {
   const padding = "=".repeat((4 - (base64Url.length % 4)) % 4);
   const base64 = (base64Url + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -450,6 +585,7 @@ async function loadHealth() {
 }
 
 function showView(name) {
+  state.view = name;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("is-active", tab.dataset.view === name);
   }
@@ -459,9 +595,16 @@ function showView(name) {
   if (name === "status") void loadStatus();
   if (name === "receipts") void loadReceipts();
   if (name === "settings") void refreshPushStatus();
+  if (name === "conversations") {
+    void loadSessions();
+    void loadConversationOutput();
+    startConversationsPolling();
+  } else {
+    stopConversationsPolling();
+  }
 }
 
-const VIEWS = ["status", "compose", "receipts", "settings"];
+const VIEWS = ["status", "conversations", "compose", "receipts", "settings"];
 const TOKEN_SAVE_DELAY_MS = 300;
 let tokenSaveTimer = null;
 
@@ -518,7 +661,16 @@ function init() {
   $("refresh").addEventListener("click", () => {
     void loadStatus();
     void loadHealth();
+    if (state.view === "conversations") {
+      void loadSessions();
+      void loadConversationOutput();
+    }
   });
+  $("conversations-refresh").addEventListener("click", () => {
+    void loadSessions();
+    void loadConversationOutput();
+  });
+  $("conversation-back").addEventListener("click", closeConversation);
   $("note-form").addEventListener("submit", submitNote);
   $("note-text").addEventListener("input", () => {
     state.pendingRequestId = null;

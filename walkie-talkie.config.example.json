@@ -8,5 +8,7 @@
   "vapidPublicKey": "",
   "vapidPrivateKey": "",
   "pushPollSeconds": 20,
-  "pushStore": "walkie-talkie.push.json"
+  "pushStore": "walkie-talkie.push.json",
+  "herdrSession": "default",
+  "herdrBin": "herdr"
 }
