@@ -16,6 +16,14 @@
 # from HARNESS_PACKAGES. The default is the opencode CLI; override it for
 # another harness, or set it empty and install your own on top.
 #
+# The image also carries the command-line tools a firstmate home expects on
+# PATH: no-mistakes plus the AXI-family tools (gh-axi, chrome-devtools-axi,
+# tasks-axi, quota-axi, lavish-axi). They are pinned to the versions current at
+# the pinned firstmate ref's floors (bin/fm-bootstrap.sh: NO_MISTAKES_MIN,
+# GH_AXI_MIN, LAVISH_AXI_MIN, and the tasks-axi/quota-axi floors), so a deployed
+# home boots with no MISSING-tool diagnostics and without drift. Bump
+# FIRSTMATE_REF and these ARGs together; see docs/deploy-kubernetes.md.
+#
 # FIRSTMATE_REF pins the distro to one immutable commit so the runtime image is
 # reproducible and no mutable branch can change it on a later build. It is the
 # firstmate commit the deployed image was built from; bump it deliberately and
@@ -38,8 +46,18 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG FIRSTMATE_REPO=https://github.com/kunchenguid/firstmate
-ARG FIRSTMATE_REF=c5f48e4cad279e6acaf14208522c44e28fac6835
+ARG FIRSTMATE_REF=eb77f02b16aeca9533102070de34b1f8812f4fa2
 ARG HARNESS_PACKAGES=opencode-ai
+
+# AXI-family and no-mistakes versions a firstmate expects, pinned to the
+# versions that satisfy the pinned firstmate ref's floors. Bump alongside
+# FIRSTMATE_REF.
+ARG NO_MISTAKES_VERSION=1.84.0
+ARG GH_AXI_VERSION=0.1.35
+ARG CHROME_DEVTOOLS_AXI_VERSION=0.1.35
+ARG TASKS_AXI_VERSION=0.2.6
+ARG QUOTA_AXI_VERSION=0.1.55
+ARG LAVISH_AXI_VERSION=0.1.80
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -95,6 +113,40 @@ RUN /opt/firstmate/bin/fm-install-herdr.sh /usr/local/bin \
 
 # Primary harness.
 RUN if [ -n "${HARNESS_PACKAGES}" ]; then npm install -g ${HARNESS_PACKAGES}; fi
+
+# no-mistakes ships as a static release binary. Install it directly from the
+# pinned release and verify its published checksum, rather than through its
+# installer, which resolves "latest" (not reproducible) and restarts the shared
+# daemon at install time (unwanted in an image build; firstmate owns the daemon
+# at runtime).
+RUN set -eux; \
+  case "$(dpkg --print-architecture)" in \
+    amd64) nm_arch=amd64 ;; \
+    arm64) nm_arch=arm64 ;; \
+    *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+  esac; \
+  tag="v${NO_MISTAKES_VERSION}"; \
+  asset="no-mistakes-${tag}-linux-${nm_arch}.tar.gz"; \
+  base="https://github.com/kunchenguid/no-mistakes/releases/download/${tag}"; \
+  tmp="$(mktemp -d)"; \
+  curl -fsSL "${base}/${asset}" -o "${tmp}/${asset}"; \
+  curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt"; \
+  expected="$(awk -v a="${asset}" '$2 == a { print $1 }' "${tmp}/checksums.txt")"; \
+  actual="$(sha256sum "${tmp}/${asset}" | awk '{ print $1 }')"; \
+  [ -n "${expected}" ] && [ "${expected}" = "${actual}" ] \
+    || { echo "checksum mismatch for ${asset}" >&2; exit 1; }; \
+  tar -xzf "${tmp}/${asset}" -C "${tmp}"; \
+  install -m 0755 "${tmp}/no-mistakes" /usr/local/bin/no-mistakes; \
+  rm -rf "${tmp}"
+
+# AXI-family tools a firstmate expects, from npm. Installed globally under
+# /usr/local so the unprivileged firstmate user finds them on PATH.
+RUN npm install -g \
+    "gh-axi@${GH_AXI_VERSION}" \
+    "chrome-devtools-axi@${CHROME_DEVTOOLS_AXI_VERSION}" \
+    "tasks-axi@${TASKS_AXI_VERSION}" \
+    "quota-axi@${QUOTA_AXI_VERSION}" \
+    "lavish-axi@${LAVISH_AXI_VERSION}"
 
 # Reuse the node image's uid/gid 1000 user, renamed to firstmate with the home
 # path the chart mounts.

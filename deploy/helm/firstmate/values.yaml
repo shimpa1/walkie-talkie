@@ -66,6 +66,19 @@ firstmate:
   extraEnvFrom: []
   #  - secretRef:
   #      name: my-harness-config
+  #
+  # To take the GitHub token from an external Secret (for example a
+  # Doppler-synced Secret) instead of the chart's credential Secret, carry a key
+  # named `GH_TOKEN` in that Secret so `extraEnvFrom` injects it as GH_TOKEN, map
+  # the same key to GITHUB_TOKEN with an `extraEnv` secretKeyRef if a tool needs
+  # that name, and set `credentials.githubTokenEnabled: false` so the chart does
+  # not also source a token from its own Secret. See examples/values-atus.yaml.
+  #  - name: GITHUB_TOKEN
+  #    valueFrom:
+  #      secretKeyRef:
+  #        name: my-doppler-secrets
+  #        key: GH_TOKEN
+  #        optional: true
 
   # Override the image entrypoint if you ship your own image.
   command: []

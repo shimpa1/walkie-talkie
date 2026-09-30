@@ -2,21 +2,27 @@
 # StorageClass `beta3` (Rook-Ceph), TLS terminated at the shared Gateway with
 # the wildcard `*.atus.hr` certificate.
 #
-# Fresh install:
+# Fresh install (the GitHub PAT is added to Doppler as key `GH_TOKEN`, not
+# passed on the command line):
 #
 #   helm upgrade --install firstmate deploy/helm/firstmate \
 #     --namespace firstmate --create-namespace \
 #     -f deploy/helm/firstmate/examples/values-atus.yaml \
-#     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)" \
-#     --set credentials.create.githubToken=github_pat_xxx
+#     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)"
 #
-# The atus deployment does not take harness/model credentials from `--set`: the
-# Doppler operator syncs them into Secret `firstmate-doppler-secrets`, wired in
-# as `firstmate.extraEnvFrom` below, where the default opencode harness reads
+# The atus deployment takes no credentials from `--set`: the Doppler operator
+# syncs them into Secret `firstmate-doppler-secrets`, wired in as
+# `firstmate.extraEnvFrom` below, where the default opencode harness reads
 # DEEPSEEK_API_KEY / OPENROUTER_API_KEY (a Claude harness reads
-# ANTHROPIC_API_KEY instead). Upgrading the live release therefore passes only
-# the values file; the chart preserves the existing credential Secret and never
-# re-supplies or rotates a credential unless one is explicitly passed.
+# ANTHROPIC_API_KEY instead). The GitHub token for `gh` / `gh-axi` comes from the
+# same Secret, not from the chart's own credential Secret: add a Doppler key
+# named `GH_TOKEN` (its value is the PAT the captain owns) and `extraEnvFrom`
+# injects it as the env var `GH_TOKEN`, while `firstmate.extraEnv` maps that same
+# key to `GITHUB_TOKEN` for tools that read that name. `credentials.githubTokenEnabled`
+# is false so the chart never sources a GitHub token from its own Secret and no
+# token is ever committed. Upgrading the live release therefore passes only the
+# values file; the chart preserves its credential Secret and never re-supplies or
+# rotates a credential unless one is explicitly passed.
 #
 # The runtime starts the primary harness in the herdr session and restarts it
 # in the same pane if it exits, so the pod keeps a live firstmate draining
@@ -29,24 +35,36 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit a65e3c022457: the OpenCode watch-arm fix, so a freshly booted home
-    # arms supervision and drains queued inbox notes with no task in flight. It
-    # builds the pinned firstmate commit
-    # c5f48e4cad279e6acaf14208522c44e28fac6835 (the commit the previous running
-    # image b78d9d679e00 was also built from) plus the committed patches/ arm
-    # patch. Built with:
+    # Commit 67d745f75397: the runtime that brings the deployed firstmate current.
+    # It pins firstmate to eb77f02b16aeca9533102070de34b1f8812f4fa2, applies the
+    # committed patches/ OpenCode watch-arm fix, and bakes the tools a firstmate
+    # home expects (no-mistakes and the AXI family: gh-axi, chrome-devtools-axi,
+    # tasks-axi, quota-axi, lavish-axi) at pinned versions. The previous running
+    # image was a65e3c022457. Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:a65e3c022457 --push deploy/kubernetes/firstmate
-    tag: "a65e3c022457"
+    #     -t shimpa/firstmate-runtime:67d745f75397 --push deploy/kubernetes/firstmate
+    tag: "67d745f75397"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate
-  # Harness/model credentials for the atus deployment are synced into the
-  # namespace by the Doppler operator (DopplerSecret doppler-firstmate ->
-  # Secret firstmate-doppler-secrets), not committed here.
+  # Harness/model credentials and the GitHub token for the atus deployment are
+  # synced into the namespace by the Doppler operator (DopplerSecret
+  # doppler-firstmate -> Secret firstmate-doppler-secrets), not committed here.
+  # The secret must carry a key named `GH_TOKEN` (value: the captain's GitHub
+  # PAT). envFrom injects it as GH_TOKEN; the extraEnv entry below exposes the
+  # same key as GITHUB_TOKEN for tools that read that name. optional:true keeps
+  # the pod schedulable before the key exists, so a missing token surfaces as
+  # `gh auth status` reporting logged-out rather than a crash-looping pod.
   extraEnvFrom:
     - secretRef:
         name: firstmate-doppler-secrets
+  extraEnv:
+    - name: GITHUB_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: firstmate-doppler-secrets
+          key: GH_TOKEN
+          optional: true
   resources:
     requests:
       cpu: 500m
@@ -106,6 +124,10 @@ credentials:
   # Either point at an existing Secret (recommended) or let the chart create
   # one. For a GitOps setup, prefer an existing Secret managed outside Helm.
   existingSecret: ""
+  # GitHub auth comes from the Doppler-synced Secret (`extraEnvFrom` /
+  # `extraEnv` above), so the chart must not also source a GH_TOKEN from its own
+  # credential Secret.
+  githubTokenEnabled: false
   create:
     walkieTalkieToken: ""
     githubToken: ""

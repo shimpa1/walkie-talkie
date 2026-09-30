@@ -34,6 +34,45 @@ test("the runtime Dockerfile pins firstmate to an immutable commit", () => {
   );
 });
 
+test("the runtime Dockerfile installs the tools a firstmate expects, pinned", () => {
+  const dockerfile = readFileSync(DOCKERFILE, "utf8");
+  for (const arg of [
+    "NO_MISTAKES_VERSION",
+    "GH_AXI_VERSION",
+    "CHROME_DEVTOOLS_AXI_VERSION",
+    "TASKS_AXI_VERSION",
+    "QUOTA_AXI_VERSION",
+    "LAVISH_AXI_VERSION",
+  ]) {
+    const match = dockerfile.match(new RegExp(`^ARG ${arg}=(\\S+)$`, "m"));
+    assert.ok(match, `${arg} is declared`);
+    assert.match(match[1]!, /^\d+\.\d+\.\d+$/, `${arg} is a pinned version`);
+  }
+  // no-mistakes is fetched from its pinned release and checksum-verified, not
+  // through its install script (which resolves "latest" and restarts the daemon).
+  assert.match(
+    dockerfile,
+    /github\.com\/kunchenguid\/no-mistakes\/releases\/download\/\$\{tag\}/,
+  );
+  assert.match(dockerfile, /checksums\.txt/);
+  assert.match(dockerfile, /\/usr\/local\/bin\/no-mistakes/);
+  // The AXI-family tools are installed from npm at their pinned versions.
+  for (const pkg of [
+    "gh-axi",
+    "chrome-devtools-axi",
+    "tasks-axi",
+    "quota-axi",
+    "lavish-axi",
+  ]) {
+    const env = `${pkg.toUpperCase().replace(/-/g, "_")}_VERSION`;
+    assert.match(
+      dockerfile,
+      new RegExp(`"${pkg}@\\$\\{${env}\\}"`),
+      `${pkg} is installed at its pinned version`,
+    );
+  }
+});
+
 test("the runtime Dockerfile applies the committed patch set", () => {
   const dockerfile = readFileSync(DOCKERFILE, "utf8");
   assert.match(dockerfile, /^COPY patches\/ /m);
