@@ -231,3 +231,27 @@ test("agents enabled without a provider or dispatch fails the render", { skip: s
   assert.notEqual(rendered.status, 0);
   assert.match(rendered.stderr, /requires agents\.providers or agents\.dispatch/);
 });
+
+test("the herdr CLI is not installed by default", { skip: skipHelm }, () => {
+  const rendered = render([]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.equal(rendered.stdout.includes("install-herdr"), false);
+  assert.equal(rendered.stdout.includes("FM_WT_HERDR_BIN"), false);
+});
+
+test("the atus example installs the herdr CLI for the Conversations view", { skip: skipHelm }, () => {
+  const rendered = render(["-f", VALUES_ATUS]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /name: install-herdr/);
+  assert.match(rendered.stdout, /image: .*firstmate-runtime/);
+  assert.match(rendered.stdout, /name: FM_WT_HERDR_BIN\n\s+value: "\/opt\/herdr\/herdr"/);
+  assert.match(rendered.stdout, /name: XDG_CONFIG_HOME\n\s+value: "\/home\/firstmate\/\.config"/);
+});
+
+test("herdrCLI installs herdr from the firstmate image into a shared volume", { skip: skipHelm }, () => {
+  const file = valuesFile({ walkieTalkie: { herdrCLI: { enabled: true } } });
+  const rendered = render(["-f", file]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /- cp\n\s+- \/usr\/local\/bin\/herdr/);
+  assert.match(rendered.stdout, /- name: herdr-bin\n\s+emptyDir: \{\}/);
+});

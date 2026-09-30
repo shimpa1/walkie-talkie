@@ -60,6 +60,11 @@ walkieTalkie:
     #     -t shimpa/walkie-talkie:0ef15d3d0f08 --push .
     tag: "0ef15d3d0f08"
     pullPolicy: IfNotPresent
+  # The Conversations view reads the pod's own herdr session through the herdr
+  # CLI; the walkie-talkie image does not bundle it, so the chart installs it
+  # from the pinned firstmate image into a shared volume at container start.
+  herdrCLI:
+    enabled: true
 
 persistence:
   enabled: true

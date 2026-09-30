@@ -47,7 +47,16 @@
         "extraEnv": { "type": "array" },
         "extraEnvFrom": { "type": "array" },
         "resources": { "type": "object" },
-        "securityContext": { "type": "object" }
+        "securityContext": { "type": "object" },
+        "herdrCLI": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mountPath": { "type": "string", "pattern": "^/" },
+            "binary": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "persistence": {
