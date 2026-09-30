@@ -111,6 +111,22 @@ RUN git clone "${FIRSTMATE_REPO}" /opt/firstmate \
 RUN /opt/firstmate/bin/fm-install-herdr.sh /usr/local/bin \
   && /opt/firstmate/bin/fm-install-treehouse.sh /usr/local/bin
 
+# OpenCode's herdr integration plugin. It reports the pane's agent session id
+# (`ses_...`) to the herdr server, which surfaces it as `agent_session` in
+# `herdr pane list`; the walkie-talkie Conversations view needs that id to open
+# the session's real message history in the agent store instead of falling back
+# to the terminal's visible screen. herdr's own `integration install` writes to
+# the global `~/.config/opencode/plugins`, but in this deployment
+# `~/.config/opencode` is a Kubernetes mount point for the agents ConfigMap and
+# is not writable by the unprivileged runtime user, so bake the plugin into the
+# seed's project-level plugin directory instead, beside firstmate's own OpenCode
+# plugins. The entrypoint refreshes it into a retained home.
+RUN mkdir -p /tmp/herdr-integration/.config/opencode \
+  && HOME=/tmp/herdr-integration herdr integration install opencode \
+  && install -Dm 0644 /tmp/herdr-integration/.config/opencode/plugins/herdr-agent-state.js \
+       /opt/firstmate/.opencode/plugins/herdr-agent-state.js \
+  && rm -rf /tmp/herdr-integration
+
 # Primary harness.
 RUN if [ -n "${HARNESS_PACKAGES}" ]; then npm install -g ${HARNESS_PACKAGES}; fi
 

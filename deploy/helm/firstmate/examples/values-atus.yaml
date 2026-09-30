@@ -35,15 +35,21 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit 67d745f75397: the runtime that brings the deployed firstmate current.
-    # It pins firstmate to eb77f02b16aeca9533102070de34b1f8812f4fa2, applies the
-    # committed patches/ OpenCode watch-arm fix, and bakes the tools a firstmate
-    # home expects (no-mistakes and the AXI family: gh-axi, chrome-devtools-axi,
-    # tasks-axi, quota-axi, lavish-axi) at pinned versions. The previous running
-    # image was a65e3c022457. Built with:
+    # Commit 95b569cfba40: the runtime that makes a session's full history
+    # readable. It builds on 67d745f75397 (which brings the deployed firstmate
+    # current) and additionally bakes OpenCode's herdr integration plugin into
+    # the seed's .opencode/plugins/, refreshed into the home on every start, so
+    # the primary pane reports its agent_session id and the walkie-talkie
+    # Conversations view reads the real message history from the agent store
+    # instead of only the visible terminal screen. It pins firstmate to
+    # eb77f02b16aeca9533102070de34b1f8812f4fa2, applies the committed patches/
+    # OpenCode watch-arm fix, and bakes the tools a firstmate home expects
+    # (no-mistakes and the AXI family: gh-axi, chrome-devtools-axi, tasks-axi,
+    # quota-axi, lavish-axi) at pinned versions. The previous running image was
+    # 67d745f75397. Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:67d745f75397 --push deploy/kubernetes/firstmate
-    tag: "67d745f75397"
+    #     -t shimpa/firstmate-runtime:95b569cfba40 --push deploy/kubernetes/firstmate
+    tag: "95b569cfba40"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate
@@ -75,12 +81,14 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    # Commit 0ef15d3: the merged read-only Conversations view (PR #15). The
-    # previous running image was d1a06ce0a68b, built from commit d1a06ce.
+    # Commit fed7d3a: merged main carrying the full conversation-history fix
+    # (PR #19), which reads a session's actual message history from the agent
+    # store with a terminal fallback instead of only the visible screen. The
+    # previous running image was 0ef15d3d0f08, built from commit 0ef15d3.
     # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:0ef15d3d0f08 --push .
-    tag: "0ef15d3d0f08"
+    #     -t shimpa/walkie-talkie:fed7d3a6f55e --push .
+    tag: "fed7d3a6f55e"
     pullPolicy: IfNotPresent
   # The Conversations view reads the pod's own herdr session through the herdr
   # CLI; the walkie-talkie image does not bundle it, so the chart installs it

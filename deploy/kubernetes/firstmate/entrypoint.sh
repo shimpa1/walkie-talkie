@@ -281,6 +281,23 @@ if [ -f "$SEED_DIR/$WATCH_ARM_PLUGIN" ]; then
   fi
 fi
 
+# 1c. Refresh the OpenCode herdr integration into the home. It reports the pane's
+#     agent session id to herdr, which the walkie-talkie Conversations view maps
+#     to the agent store to render the session's real history. The home is a
+#     PersistentVolume seeded only once, so an existing volume would never get
+#     it; the file is a herdr-managed integration baked into the seed (not a
+#     user-edited distro file), so installing the seed's copy on every start
+#     applies it to existing volumes as well as fresh ones. The write only
+#     happens when the bytes differ, so a fresh seed is not rewritten.
+HERDR_OPENCODE_PLUGIN=".opencode/plugins/herdr-agent-state.js"
+if [ -f "$SEED_DIR/$HERDR_OPENCODE_PLUGIN" ]; then
+  mkdir -p "$HOME_DIR/.opencode/plugins"
+  if ! cmp -s "$SEED_DIR/$HERDR_OPENCODE_PLUGIN" "$HOME_DIR/$HERDR_OPENCODE_PLUGIN"; then
+    cp -f "$SEED_DIR/$HERDR_OPENCODE_PLUGIN" "$HOME_DIR/$HERDR_OPENCODE_PLUGIN"
+    log "installed the OpenCode herdr integration so the primary pane reports its agent session"
+  fi
+fi
+
 # 2. git must trust a home owned by the volume's group, and the backend is
 #    written to config/backend so an interactive attach session resolves the
 #    same herdr backend firstmate uses.
