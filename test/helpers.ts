@@ -85,7 +85,11 @@ export async function startTestServer(options: {
   return {
     url,
     home,
-    close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())),
+    close: () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      }),
   };
 }
 

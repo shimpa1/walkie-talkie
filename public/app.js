@@ -29,7 +29,6 @@ const conversationState = {
   agentSession: null,
   messages: [],
   oldestCursor: null,
-  newestCursor: null,
   hasOlder: false,
 };
 
@@ -391,7 +390,6 @@ function selectSession(id) {
   conversationState.agentSession = null;
   conversationState.messages = [];
   conversationState.oldestCursor = null;
-  conversationState.newestCursor = null;
   conversationState.hasOlder = false;
   $("conversation-detail").hidden = false;
   $("conversations-pane").classList.add("is-detail");
@@ -407,7 +405,6 @@ function closeConversation() {
   conversationState.agentSession = null;
   conversationState.messages = [];
   conversationState.oldestCursor = null;
-  conversationState.newestCursor = null;
   conversationState.hasOlder = false;
   $("conversation-detail").hidden = true;
   $("conversations-pane").classList.remove("is-detail");
@@ -493,20 +490,30 @@ function normalizeMessages(list) {
 }
 
 function mergeMessages(incoming) {
-  const seen = new Set(conversationState.messages.map((message) => message.id));
+  const byId = new Map(conversationState.messages.map((message) => [message.id, message]));
+  let changed = 0;
   let added = 0;
   for (const message of incoming) {
-    if (seen.has(message.id)) continue;
-    seen.add(message.id);
-    conversationState.messages.push(message);
-    added += 1;
+    const existing = byId.get(message.id);
+    if (existing === undefined) {
+      byId.set(message.id, message);
+      conversationState.messages.push(message);
+      added += 1;
+      changed += 1;
+      continue;
+    }
+    if (existing.text !== message.text || existing.role !== message.role) {
+      existing.text = message.text;
+      existing.role = message.role;
+      changed += 1;
+    }
   }
   if (added > 0) {
     conversationState.messages.sort(
       (a, b) => a.time - b.time || a.id.localeCompare(b.id),
     );
   }
-  return added;
+  return changed;
 }
 
 function conversationUrl(params) {
@@ -514,7 +521,6 @@ function conversationUrl(params) {
   query.set("limit", String(CONVERSATION_HISTORY_LIMIT));
   query.set("lines", String(CONVERSATION_OUTPUT_LINES));
   if (params && params.before) query.set("before", params.before);
-  if (params && params.after) query.set("after", params.after);
   return `/api/sessions/${encodeURIComponent(conversationState.selectedId)}?${query.toString()}`;
 }
 
@@ -536,27 +542,23 @@ async function fetchLatestConversation() {
   conversationState.agentSession = payload.agent_session || null;
   conversationState.messages = normalizeMessages(payload.messages);
   conversationState.oldestCursor = payload.oldest_cursor || null;
-  conversationState.newestCursor = payload.newest_cursor || null;
   conversationState.hasOlder = Boolean(payload.has_older);
   setConversationHeader(selectedSession());
   renderHistory();
 }
 
-async function fetchNewerMessages() {
-  const cursor = conversationState.newestCursor;
-  if (!cursor) {
-    await fetchLatestConversation();
-    return;
-  }
-  const payload = await fetchConversation({ after: cursor });
+async function refreshHistoryMessages() {
+  const payload = await fetchConversation({});
   if (payload === null) return;
   if (payload.source !== "history") {
     applyTerminal(payload);
     return;
   }
-  const added = mergeMessages(normalizeMessages(payload.messages));
-  if (payload.newest_cursor) conversationState.newestCursor = payload.newest_cursor;
-  if (added > 0) renderHistory();
+  const changed = mergeMessages(normalizeMessages(payload.messages));
+  if (conversationState.oldestCursor === null && payload.oldest_cursor) {
+    conversationState.oldestCursor = payload.oldest_cursor;
+  }
+  if (changed > 0) renderHistory();
 }
 
 async function loadOlderMessages() {
@@ -585,7 +587,7 @@ async function refreshConversation() {
   if (!conversationState.selectedId || conversationState.busy) return;
   conversationState.busy = true;
   try {
-    if (conversationState.source === "history") await fetchNewerMessages();
+    if (conversationState.source === "history") await refreshHistoryMessages();
     else await fetchLatestConversation();
   } catch (error) {
     if (error && error.status === 401) return;
