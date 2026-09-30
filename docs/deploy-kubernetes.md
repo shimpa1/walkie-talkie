@@ -69,10 +69,14 @@ the image, and set `FM_WT_HERDR_BIN` yourself.) The chart already exports
 A session's **full conversation history** comes from the coding agent's own
 session store (opencode's SQLite database), which lives under the firstmate home
 the two containers share in this pod (`$FM_HOME/.local/share/opencode/opencode.db`,
-read read-only with Node's built-in `node:sqlite`). No extra mount or environment
-is needed; when the store is absent the view falls back to the terminal output
-from `herdr pane read`. Status, compose, and push notifications work without
-herdr; the Conversations view reports the missing dependency inline.
+read read-only with Node's built-in `node:sqlite`). The view maps the selected
+pane to its session through the `agent_session` id herdr reports; the runtime
+image bakes OpenCode's herdr integration so the primary pane reports it (see
+[Build and push the images](#build-and-push-the-images)). No extra mount or
+environment is needed; when the store or the session id is absent the view falls
+back to the terminal output from `herdr pane read`. Status, compose, and push
+notifications work without herdr; the Conversations view reports the missing
+dependency inline.
 
 ## Prerequisites
 
@@ -125,6 +129,15 @@ shipping silently. The primary harness is installed from `HARNESS_PACKAGES`
 (default `opencode-ai`), and the chart's `firstmate.harnessCommand` default
 starts that same opencode harness; when you build a different harness, set
 `firstmate.harnessCommand` to match.
+
+The runtime image also bakes OpenCode's herdr integration plugin (installed from
+the herdr build itself) into the seed's `.opencode/plugins/`, so the primary pane
+reports its agent session id (`agent_session`) to herdr and the walkie-talkie
+Conversations view can read that session's real history from the agent store
+rather than the terminal. The entrypoint refreshes the plugin into a retained
+home. (It is placed project-level, not in `~/.config/opencode/plugins`, because
+that path is a Kubernetes mount point for the agents ConfigMap and is not
+writable by the unprivileged runtime user.)
 
 The image also bakes the command-line tools a firstmate home expects on `PATH`,
 so the deployed home boots without bootstrap's `MISSING:`-tool diagnostics:
