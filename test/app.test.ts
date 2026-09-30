@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { OpencodeStore } from "../src/conversation-store.js";
-import { FAKE_BIN, REPO_ROOT, startTestServer } from "./helpers.js";
+import { FAKE_BIN, FIXTURES_DIR, REPO_ROOT, startTestServer } from "./helpers.js";
 
 const HERDR_BIN = join(FAKE_BIN, "herdr");
 
@@ -315,6 +315,133 @@ test("a history refresh applies a message's grown text without reselecting", asy
       created.some(
         (element) => element.className === "msg-text" && element.textContent === "partial and complete",
       ),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+function seedTwoSessionStore(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE session (id text PRIMARY KEY);
+    CREATE TABLE message (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      time_created integer NOT NULL,
+      data text NOT NULL
+    );
+    CREATE TABLE part (
+      id text PRIMARY KEY,
+      message_id text NOT NULL,
+      session_id text NOT NULL,
+      time_created integer NOT NULL,
+      data text NOT NULL
+    );
+  `);
+  const insertSession = db.prepare("INSERT INTO session (id) VALUES (?)");
+  const insertMessage = db.prepare(
+    "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+  );
+  const insertPart = db.prepare(
+    "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+  );
+  insertSession.run("ses_primary");
+  insertSession.run("ses_restarted");
+  insertMessage.run("msg_old", "ses_primary", 1000, JSON.stringify({ role: "assistant" }));
+  insertPart.run(
+    "msg_old_p0",
+    "msg_old",
+    "ses_primary",
+    1000,
+    JSON.stringify({ type: "text", text: "old session" }),
+  );
+  insertMessage.run("msg_new", "ses_restarted", 2000, JSON.stringify({ role: "assistant" }));
+  insertPart.run(
+    "msg_new_p0",
+    "msg_new",
+    "ses_restarted",
+    2000,
+    JSON.stringify({ type: "text", text: "new session" }),
+  );
+  db.close();
+}
+
+test("a history poll replaces the view when the pane's agent session changes", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const dir = mkdtempSync(join(tmpdir(), "reach-app-session-"));
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  cpSync(join(FAKE_BIN, "herdr"), join(binDir, "herdr"));
+  chmodSync(join(binDir, "herdr"), 0o755);
+  for (const name of ["herdr-workspaces.json", "herdr-tabs.json", "herdr-output.txt", "herdr-panes.json"]) {
+    cpSync(join(FIXTURES_DIR, name), join(dir, name));
+  }
+  const panesPath = join(dir, "herdr-panes.json");
+  const dbPath = join(dir, "opencode.db");
+  seedTwoSessionStore(dbPath);
+
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: join(binDir, "herdr"),
+    conversationStore: new OpencodeStore({ dbPath }),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some((element) => element.className === "session-card" && element.dataset.id === "w1:p1"),
+    );
+    const card = created.find(
+      (element) => element.className === "session-card" && element.dataset.id === "w1:p1",
+    );
+    assert.ok(card);
+    card.dispatch("click");
+
+    await waitFor(() =>
+      created.some(
+        (element) => element.className === "msg-text" && element.textContent === "old session",
+      ),
+    );
+
+    const before = created.length;
+    const panes = JSON.parse(readFileSync(panesPath, "utf8")) as {
+      result: { panes: Array<{ pane_id: string; agent_session: unknown }> };
+    };
+    const pane = panes.result.panes.find((entry) => entry.pane_id === "w1:p1");
+    assert.ok(pane);
+    pane.agent_session = {
+      agent: "opencode",
+      kind: "id",
+      source: "herdr:opencode",
+      value: "ses_restarted",
+    };
+    writeFileSync(panesPath, JSON.stringify(panes));
+
+    const primed = await nativeFetch(server.url + "/api/sessions", {
+      headers: { authorization: "Bearer t" },
+    });
+    assert.equal(primed.status, 200);
+    getElement("conversations-refresh").dispatch("click");
+
+    await waitFor(() =>
+      created
+        .slice(before)
+        .some((element) => element.className === "msg-text" && element.textContent === "new session"),
+    );
+    const renderedSessionText = created
+      .slice(before)
+      .filter((element) => element.className === "msg-text")
+      .map((element) => element.textContent);
+    assert.ok(
+      !renderedSessionText.includes("old session"),
+      "the previous agent session's messages must not be merged into the new session",
     );
   } finally {
     await server.close();

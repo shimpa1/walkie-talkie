@@ -531,13 +531,7 @@ async function fetchConversation(params) {
   return payload;
 }
 
-async function fetchLatestConversation() {
-  const payload = await fetchConversation({});
-  if (payload === null) return;
-  if (payload.source !== "history") {
-    applyTerminal(payload);
-    return;
-  }
+function applyHistory(payload) {
   conversationState.source = "history";
   conversationState.agentSession = payload.agent_session || null;
   conversationState.messages = normalizeMessages(payload.messages);
@@ -547,11 +541,29 @@ async function fetchLatestConversation() {
   renderHistory();
 }
 
+function historySessionChanged(payload) {
+  return (payload.agent_session || null) !== conversationState.agentSession;
+}
+
+async function fetchLatestConversation() {
+  const payload = await fetchConversation({});
+  if (payload === null) return;
+  if (payload.source !== "history") {
+    applyTerminal(payload);
+    return;
+  }
+  applyHistory(payload);
+}
+
 async function refreshHistoryMessages() {
   const payload = await fetchConversation({});
   if (payload === null) return;
   if (payload.source !== "history") {
     applyTerminal(payload);
+    return;
+  }
+  if (historySessionChanged(payload)) {
+    applyHistory(payload);
     return;
   }
   const changed = mergeMessages(normalizeMessages(payload.messages));
@@ -564,12 +576,21 @@ async function refreshHistoryMessages() {
 async function loadOlderMessages() {
   const cursor = conversationState.oldestCursor;
   if (!cursor || conversationState.busy) return;
+  const session = selectedSession();
+  if (session && (session.agent_session || null) !== conversationState.agentSession) {
+    await fetchLatestConversation();
+    return;
+  }
   conversationState.busy = true;
   const box = conversationOutput();
   const previousHeight = box.scrollHeight;
   try {
     const payload = await fetchConversation({ before: cursor });
     if (payload === null || payload.source !== "history") return;
+    if (historySessionChanged(payload)) {
+      await fetchLatestConversation();
+      return;
+    }
     mergeMessages(normalizeMessages(payload.messages));
     conversationState.oldestCursor = payload.oldest_cursor || conversationState.oldestCursor;
     conversationState.hasOlder = Boolean(payload.has_older);
