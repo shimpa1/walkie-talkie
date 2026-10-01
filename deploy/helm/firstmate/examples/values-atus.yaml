@@ -35,18 +35,17 @@
 firstmate:
   image:
     repository: shimpa/firstmate-runtime
-    # Commit e5c59151fbcd: the runtime that keeps supervision draining captain
-    # notes after the first watcher cycle. It builds on 95b569cfba40 (the
-    # agent-session runtime) and adds patches/
-    # 0002-handling-successor-resurface-downtime.patch, so a watcher re-armed as
-    # a handling successor still surfaces the durable wake a queued inbox note
-    # appends instead of leaving it in state/.wake-queue forever. The entrypoint
-    # refreshes the patched watcher into the home on every start, so a retained
-    # volume picks it up. The previous running image was 95b569cfba40. Built
-    # with:
+    # Commit 6eb5b4543933: the runtime that starts a fresh harness when a
+    # restart leaves a terminal-less herdr pane. It builds on e5c59151fbcd (the
+    # note-draining runtime) and proves the pane's live terminal before trusting
+    # its rehydrated idle agent, so a pod restart or rollout with a retained
+    # volume no longer leaves the deployed firstmate idle with notes undrained:
+    # it closes the restored husk, starts the harness in a fresh live pane, and
+    # removes a watcher lock left naming a dead pid. The previous running image
+    # was e5c59151fbcd. Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/firstmate-runtime:e5c59151fbcd --push deploy/kubernetes/firstmate
-    tag: "e5c59151fbcd"
+    #     -t shimpa/firstmate-runtime:6eb5b4543933 --push deploy/kubernetes/firstmate
+    tag: "6eb5b4543933"
     pullPolicy: IfNotPresent
   home: /home/firstmate
   herdrSession: firstmate

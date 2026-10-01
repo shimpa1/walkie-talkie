@@ -113,14 +113,46 @@ herdr_workspace_pane() {  # <workspace-id>
   printf '%s' "$pane"
 }
 
-# Returns 0 when herdr reports a registered agent in the pane, 1 when the server
-# authoritatively reports no agent there (a server restart clears live
-# registrations, so an empty pane is started), and 2 when the read failed, so a
-# transient CLI/IPC failure is never taken as evidence the harness is gone. While
-# the agent is live the entrypoint never types over it (for example if it is
-# re-run against a server it did not start).
+# Whether a pane still has a live terminal in the running herdr server. A herdr
+# server restart rehydrates the persisted session layout: `pane list` and
+# `agent get` keep reporting the pane and its last agent, but no terminal
+# process was restored, so `pane run`, `send-text`, `pane read`, and
+# `pane process-info` all return `pane_not_found`. This read is the
+# discriminator the agent record cannot give: 0 live, 1 authoritatively no
+# terminal (a restored husk), 2 when the read itself failed (unknown).
+herdr_pane_terminal_live() {  # <pane-id>
+  local out
+  out=$(herdr_read pane process-info --pane "$1") || return 2
+  # herdr reports `pane_not_found` inside an `error` object for process-info and
+  # as a top-level `code` for pane read; accept either envelope.
+  if printf '%s' "$out" | jq -e '((.error.code? // empty) == "pane_not_found") or ((.code? // empty) == "pane_not_found")' >/dev/null 2>&1; then
+    return 1
+  fi
+  if printf '%s' "$out" | jq -e 'has("error") or has("code")' >/dev/null 2>&1; then
+    return 2
+  fi
+  return 0
+}
+
+# Returns 0 when herdr reports a registered agent in a pane that still has a live
+# terminal, 1 when the server authoritatively reports no live harness there (no
+# agent, or a restored husk whose stale agent record has no terminal behind it),
+# and 2 when a read failed, so a transient CLI/IPC failure is never taken as
+# evidence the harness is gone. While the agent is live the entrypoint never
+# types over it (for example if it is re-run against a server it did not start).
 herdr_pane_has_agent() {  # <pane-id>
-  local out status
+  local out status term_rc=0
+  # Prove the terminal first. A restart rehydrates `agent get` with the old
+  # agent status while the pane has no process behind it, so trusting the agent
+  # record alone made the entrypoint skip starting a harness after every
+  # restart and leave the home idle with captain notes undrained.
+  herdr_pane_terminal_live "$1" || term_rc=$?
+  if [ "$term_rc" -eq 1 ]; then
+    return 1
+  fi
+  if [ "$term_rc" -eq 2 ]; then
+    return 2
+  fi
   out=$(herdr_read agent get "$1") || return 2
   if printf '%s' "$out" | jq -e '.error.code == "agent_not_found"' >/dev/null 2>&1; then
     return 1
@@ -133,39 +165,77 @@ herdr_pane_has_agent() {  # <pane-id>
   return 0
 }
 
-# Start the primary harness in the home workspace's pane. Creates the workspace
-# on first start and reuses it afterwards, so restarts do not leak workspaces
-# or tabs.
-start_primary_harness() {
-  local wsid pane out sessionstart_plugin
-  local ws_rc=0 pane_rc=0 agent_rc=0
-  wsid=$(herdr_workspace_id) || ws_rc=$?
-  if [ "$ws_rc" -eq 2 ]; then
-    log "could not read the herdr workspace list for session '$SESSION'"
-    return 1
-  fi
-  if [ -z "$wsid" ]; then
-    out=$(herdr_cli workspace create --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) || {
-      log "herdr workspace create failed for session '$SESSION'"
-      return 1
-    }
-    wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
-    pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  fi
-  if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
-    pane=$(herdr_workspace_pane "$wsid") || pane_rc=$?
-    if [ "$pane_rc" -eq 2 ]; then
-      log "could not read the herdr pane list for workspace '$wsid'"
+# Resolve a live pane for the primary harness, creating the workspace or tab
+# when missing and reusing both afterwards so restarts do not leak workspaces or
+# tabs. A pane restored by a herdr server restart is a husk: it is listed and
+# its stale agent is reported, but no terminal survived, so pane
+# run/send-text/read/process-info return pane_not_found and it cannot host the
+# harness. Such a pane is closed (with its workspace, which closes with its last
+# pane) and a fresh live pane is created instead. Prints the pane id on success
+# and returns 1 when none can be resolved.
+ensure_primary_pane() {
+  local wsid pane out ws_rc=0 pane_rc=0 term_rc=0
+  for _ in 1 2; do
+    wsid='' pane='' ws_rc=0 pane_rc=0 term_rc=0
+    wsid=$(herdr_workspace_id) || ws_rc=$?
+    if [ "$ws_rc" -eq 2 ]; then
+      log "could not read the herdr workspace list for session '$SESSION'" >&2
       return 1
     fi
-  fi
-  if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
-    out=$(herdr_cli tab create --workspace "$wsid" --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) \
-      || out=
-    pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
-  fi
-  if [ -z "${pane:-}" ]; then
-    log "could not resolve a herdr pane for the primary harness"
+    if [ -z "$wsid" ]; then
+      out=$(herdr_cli workspace create --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) || {
+        log "herdr workspace create failed for session '$SESSION'" >&2
+        return 1
+      }
+      wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
+      pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+    fi
+    if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
+      pane=$(herdr_workspace_pane "$wsid") || pane_rc=$?
+      if [ "$pane_rc" -eq 2 ]; then
+        log "could not read the herdr pane list for workspace '$wsid'" >&2
+        return 1
+      fi
+    fi
+    if [ -n "$wsid" ] && [ -z "${pane:-}" ]; then
+      out=$(herdr_cli tab create --workspace "$wsid" --cwd "$HOME_DIR" --label "$WORKSPACE_LABEL" --no-focus 2>/dev/null) \
+        || out=
+      pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+    fi
+    if [ -z "${pane:-}" ]; then
+      log "could not resolve a herdr pane for the primary harness" >&2
+      return 1
+    fi
+    herdr_pane_terminal_live "$pane" || term_rc=$?
+    if [ "$term_rc" -eq 1 ]; then
+      # Retained husk: a restart rehydrated this pane's layout but no terminal,
+      # so it cannot accept pane run. Close the workspace and resolve again so a
+      # fresh live pane starts firstmate instead of sitting idle.
+      log "herdr pane '$pane' is a retained husk with no live terminal; replacing it with a fresh pane" >&2
+      herdr_cli workspace close "$wsid" >/dev/null 2>&1 || true
+      continue
+    fi
+    if [ "$term_rc" -eq 2 ]; then
+      # Unknown terminal read: never destroy panes on an unreadable state; the
+      # agent probe and the supervisor decide from here.
+      log "could not read the terminal state for pane '$pane'; using it as-is" >&2
+    fi
+    printf '%s' "$pane"
+    return 0
+  done
+  log "could not replace the retained herdr husk with a live pane" >&2
+  return 1
+}
+
+# Start the primary harness in the home workspace's live pane. On a fresh or
+# empty home ensure_primary_pane creates the workspace; on a restart whose herdr
+# server rehydrated a terminal-less husk it replaces that pane so the harness
+# always starts in a live pane.
+start_primary_harness() {
+  local pane sessionstart_plugin
+  local pane_rc=0 agent_rc=0
+  pane=$(ensure_primary_pane) || pane_rc=$?
+  if [ "$pane_rc" -ne 0 ]; then
     return 1
   fi
   herdr_pane_has_agent "$pane" || agent_rc=$?
@@ -322,6 +392,35 @@ if [ -f "$SEED_DIR/$HERDR_OPENCODE_PLUGIN" ]; then
     log "installed the OpenCode herdr integration so the primary pane reports its agent session"
   fi
 fi
+
+# 1d. Reconcile a watcher lock a previous container left behind. A container
+#     restart tears the watcher down without running its exit cleanup, so
+#     state/.watch.lock can name a pid that no longer exists; the fresh harness
+#     must not be left arming against a dead holder. Only a lock whose recorded
+#     pid is provably not alive is removed - a live watcher's lock (a running
+#     server's home) is left for firstmate's own stale-lock recovery, which also
+#     persists the downtime marker. state/.watcher-down and state/.wake-queue are
+#     firstmate's durable recovery state and are deliberately left in place: the
+#     patched watcher consumes them to resurface the queued note, so clearing
+#     them here would drop the very wake this path exists to deliver.
+reconcile_dead_watcher_lock() {
+  local lock="$HOME_DIR/state/.watch.lock" owner pid
+  [ -L "$lock" ] || return 0
+  pid=$(cat "$lock/pid" 2>/dev/null || true)
+  case "$pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$pid" != 1 ] || return 0
+  kill -0 "$pid" 2>/dev/null && return 0
+  owner=$(readlink "$lock" 2>/dev/null || true)
+  if rm -f "$lock" 2>/dev/null; then
+    case "$owner" in
+      "$HOME_DIR/state/.watch.lock.owner."*) rm -rf -- "$owner" 2>/dev/null || true ;;
+    esac
+    log "removed a watcher lock left by a previous container so supervision can re-arm"
+  fi
+}
+reconcile_dead_watcher_lock
 
 # 2. git must trust a home owned by the volume's group, and the backend is
 #    written to config/backend so an interactive attach session resolves the
