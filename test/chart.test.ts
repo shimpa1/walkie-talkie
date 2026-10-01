@@ -80,11 +80,8 @@ test("the atus example publishes the provider catalog and dispatch profiles", { 
   };
   assert.equal(opencode.provider.deepseek?.options?.apiKey, "{env:DEEPSEEK_API_KEY}");
   assert.equal(opencode.provider.openrouter?.options?.apiKey, "{env:OPENROUTER_API_KEY}");
-  const local = opencode.provider.local3090;
-  assert.equal(local?.npm, "@ai-sdk/openai-compatible");
-  assert.equal(local?.options?.baseURL, "http://10.4.0.20:8000/v1");
-  assert.equal(local?.options?.apiKey, undefined);
-  assert.equal(local?.models?.["qwen3.8-27b"]?.name, "Qwen3.8-27B (3090)");
+  // The retired 3090 box is gone from the catalog: no local3090 provider.
+  assert.equal(opencode.provider.local3090, undefined);
 
   const dispatchRaw = blockScalar(rendered.stdout, "crew-dispatch.json");
   assert.ok(dispatchRaw, "crew-dispatch.json is rendered");
@@ -93,7 +90,7 @@ test("the atus example publishes the provider catalog and dispatch profiles", { 
     default: { harness: string; model?: string }[];
   };
   assert.equal(dispatch.default[0]?.harness, "opencode");
-  assert.equal(dispatch.rules[0]?.use[0]?.model, "local3090/qwen3.8-27b");
+  assert.equal(dispatch.rules[0]?.use[0]?.model, "openrouter/qwen/qwen3.8-27b");
 });
 
 test("a provider may reference an env var declared by a harness", { skip: skipHelm }, () => {
@@ -201,7 +198,7 @@ test("a single dispatch profile object is accepted", { skip: skipHelm }, () => {
     agents: {
       enabled: true,
       harnesses: [{ name: "opencode" }],
-      dispatch: { default: { harness: "opencode", model: "local3090/qwen3.8-27b" } },
+      dispatch: { default: { harness: "opencode", model: "openrouter/qwen/qwen3.8-27b" } },
     },
   });
   const rendered = render(["-f", file]);
@@ -210,7 +207,7 @@ test("a single dispatch profile object is accepted", { skip: skipHelm }, () => {
     default: { harness: string; model?: string };
   };
   assert.equal(dispatch.default.harness, "opencode");
-  assert.equal(dispatch.default.model, "local3090/qwen3.8-27b");
+  assert.equal(dispatch.default.model, "openrouter/qwen/qwen3.8-27b");
 });
 
 test("a provider catalog without the opencode harness fails the render", { skip: skipHelm }, () => {

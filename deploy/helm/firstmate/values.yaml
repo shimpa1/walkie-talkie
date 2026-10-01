@@ -316,7 +316,7 @@ agents:
   # Provider/model catalog rendered to the opencode global config. Any
   # models.dev provider id or OpenAI-compatible endpoint can be declared, so
   # no vendor is baked in.
-  #   id       (required) provider id, e.g. deepseek, openrouter, local3090
+  #   id       (required) provider id, e.g. deepseek, openrouter
   #   name     display name
   #   npm      provider package, e.g. "@ai-sdk/openai-compatible"
   #   baseURL  OpenAI-compatible endpoint base URL
@@ -332,13 +332,6 @@ agents:
   #    apiKeyEnv: DEEPSEEK_API_KEY
   #  - id: openrouter
   #    apiKeyEnv: OPENROUTER_API_KEY
-  #  - id: local3090
-  #    name: Local 3090 (Qwen3.8-27B)
-  #    npm: "@ai-sdk/openai-compatible"
-  #    baseURL: http://10.4.0.20:8000/v1
-  #    models:
-  #      qwen3.8-27b:
-  #        name: Qwen3.8-27B (3090)
 
   # firstmate's per-task dispatch profiles (its crew-dispatch schema): `rules`
   # with natural-language `when` and `use` profiles, plus an optional `default`
@@ -358,7 +351,7 @@ agents:
   #    - when: "Mechanical or routine implementation along an existing pattern."
   #      use:
   #        - harness: opencode
-  #          model: local3090/qwen3.8-27b
+  #          model: openrouter/qwen/qwen3.8-27b
   #  default:
   #    - harness: opencode
   #      model: deepseek/deepseek-chat

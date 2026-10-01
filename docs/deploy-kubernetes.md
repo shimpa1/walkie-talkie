@@ -337,19 +337,12 @@ agents:
       apiKeyEnv: DEEPSEEK_API_KEY
     - id: openrouter
       apiKeyEnv: OPENROUTER_API_KEY
-    - id: local3090
-      name: Local 3090 (Qwen3.8-27B)
-      npm: "@ai-sdk/openai-compatible"
-      baseURL: http://10.4.0.20:8000/v1
-      models:
-        qwen3.8-27b:
-          name: Qwen3.8-27B (3090)
   dispatch:
     rules:
       - when: "Mechanical or routine implementation with a settled plan."
         use:
           - harness: opencode
-            model: local3090/qwen3.8-27b
+            model: openrouter/qwen/qwen3.8-27b
       - when: "Complex, ambiguous, or high-blast-radius work."
         use:
           - harness: opencode
@@ -399,12 +392,12 @@ To **add an agent**:
 4. `helm upgrade` - the agent ConfigMap's checksum rolls the pod.
 
 To **remove an agent**, delete its provider, dispatch profile, and env
-declaration; no image rebuild is involved. The local GPU server is just the
-`local3090` provider above: an OpenAI-compatible `baseURL` and models listed by
-id, with no API key because the server needs none. The network path to it
-(a firewall change) is out of scope here, and so is any app UI for choosing an
-agent per instruction; this chart only makes the agents available and sets
-dispatch defaults.
+declaration; no image rebuild is involved. A self-hosted or local
+OpenAI-compatible server is just another provider: an OpenAI-compatible
+`baseURL` and models listed by id, with no API key because the server needs
+none. The network path to it (a firewall change) is out of scope here, and so
+is any app UI for choosing an agent per instruction; this chart only makes the
+agents available and sets dispatch defaults.
 
 The chart validates `agents` at render time and fails with a specific message
 instead of writing a config firstmate or opencode cannot read: a missing harness
@@ -545,10 +538,10 @@ example is
 - StorageClass `beta3` (Rook-Ceph), 20Gi.
 - TLS terminates at the Gateway using the existing wildcard certificate, so no
   in-namespace Certificate.
-- `agents.enabled: true` with opencode as the harness, DeepSeek and OpenRouter
-  as API-key providers, and the self-hosted Qwen on the 3090 box as the
-  `local3090` OpenAI-compatible provider (see
-  [Agent configuration](#agent-configuration)).
+- `agents.enabled: true` with opencode as the harness and DeepSeek and
+  OpenRouter as API-key providers; the routine tier routes to Qwen3.8-27B on
+  OpenRouter (`openrouter/qwen/qwen3.8-27b`), the same model the retired 3090
+  box self-hosted (see [Agent configuration](#agent-configuration)).
 - Harness credentials and the GitHub token come from the Doppler-synced Secret
   `firstmate-doppler-secrets` (`firstmate.extraEnvFrom`), not from `--set`. Add
   the GitHub PAT as the Doppler key `GH_TOKEN` (see
