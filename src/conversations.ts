@@ -161,7 +161,10 @@ export function deriveSessionState(
 ): ConversationState {
   if (fleet === null) return "unknown";
 
-  const captainWaiting = fleet.decisions_open > 0 || fleet.gates > 0;
+  const captainWaiting =
+    fleet.decisions_open > 0 ||
+    fleet.gates > 0 ||
+    fleet.secondmates.some((mate) => mate.state === "captain_decision");
 
   if (kind === "primary") {
     if (captainWaiting) return "needs_you";

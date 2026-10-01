@@ -100,6 +100,14 @@ test("deriveSessionState flags the primary only when a decision or gate is waiti
   );
 });
 
+test("deriveSessionState rolls a secondmate captain decision up into the primary", () => {
+  const mates = fleet({
+    secondmates: [{ id: "infra", state: "captain_decision" }],
+  });
+  assert.equal(deriveSessionState("primary", "firstmate", mates), "needs_you");
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra", mates), "needs_you");
+});
+
 test("deriveSessionState never reports needs_you for a worker when only a decision waits", () => {
   const state = fleet({ decisions_open: 1, in_flight: [{ id: "reach-slice", name: "reach-slice", state: "working" }] });
   assert.equal(deriveSessionState("worker", "reach-slice", state), "working");

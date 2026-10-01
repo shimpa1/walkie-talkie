@@ -224,7 +224,7 @@ function summarize(text) {
 /** Build the instruction threads from firstmate's receipts payload. */
 function buildThreads(payload) {
   const byId = new Map();
-  const add = (note, acknowledged) => {
+  const add = (note, handled) => {
     const id = note.note_id || note.id || note.request_id;
     if (!id) return;
     byId.set(id, {
@@ -232,7 +232,7 @@ function buildThreads(payload) {
       body: note.body || note.text || "",
       at: note.at || null,
       requestId: note.request_id || null,
-      acknowledged,
+      acknowledged: typeof note.acknowledged === "boolean" ? note.acknowledged : handled,
       announced: note.announced,
       reply: note.reply || null,
     });
@@ -240,12 +240,32 @@ function buildThreads(payload) {
   for (const note of Array.isArray(payload.pending) ? payload.pending : []) add(note, false);
   for (const note of Array.isArray(payload.handled) ? payload.handled : []) add(note, true);
   for (const reply of Array.isArray(payload.replies) ? payload.replies : []) {
-    const thread = byId.get(reply.id);
-    if (thread && !thread.reply) thread.reply = reply;
+    const id = reply.id;
+    if (!id) continue;
+    const thread = byId.get(id);
+    if (thread) {
+      if (!thread.reply) thread.reply = reply;
+      continue;
+    }
+    byId.set(id, {
+      id,
+      body: "",
+      at: reply.at || null,
+      requestId: reply.request_id || null,
+      acknowledged: true,
+      announced: reply.announced,
+      reply,
+    });
   }
   const threads = [...byId.values()];
   threads.sort((a, b) => threadTime(b) - threadTime(a));
   return threads;
+}
+
+/** The instruction text for a thread, or the reply's text when only a reply exists. */
+function threadText(thread) {
+  if (thread.body) return thread.body;
+  return thread.reply && thread.reply.body ? thread.reply.body : "";
 }
 
 function threadTime(thread) {
@@ -389,7 +409,7 @@ function renderThreads() {
     if (thread.id === conversationState.selectedThreadId) card.classList.add("is-selected");
 
     const head = el("div", "session-card-head");
-    head.appendChild(el("strong", null, summarize(thread.body)));
+    head.appendChild(el("strong", null, summarize(threadText(thread))));
     const info = threadState(thread);
     head.appendChild(el("span", `badge ${info.kind}`, info.label));
     card.appendChild(head);
@@ -406,7 +426,10 @@ async function loadThreads() {
     const payload = await api("/api/receipts");
     applyThreads(payload);
     if (conversationState.selectedThreadId && !selectedThread()) closeConversation();
-    else if (conversationState.selectedThreadId) setConversationHeader();
+    else if (conversationState.selectedThreadId) {
+      setConversationHeader();
+      renderThread();
+    }
   } catch (error) {
     if (error && error.status === 401) return;
     const body = $("threads-body");
@@ -464,7 +487,7 @@ function setConversationHeader() {
   const status = $("conversation-status");
   if (conversationState.selectedThreadId) {
     const thread = selectedThread();
-    $("conversation-name").textContent = thread ? summarize(thread.body) : "—";
+    $("conversation-name").textContent = thread ? summarize(threadText(thread)) : "—";
     $("conversation-sub").textContent = thread && thread.requestId ? `request ${thread.requestId}` : "";
     const info = thread ? threadState(thread) : null;
     status.textContent = info ? info.label : "—";
@@ -544,7 +567,10 @@ function renderThread() {
     box.appendChild(el("p", "hint", "This conversation is no longer available."));
     return;
   }
-  const messages = [{ role: "user", label: "you", time: thread.at, text: thread.body }];
+  const messages = [];
+  if (thread.body) {
+    messages.push({ role: "user", label: "you", time: thread.at, text: thread.body });
+  }
   if (thread.reply) {
     messages.push({ role: "assistant", label: "firstmate", time: thread.reply.at, text: thread.reply.body });
   }
