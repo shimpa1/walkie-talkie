@@ -15,6 +15,7 @@
  */
 
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
+import { withTimeout } from "./timeout.js";
 
 export interface FleetWorker {
   id: string;
@@ -99,23 +100,6 @@ export interface FleetStateProviderOptions {
   readTimeoutMs?: number;
   /** Clock, injectable for tests. */
   now?: () => number;
-}
-
-/** Resolve null once `ms` elapses, else the promise's own value. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise<T | null>((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(null);
-      },
-    );
-  });
 }
 
 /**
