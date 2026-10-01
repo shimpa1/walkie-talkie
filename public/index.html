@@ -27,8 +27,6 @@
     <nav class="tabs" aria-label="Sections">
       <button class="tab is-active" data-view="status" type="button">Status</button>
       <button class="tab" data-view="conversations" type="button">Conversations</button>
-      <button class="tab" data-view="compose" type="button">Compose</button>
-      <button class="tab" data-view="receipts" type="button">Receipts</button>
       <button class="tab" data-view="settings" type="button">Settings</button>
     </nav>
 
@@ -42,11 +40,38 @@
 
       <section id="view-conversations" class="view" aria-labelledby="conversations-heading">
         <h2 id="conversations-heading" class="visually-hidden">Conversations</h2>
+
+        <div id="conversation-composer" class="composer" hidden>
+          <p class="hint">
+            This queues a note into firstmate's existing intake. It makes no
+            decision and changes no project.
+          </p>
+          <form id="note-form">
+            <label for="note-text" class="visually-hidden">Instruction</label>
+            <textarea id="note-text" name="text" rows="4" placeholder="What should the fleet know or do next?" required></textarea>
+            <div class="row">
+              <button id="send" type="submit">Queue instruction</button>
+              <button id="mic" class="ghost mic" type="button" aria-pressed="false" hidden>
+                Hold to talk
+              </button>
+              <button id="compose-cancel" class="ghost" type="button">Cancel</button>
+              <span id="compose-status" class="hint" role="status"></span>
+            </div>
+          </form>
+        </div>
+
         <div id="conversations-pane" class="conversations">
           <div class="conversation-list">
             <div class="conversation-list-head">
+              <span class="section-title">Conversations</span>
+              <div class="row">
+                <button id="new-conversation" class="small" type="button">New conversation</button>
+                <button id="conversations-refresh" class="ghost small" type="button">Refresh</button>
+              </div>
+            </div>
+            <div id="threads-body" class="sessions"></div>
+            <div class="conversation-list-head">
               <span class="section-title">Live sessions</span>
-              <button id="conversations-refresh" class="ghost small" type="button">Refresh</button>
             </div>
             <div id="sessions-body" class="sessions"></div>
           </div>
@@ -59,34 +84,9 @@
               </div>
               <span id="conversation-status" class="badge">—</span>
             </div>
-            <div id="conversation-output" class="conversation-output" role="log" aria-live="polite">Select a session to read its conversation.</div>
+            <div id="conversation-output" class="conversation-output" role="log" aria-live="polite">Select a conversation to read it.</div>
           </div>
         </div>
-      </section>
-
-      <section id="view-compose" class="view" aria-labelledby="compose-heading">
-        <h2 id="compose-heading">Send an instruction</h2>
-        <p class="hint">
-          This queues a note into firstmate's existing intake. It makes no
-          decision and changes no project.
-        </p>
-        <form id="note-form">
-          <label for="note-text" class="visually-hidden">Instruction</label>
-          <textarea id="note-text" name="text" rows="5" placeholder="What should the fleet know or do next?" required></textarea>
-          <div class="row">
-            <button id="send" type="submit">Queue instruction</button>
-            <button id="mic" class="ghost mic" type="button" aria-pressed="false" hidden>
-              Hold to talk
-            </button>
-            <span id="compose-status" class="hint" role="status"></span>
-          </div>
-        </form>
-        <div id="receipt-card" class="receipt" hidden></div>
-      </section>
-
-      <section id="view-receipts" class="view" aria-labelledby="receipts-heading">
-        <h2 id="receipts-heading">Receipts</h2>
-        <div id="receipts-body" class="cards"></div>
       </section>
 
       <section id="view-settings" class="view" aria-labelledby="settings-heading">

@@ -7,8 +7,10 @@ import {
   MAX_CONVERSATION_LINES,
   buildSessions,
   clampLines,
+  deriveSessionState,
 } from "../src/conversations.js";
 import type { ConversationStore } from "../src/conversation-store.js";
+import type { FleetState } from "../src/fleet-state.js";
 import type { HerdrClient, HerdrPane, HerdrTab, HerdrWorkspace } from "../src/herdr.js";
 
 function pane(overrides: Partial<HerdrPane> = {}): HerdrPane {
@@ -75,6 +77,71 @@ test("a task tab inside the primary workspace is a worker, not the primary", () 
   assert.equal(sessions[0]?.name, "fix-the-thing");
 });
 
+function fleet(overrides: Partial<FleetState> = {}): FleetState {
+  return {
+    in_flight: [],
+    secondmates: [],
+    decisions_open: 0,
+    gates: 0,
+    ...overrides,
+  };
+}
+
+test("deriveSessionState is idle when nothing is in flight and no decision waits", () => {
+  assert.equal(deriveSessionState("primary", "firstmate", fleet()), "idle");
+});
+
+test("deriveSessionState flags the primary only when a decision or gate is waiting", () => {
+  assert.equal(deriveSessionState("primary", "firstmate", fleet({ decisions_open: 1 })), "needs_you");
+  assert.equal(deriveSessionState("primary", "firstmate", fleet({ gates: 1 })), "needs_you");
+  assert.equal(
+    deriveSessionState("primary", "firstmate", fleet({ in_flight: [{ id: "t", name: "t", state: "working" }] })),
+    "working",
+  );
+});
+
+test("deriveSessionState never reports needs_you for a worker when only a decision waits", () => {
+  const state = fleet({ decisions_open: 1, in_flight: [{ id: "reach-slice", name: "reach-slice", state: "working" }] });
+  assert.equal(deriveSessionState("worker", "reach-slice", state), "working");
+  assert.equal(deriveSessionState("worker", "some-other-task", state), "idle");
+});
+
+test("deriveSessionState maps a secondmate's own state, not herdr's pane status", () => {
+  const mates = fleet({
+    secondmates: [
+      { id: "infra", state: "captain_decision" },
+      { id: "storage", state: "active_child_work" },
+      { id: "quiet", state: "no_active_work" },
+    ],
+  });
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra", mates), "needs_you");
+  assert.equal(deriveSessionState("secondmate", "2ndmate-storage", mates), "working");
+  assert.equal(deriveSessionState("secondmate", "2ndmate-quiet", mates), "idle");
+});
+
+test("deriveSessionState is unknown when firstmate's state cannot be read", () => {
+  assert.equal(deriveSessionState("primary", "firstmate", null), "unknown");
+  assert.equal(deriveSessionState("worker", "reach-slice", null), "unknown");
+});
+
+test("buildSessions derives each session's displayed state from the fleet", () => {
+  const sessions = buildSessions(
+    PANES,
+    WORKSPACES,
+    TABS,
+    fleet({ in_flight: [{ id: "reach-slice", name: "Reach the slice", state: "working" }] }),
+  );
+  assert.equal(sessions.find((session) => session.id === "w1:p1")?.state, "working");
+  assert.equal(sessions.find((session) => session.id === "w3:p2")?.state, "idle");
+  // The raw pane status is kept for diagnostics.
+  assert.equal(sessions.find((session) => session.id === "w1:p1")?.status, "working");
+});
+
+test("buildSessions leaves state unknown when no fleet was supplied", () => {
+  const sessions = buildSessions(PANES, WORKSPACES, TABS);
+  assert.ok(sessions.every((session) => session.state === "unknown"));
+});
+
 test("clampLines defaults, bounds, and passes through a valid count", () => {
   assert.equal(clampLines(null), DEFAULT_CONVERSATION_LINES);
   assert.equal(clampLines("soon"), DEFAULT_CONVERSATION_LINES);
@@ -116,6 +183,20 @@ test("Conversations.list still lists panes when the label reads fail", async () 
   };
   const result = await new Conversations(client).list();
   assert.equal(result.sessions.length, 4);
+});
+
+test("Conversations.list derives state from the injected fleet provider", async () => {
+  const provider = async (): Promise<FleetState> => fleet({ decisions_open: 1 });
+  const result = await new Conversations(stubHerdr(), null, provider).list();
+  assert.equal(result.sessions.find((session) => session.id === "w1:p1")?.state, "needs_you");
+});
+
+test("Conversations.list degrades to unknown state when the fleet read throws", async () => {
+  const provider = async (): Promise<FleetState> => {
+    throw new Error("bearings failed");
+  };
+  const result = await new Conversations(stubHerdr(), null, provider).list();
+  assert.ok(result.sessions.every((session) => session.state === "unknown"));
 });
 
 function stubStore(): ConversationStore & { calls: Array<[string, unknown]> } {

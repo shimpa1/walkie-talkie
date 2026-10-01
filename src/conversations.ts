@@ -4,15 +4,27 @@ import {
   type ConversationStore,
   type StoredConversationMessage,
 } from "./conversation-store.js";
+import type { FleetState, FleetStateProvider } from "./fleet-state.js";
 
 export type ConversationKind = "primary" | "secondmate" | "worker";
+
+/**
+ * The state shown to the captain for a conversation. It is derived from
+ * firstmate's own fleet state, never from a pane's `agent_status`: a pane can
+ * read `blocked` while nothing is actually in flight, so the raw status is kept
+ * separately as `status` and only `state` drives the badge.
+ */
+export type ConversationState = "needs_you" | "working" | "idle" | "unknown";
 
 export interface ConversationSession {
   /** Stable id for the detail route; the herdr pane id. */
   id: string;
   name: string;
   kind: ConversationKind;
+  /** The raw herdr pane status, kept for diagnostics only. */
   status: string;
+  /** The firstmate-derived state the badge shows. */
+  state: ConversationState;
   agent: string | null;
   /** The agent session the pane reported (opencode's `ses_...`), when known. */
   agent_session: string | null;
@@ -105,10 +117,75 @@ function conversationName(
 
 const KIND_RANK: Record<ConversationKind, number> = { primary: 0, secondmate: 1, worker: 2 };
 
+/** firstmate labels task tabs `fm-<task>` and secondmate workspaces `2ndmate-<id>`. */
+const NAME_PREFIXES = ["2ndmate-", "fm-"];
+
+function matchKey(value: string | null): string {
+  if (value === null) return "";
+  let text = value.toLowerCase();
+  for (const prefix of NAME_PREFIXES) {
+    if (text.startsWith(prefix)) text = text.slice(prefix.length);
+  }
+  return text.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Whether a session name identifies the same task as a fleet row's id or name.
+ * Matching is best-effort and normalized (case, separators, and the `fm-` /
+ * `2ndmate-` label prefixes); a short containment match is only accepted when
+ * the shorter side is long enough to be a real task identifier.
+ */
+function sameTask(a: string | null, b: string | null): boolean {
+  const left = matchKey(a);
+  const right = matchKey(b);
+  if (left.length === 0 || right.length === 0) return false;
+  if (left === right) return true;
+  const [short, long] = left.length <= right.length ? [left, right] : [right, left];
+  return short.length >= 4 && long.includes(short);
+}
+
+/**
+ * Derive the badge state for one conversation from firstmate's real fleet.
+ *
+ * The default is idle. The primary conversation reflects the whole fleet: it
+ * needs the captain only when a decision or gate is waiting, is working when
+ * work or a secondmate is live, and is idle otherwise. A secondmate/worker
+ * conversation is matched to its own fleet row and is never labeled needs_you
+ * unless that row is genuinely a captain decision. When firstmate's state
+ * cannot be read at all, the state is `unknown` rather than a guess.
+ */
+export function deriveSessionState(
+  kind: ConversationKind,
+  name: string,
+  fleet: FleetState | null,
+): ConversationState {
+  if (fleet === null) return "unknown";
+
+  const captainWaiting = fleet.decisions_open > 0 || fleet.gates > 0;
+
+  if (kind === "primary") {
+    if (captainWaiting) return "needs_you";
+    if (fleet.in_flight.length > 0 || fleet.secondmates.length > 0) return "working";
+    return "idle";
+  }
+
+  if (kind === "secondmate") {
+    const mate = fleet.secondmates.find((entry) => sameTask(name, entry.id));
+    if (mate === undefined) return "idle";
+    if (mate.state === "captain_decision") return "needs_you";
+    if (mate.state === "active_child_work" || mate.state === "working") return "working";
+    return "idle";
+  }
+
+  const worker = fleet.in_flight.find((entry) => sameTask(name, entry.id) || sameTask(name, entry.name));
+  return worker === undefined ? "idle" : "working";
+}
+
 export function buildSessions(
   panes: readonly HerdrPane[],
   workspaces: readonly HerdrWorkspace[],
   tabs: readonly HerdrTab[],
+  fleet: FleetState | null = null,
 ): ConversationSession[] {
   const workspaceLabels = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace.label]));
   const tabLabels = new Map(tabs.map((tab) => [tab.tabId, tab.label]));
@@ -120,11 +197,13 @@ export function buildSessions(
     const workspaceLabel = pane.workspaceId === null ? null : workspaceLabels.get(pane.workspaceId) ?? null;
     const tabLabel = pane.tabId === null ? null : tabLabels.get(pane.tabId) ?? null;
     const kind = classify(workspaceLabel, tabLabel);
+    const name = conversationName(kind, workspaceLabel, tabLabel, pane.paneId);
     sessions.push({
       id: pane.paneId,
-      name: conversationName(kind, workspaceLabel, tabLabel, pane.paneId),
+      name,
       kind,
       status: pane.status ?? "unknown",
+      state: deriveSessionState(kind, name, fleet),
       agent: pane.agent,
       agent_session: pane.agentSession,
       title: pane.title,
@@ -155,19 +234,26 @@ export function clampLines(value: unknown): number {
 
 /**
  * The read-only Conversations view. `list` joins herdr's panes, workspaces, and
- * tabs into a fleet session list; `history` reads a session's full conversation
- * from the agent's own store, falling back to the terminal's visible screen
- * when no store or agent session is available. Every read delegates to a
- * read-only client, so the service never steers a session.
+ * tabs into a fleet session list and derives each session's displayed state
+ * from firstmate's own fleet state; `history` reads a session's full
+ * conversation from the agent's own store, falling back to the terminal's
+ * visible screen when no store or agent session is available. Every read
+ * delegates to a read-only client, so the service never steers a session.
  */
 export class Conversations {
   private readonly herdr: HerdrClient;
   private readonly store: ConversationStore | null;
+  private readonly fleetProvider: FleetStateProvider | null;
   private paneAgents = new Map<string, string | null>();
 
-  constructor(herdr: HerdrClient, store: ConversationStore | null = null) {
+  constructor(
+    herdr: HerdrClient,
+    store: ConversationStore | null = null,
+    fleetProvider: FleetStateProvider | null = null,
+  ) {
     this.herdr = herdr;
     this.store = store;
+    this.fleetProvider = fleetProvider;
   }
 
   async list(): Promise<ConversationList> {
@@ -180,7 +266,11 @@ export class Conversations {
       this.herdr.listWorkspaces().catch(() => [] as HerdrWorkspace[]),
       this.herdr.listTabs().catch(() => [] as HerdrTab[]),
     ]);
-    return { sessions: buildSessions(panes, workspaces, tabs) };
+    // The fleet read only supplies the badge; a failure there degrades every
+    // state to `unknown` rather than hiding the sessions.
+    const fleet =
+      this.fleetProvider === null ? null : await this.fleetProvider().catch(() => null);
+    return { sessions: buildSessions(panes, workspaces, tabs, fleet) };
   }
 
   /**

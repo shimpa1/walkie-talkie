@@ -7,6 +7,7 @@ import { createServer, type Server } from "node:http";
 import type { AppConfig } from "../src/config.js";
 import { Conversations } from "../src/conversations.js";
 import type { ConversationStore } from "../src/conversation-store.js";
+import { createFleetStateProvider } from "../src/fleet-state.js";
 import { Firstmate } from "../src/firstmate.js";
 import { Herdr } from "../src/herdr.js";
 import type { PushApi } from "../src/push-service.js";
@@ -67,6 +68,7 @@ export async function startTestServer(options: {
   const conversations = new Conversations(
     new Herdr({ binPath: config.herdrBin, session: config.herdrSession, env: { ...process.env, FM_HOME: home } }),
     options.conversationStore ?? null,
+    createFleetStateProvider(firstmate),
   );
   const server: Server = createServer(
     createRequestHandler({
