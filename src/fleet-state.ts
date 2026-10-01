@@ -85,24 +85,54 @@ export function parseFleetState(raw: unknown): FleetState | null {
 
 export const DEFAULT_FLEET_CACHE_MS = 10_000;
 
+/**
+ * A single bearings read is bounded so a slow or hung script can never hold the
+ * polling sessions response until Firstmate's own 60s child timeout. The bound
+ * is short relative to the browser's 5s poll.
+ */
+export const DEFAULT_FLEET_READ_TIMEOUT_MS = 3_000;
+
 export interface FleetStateProviderOptions {
   /** How long a successful read is served before reading again. */
   ttlMs?: number;
+  /** How long one caller waits on a read before it yields null. */
+  readTimeoutMs?: number;
   /** Clock, injectable for tests. */
   now?: () => number;
+}
+
+/** Resolve null once `ms` elapses, else the promise's own value. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
 }
 
 /**
  * A caching fleet-state provider over firstmate's bearings script. Concurrent
  * callers share one in-flight read, a success is cached for `ttlMs`, and any
  * failure (a non-zero exit, malformed JSON, an execution error) returns null
- * without caching so the next call retries.
+ * without caching so the next call retries. A caller that waits longer than
+ * `readTimeoutMs` also gets null without caching, so a hung read degrades the
+ * badge to `unknown` instead of stalling the caller; the shared in-flight read
+ * keeps the number of script invocations at one.
  */
 export function createFleetStateProvider(
   client: FirstmateClient,
   options: FleetStateProviderOptions = {},
 ): FleetStateProvider {
   const ttlMs = options.ttlMs ?? DEFAULT_FLEET_CACHE_MS;
+  const readTimeoutMs = options.readTimeoutMs ?? DEFAULT_FLEET_READ_TIMEOUT_MS;
   const now = options.now ?? ((): number => Date.now());
   let cached: FleetState | null = null;
   let cachedAt = 0;
@@ -121,17 +151,19 @@ export function createFleetStateProvider(
 
   return async (): Promise<FleetState | null> => {
     if (cached !== null && now() - cachedAt < ttlMs) return cached;
-    if (inflight !== null) return inflight;
-    inflight = read();
-    try {
-      const value = await inflight;
-      if (value !== null) {
-        cached = value;
-        cachedAt = now();
-      }
-      return value;
-    } finally {
-      inflight = null;
+    if (inflight === null) {
+      inflight = read()
+        .then((value) => {
+          if (value !== null) {
+            cached = value;
+            cachedAt = now();
+          }
+          return value;
+        })
+        .finally(() => {
+          inflight = null;
+        });
     }
+    return withTimeout(inflight, readTimeoutMs);
   };
 }

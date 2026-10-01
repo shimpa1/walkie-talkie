@@ -70,6 +70,21 @@ test("the provider returns null on a failed read and does not cache it", async (
   assert.equal(client.calls.length, 2);
 });
 
+test("a read that exceeds the provider's bound yields null without caching or re-invoking", async () => {
+  let calls = 0;
+  const client: FirstmateClient = {
+    run() {
+      calls += 1;
+      return new Promise<RunResult>(() => {});
+    },
+  };
+  const provider = createFleetStateProvider(client, { ttlMs: 60_000, readTimeoutMs: 20 });
+
+  assert.equal(await provider(), null);
+  assert.equal(await provider(), null);
+  assert.equal(calls, 1);
+});
+
 test("concurrent callers share one in-flight read", async () => {
   const calls: RecordedCall[] = [];
   let resolveRun: (value: RunResult) => void = () => {};
