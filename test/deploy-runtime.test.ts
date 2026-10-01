@@ -132,3 +132,28 @@ test("the entrypoint refreshes the patched watcher into the home", () => {
   assert.match(entrypoint, /mv -f "\$tmp" "\$HOME_DIR\/\$WATCH_WATCHER"/);
   assert.match(entrypoint, /chmod 0755 "\$tmp"/);
 });
+
+/**
+ * A herdr server restart rehydrates the persisted session layout as a pane with
+ * no live terminal: `pane list` and `agent get` still report the pane and its
+ * last agent, but pane run/send-text/process-info return pane_not_found. The
+ * entrypoint must prove the terminal before trusting the agent record, replace
+ * the restored husk with a fresh live pane, and reconcile a dead watcher lock,
+ * or every restart leaves the deployed firstmate idle and notes undrained.
+ */
+test("the entrypoint replaces a retained herdr husk instead of trusting its agent", () => {
+  const entrypoint = readFileSync(ENTRYPOINT, "utf8");
+  // The live-terminal probe is the discriminator agent get cannot give.
+  assert.match(entrypoint, /herdr_pane_terminal_live\(\)/);
+  assert.match(entrypoint, /pane process-info --pane/);
+  assert.match(entrypoint, /pane_not_found/);
+  // A husk pane is replaced, not accepted as a live harness.
+  assert.match(entrypoint, /ensure_primary_pane\(\)/);
+  assert.match(entrypoint, /herdr_cli workspace close "\$wsid"/);
+  assert.match(entrypoint, /retained husk with no live terminal/);
+  // A dead watcher lock left by a previous container is reconciled, while the
+  // durable recovery marker is left for the watcher to resurface.
+  assert.match(entrypoint, /reconcile_dead_watcher_lock\(\)/);
+  assert.match(entrypoint, /\.watch\.lock/);
+  assert.match(entrypoint, /state\/\.watcher-down and state\/\.wake-queue/);
+});

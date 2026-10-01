@@ -303,6 +303,20 @@ another harness or posture, keep an initial prompt, or set it to `""` to run the
 herdr server only and start the harness yourself after attaching (the supervisor
 is not started when the command is empty).
 
+On every start the entrypoint reconciles a retained home instead of trusting it
+blindly. A herdr server restart rehydrates the persisted session layout as a
+pane with no terminal: `herdr pane list` and `herdr agent get` still report the
+primary pane and its last agent as idle, but `herdr pane run`, `herdr pane
+send-text`, and `herdr pane read` all return `pane_not_found`. The entrypoint
+therefore proves the pane has a live terminal before treating its agent record
+as a running harness, closes a terminal-less restored husk and starts the
+harness in a fresh live pane, and removes a watcher lock a previous container
+left naming a dead pid (`state/.watcher-down` and `state/.wake-queue` are
+firstmate's durable recovery state and are left for the patched watcher to
+resurface). Without this, a pod restart or rollout with a retained volume left
+the deployed firstmate idle, with no `bin/fm-watch.sh` running and captain notes
+undrained; only a fresh-volume boot supervised.
+
 Once created, the walkie-talkie token, GitHub token, and harness credentials are
 preserved across upgrades: you do not need to re-pass them on `helm upgrade`.
 Rotate one by passing a new value with `--set` (which replaces it and restarts
@@ -628,8 +642,12 @@ session-start prompt to the pane and removes its tracked session-start plugin
 (so the prompt is the only delivery) while leaving the other plugins, leaves a
 live harness alone, starts it again when the fake reports it exited, and that
 harness credentials reach both the herdr server environment and the pane call.
-Starting a real herdr server, session, or harness is a cluster/runtime concern
-and is not driven here.
+It also replays the restart stall: a retained session whose pane is listed with
+an idle agent but whose terminal read returns `pane_not_found` must be closed and
+replaced by a fresh live pane rather than accepted as a running harness, and a
+watcher lock left by a previous container naming a dead pid must be removed
+while the durable downtime marker is preserved. Starting a real herdr server,
+session, or harness is a cluster/runtime concern and is not driven here.
 
 **What is not verified here.** Steps that require a real cluster — actual PVC
 binding, Gateway attachment and certificate issuance, image pulls, secret

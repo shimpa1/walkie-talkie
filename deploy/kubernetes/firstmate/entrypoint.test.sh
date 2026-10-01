@@ -49,6 +49,15 @@ WS_FAIL="$TMP/ws-fail"
 # Pre-seed the home so the entrypoint skips copying the baked distro.
 mkdir -p "$HOME_DIR/bin" "$HOME_DIR/config" "$HOME_DIR/state" "$HOME_DIR/data" "$HOME_DIR/projects" "$FAKE_BIN"
 printf '#!/bin/sh\n' > "$HOME_DIR/bin/fm-inbox.sh"
+# A watcher lock left by a previous container names a pid that no longer
+# exists; the entrypoint must drop it so the fresh harness arms against a clean
+# home. state/.watcher-down is firstmate's durable recovery state and must be
+# left for the watcher to resurface, so it is present and must survive.
+mkdir -p "$HOME_DIR/state/.watch.lock.owner.DEAD"
+printf '2147483647\n' > "$HOME_DIR/state/.watch.lock.owner.DEAD/pid"
+printf '/home/firstmate\n' > "$HOME_DIR/state/.watch.lock.owner.DEAD/fm-home"
+ln -s "$HOME_DIR/state/.watch.lock.owner.DEAD" "$HOME_DIR/state/.watch.lock"
+printf 'pending:downtime:1.1700000000.keepme\n' > "$HOME_DIR/state/.watcher-down"
 # Stand in for firstmate's bin/fm-sessionstart-nudge.sh so the test can assert
 # the entrypoint exports its output as the harness's opening prompt.
 cat > "$HOME_DIR/bin/fm-sessionstart-nudge.sh" <<'FAKE_NUDGE'
@@ -91,6 +100,18 @@ case "${args[0]:-} ${args[1]:-}" in
     if [ -e "${FAKE_HERDR_WS_FAIL:-/nonexistent}" ]; then
       printf '{"error":{"code":"server_not_running","message":"transient"}}\n' >&2
       exit 1
+    elif [ -e "${FAKE_HERDR_RETAINED:-/nonexistent}" ]; then
+      # A retained session: the workspace is listed until the restored husk is
+      # closed, then the fresh one the entrypoint creates is listed.
+      if grep -q '^workspace close' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
+        if grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
+          printf '{"result":{"workspaces":[{"workspace_id":"w2","label":"firstmate"}]}}\n'
+        else
+          printf '{"result":{"workspaces":[]}}\n'
+        fi
+      else
+        printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
+      fi
     elif grep -q '^workspace create' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
       printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"}]}}\n'
     else
@@ -98,10 +119,19 @@ case "${args[0]:-} ${args[1]:-}" in
     fi
     ;;
   "workspace create")
-    printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n'
+    if [ -e "${FAKE_HERDR_RETAINED:-/nonexistent}" ]; then
+      printf '{"result":{"workspace":{"workspace_id":"w2","label":"firstmate"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}\n'
+    else
+      printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n'
+    fi
     ;;
   "pane list")
-    printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n'
+    if [ -e "${FAKE_HERDR_RETAINED:-/nonexistent}" ] \
+      && grep -q '^workspace close' "${FAKE_HERDR_LOG:?}" 2>/dev/null; then
+      printf '{"result":{"panes":[{"pane_id":"w2:p1","tab_id":"w2:t1"}]}}\n'
+    else
+      printf '{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1"}]}}\n'
+    fi
     ;;
   "agent get")
     # A transient transport failure must be reported as a failed read, never as
@@ -109,6 +139,10 @@ case "${args[0]:-} ${args[1]:-}" in
     if [ -e "${FAKE_HERDR_READ_FAIL:-/nonexistent}" ]; then
       printf '{"error":{"code":"server_not_running","message":"transient"}}\n' >&2
       exit 1
+    # A retained husk: agent get still reports the pane's last agent idle even
+    # though no terminal survived the server restart.
+    elif [ -e "${FAKE_HERDR_RETAINED:-/nonexistent}" ] && [ "${args[2]:-}" = "w1:p1" ]; then
+      printf '{"result":{"agent":{"agent":"opencode","agent_status":"idle"}}}\n'
     # No agent while the start window is open (the harness is still coming up),
     # while the test forces it dead (the harness exited), or before any pane_run;
     # otherwise a live idle harness.
@@ -119,6 +153,17 @@ case "${args[0]:-} ${args[1]:-}" in
     else
       printf '{"result":{"agent":{"agent":"opencode","agent_status":"idle"}}}\n'
     fi
+    ;;
+  "pane process-info")
+    # A retained husk has no live terminal: process-info, like pane run and
+    # send-text, returns pane_not_found even though pane list and agent get
+    # still name the pane. A live pane returns its shell process info.
+    p="${args[3]:-}"
+    if [ -e "${FAKE_HERDR_RETAINED:-/nonexistent}" ] && [ "$p" = "w1:p1" ]; then
+      printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$p"
+      exit 1
+    fi
+    printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":4242}}}\n' "$p"
     ;;
   "pane run")
     printf 'pane_run pane=%s command=%s\n' "${args[2]:-}" "${args[3]:-}" >> "${FAKE_HERDR_PANE_LOG:?}"
@@ -195,6 +240,12 @@ grep -q 'deepseek_api_key=test-deepseek-key' "$PANE_LOG" \
   || fail "harness credentials did not reach the herdr pane call"
 grep -q '^DEEPSEEK_API_KEY=test-deepseek-key$' "$SERVER_ENV" \
   || fail "harness credentials did not reach the herdr server environment"
+[ ! -e "$HOME_DIR/state/.watch.lock" ] \
+  || fail "entrypoint left a dead watcher lock from a previous container"
+[ ! -e "$HOME_DIR/state/.watch.lock.owner.DEAD" ] \
+  || fail "entrypoint left a dead watcher lock owner directory"
+[ -e "$HOME_DIR/state/.watcher-down" ] \
+  || fail "entrypoint cleared firstmate's durable recovery marker"
 
 # The harness has not registered yet (start window open), so the supervisor
 # must give it its grace period instead of typing a duplicate command.
@@ -310,5 +361,59 @@ grep -q '^pane_run ' "$PANE_LOG2" \
   || fail "supervisor never recovered the harness after the herdr read came back"
 grep -q 'workspace create' "$HERDR_LOG2" \
   || fail "supervisor never created the home workspace after the read recovered"
+
+kill -TERM "$EP_PID" 2>/dev/null || true
+wait "$EP_PID" 2>/dev/null || true
+EP_PID=
+
+# A herdr server restart rehydrates the persisted session layout as a pane with
+# no terminal: pane list and agent get still report the primary pane and its
+# idle agent, but pane run/send-text/process-info return pane_not_found. The
+# entrypoint must not accept that stale agent as a live harness, must close the
+# restored workspace, and must start firstmate in a fresh live pane, or every
+# restart leaves the deployed firstmate idle and captain notes undrained.
+HOME3="$TMP/home3"
+HERDR_LOG3="$TMP/herdr3.log"
+PANE_LOG3="$TMP/pane3.log"
+SERVER_ENV3="$TMP/server3.env"
+EP3_ERR="$TMP/ep3.err"
+RETAINED3="$TMP/retained3"
+mkdir -p "$HOME3/bin" "$HOME3/config" "$HOME3/state" "$HOME3/data" "$HOME3/projects"
+printf '#!/bin/sh\n' > "$HOME3/bin/fm-inbox.sh"
+: > "$HERDR_LOG3"
+: > "$PANE_LOG3"
+: > "$RETAINED3"
+
+PATH="$FAKE_BIN:$PATH" \
+  HOME="$HOME3" \
+  FM_HOME="$HOME3" \
+  FIRSTMATE_SEED_DIR="$SEED_DIR" \
+  HERDR_SESSION=firstmate \
+  FM_HARNESS_COMMAND="$HARNESS_CMD" \
+  FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
+  FM_HARNESS_SUPERVISION_GRACE=3 \
+  DEEPSEEK_API_KEY=test-deepseek-key \
+  FAKE_HERDR_LOG="$HERDR_LOG3" \
+  FAKE_HERDR_PANE_LOG="$PANE_LOG3" \
+  FAKE_HERDR_SERVER_ENV="$SERVER_ENV3" \
+  FAKE_HERDR_RETAINED="$RETAINED3" \
+  bash "$ENTRYPOINT" >"$TMP/ep3.out" 2>"$EP3_ERR" &
+EP_PID=$!
+
+for _ in $(seq 1 200); do
+  grep -q '^pane_run ' "$PANE_LOG3" 2>/dev/null && break
+  kill -0 "$EP_PID" 2>/dev/null || break
+  sleep 0.1
+done
+
+grep -q '^workspace close w1 ' "$HERDR_LOG3" \
+  || fail "entrypoint did not close the retained husk workspace"
+grep -q '^pane_run pane=w2:p1 ' "$PANE_LOG3" \
+  || fail "entrypoint did not start the harness in a fresh live pane after the husk"
+grep -q 'retained husk with no live terminal' "$EP3_ERR" \
+  || fail "entrypoint did not report replacing the retained husk"
+if grep -q 'a harness is already live' "$EP3_ERR"; then
+  fail "entrypoint treated the retained husk as a live harness"
+fi
 
 echo "ok"
