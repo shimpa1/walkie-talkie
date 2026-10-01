@@ -1,0 +1,25 @@
+diff --git a/bin/fm-watch.sh b/bin/fm-watch.sh
+index 96bae225..7cba7d1c 100755
+--- a/bin/fm-watch.sh
++++ b/bin/fm-watch.sh
+@@ -2582,12 +2582,14 @@ rerecord_device_shifted_pr_poll() {  # <id>
+ }
+ 
+ resurface_after_downtime() {
+-  # Handling successors already have a predecessor-delivered wake on the way.
+-  # Re-announcing from this cycle is what turned a lost handshake into an
+-  # unbounded recovery loop; stay in the poll loop and supervise instead.
+-  if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
+-    return 0
+-  fi
++  # Every watcher, a handling successor included, must surface durable work that
++  # arrives after the episode it inherited. fm_recovery_marker_arm_check is the
++  # once-per-generation guard: it announces a pending downtime episode exactly
++  # once (pending -> announced) and reports wait for an already-announced or
++  # in-handling episode, so this can neither re-announce the predecessor's wake
++  # nor loop. Skipping the check for handling successors removed the only wake
++  # path for a queued inbox note (a durable check row plus a downtime marker),
++  # so in an otherwise idle home the note sat undrained forever.
+   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
+     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+       echo "watcher: recovery state could not be consumed safely" >&2
