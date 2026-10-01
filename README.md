@@ -7,7 +7,7 @@ The first slice, **Walkie-Talkie**, let you see what the fleet is doing and drop
 instruction into firstmate's existing intake, end to end. This slice adds
 **push notifications**: firstmate can ping the phone when a pull request is
 ready for review, a decision is waiting, or a worker is blocked, plus a
-read-only **Conversations** view of the fleet's live sessions.
+**Conversations** view of the fleet's live sessions and instruction threads.
 
 ## What it does
 
@@ -635,9 +635,9 @@ transitive supply-chain surface in production.
 - All firstmate and herdr invocations use `execFile` with an argument array and
   `shell: false`. Request input is passed as a literal argument or on stdin and
   is never interpolated into a shell string.
-- The Conversations view is read-only: the herdr client permits only
-  `pane list`, `pane read`, `workspace list`, and `tab list`, and refuses every
-  other subcommand before a process is spawned. A session id that is not a
+- The herdr reads behind Conversations are read-only: the herdr client permits
+  only `pane list`, `pane read`, `workspace list`, and `tab list`, and refuses
+  every other subcommand before a process is spawned. A session id that is not a
   well-formed pane id (option-like or containing a path separator) is refused
   before any herdr call.
 - The agent session store is opened read-only and pinned with

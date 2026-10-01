@@ -117,15 +117,16 @@ walkieTalkie:
     tag: ""
     pullPolicy: IfNotPresent
 
-  # The Conversations view reads this pod's own herdr session with the read-only
-  # `herdr` CLI. The walkie-talkie image does not bundle herdr, so when enabled
-  # the chart runs an init container from `firstmate.image` (which provides the
-  # pinned herdr build) that copies the binary into a shared emptyDir and mounts
-  # it into the walkie-talkie container. It then sets `FM_WT_HERDR_BIN` to that
-  # path and `XDG_CONFIG_HOME` to the shared firstmate home's `.config`, so the
-  # CLI finds the session socket under the mounted home rather than the
-  # container's own HOME. `HERDR_SESSION` already reaches both containers via
-  # the chart ConfigMap. Status, compose, and push work without this.
+  # The Conversations live-session list reads this pod's own herdr session with
+  # the read-only `herdr` CLI. The walkie-talkie image does not bundle herdr, so
+  # when enabled the chart runs an init container from `firstmate.image` (which
+  # provides the pinned herdr build) that copies the binary into a shared
+  # emptyDir and mounts it into the walkie-talkie container. It then sets
+  # `FM_WT_HERDR_BIN` to that path and `XDG_CONFIG_HOME` to the shared firstmate
+  # home's `.config`, so the CLI finds the session socket under the mounted home
+  # rather than the container's own HOME. `HERDR_SESSION` already reaches both
+  # containers via the chart ConfigMap. Status, instruction threads, and push
+  # work without this.
   herdrCLI:
     enabled: false
     # Absolute directory mounted into the walkie-talkie container that holds the

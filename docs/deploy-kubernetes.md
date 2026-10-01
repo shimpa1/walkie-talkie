@@ -53,11 +53,11 @@ The two containers share the home volume:
 - **walkie-talkie** — the PWA + API on the configured port, invoking firstmate
   only through its own `bin/` scripts.
 
-The **Conversations** view lists this pod's own herdr session through the
-read-only `herdr pane list` / `herdr pane read` commands, so the walkie-talkie
-container needs the `herdr` CLI and the session's socket reachable. Since the
-repository-root `walkie-talkie` image does not bundle herdr, set
-`walkieTalkie.herdrCLI.enabled: true`: the chart then runs an init container
+The **Conversations** live-session list reads this pod's own herdr session
+through the read-only `herdr pane list` / `herdr pane read` commands, so the
+walkie-talkie container needs the `herdr` CLI and the session's socket
+reachable. Since the repository-root `walkie-talkie` image does not bundle herdr,
+set `walkieTalkie.herdrCLI.enabled: true`: the chart then runs an init container
 from `firstmate.image` (which provides the pinned herdr build) that copies the
 binary into a shared volume, mounts it into the walkie-talkie container, and
 sets `FM_WT_HERDR_BIN` and `XDG_CONFIG_HOME` so the CLI finds the session socket
@@ -74,9 +74,9 @@ pane to its session through the `agent_session` id herdr reports; the runtime
 image bakes OpenCode's herdr integration so the primary pane reports it (see
 [Build and push the images](#build-and-push-the-images)). No extra mount or
 environment is needed; when the store or the session id is absent the view falls
-back to the terminal output from `herdr pane read`. Status, compose, and push
-notifications work without herdr; the Conversations view reports the missing
-dependency inline.
+back to the terminal output from `herdr pane read`. Status, instruction threads
+(and the composer), and push notifications work without herdr; the live-session
+list reports the missing dependency inline.
 
 ## Prerequisites
 
