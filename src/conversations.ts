@@ -145,6 +145,24 @@ function sameTask(a: string | null, b: string | null): boolean {
 }
 
 /**
+ * Resolve a session name to at most one fleet row. An exact normalized-key
+ * match across the whole row set is tried before any containment match, so a
+ * sibling row whose id/name is a prefix (`reach-slice` vs `reach-slice-2`,
+ * `infra` vs `infra-2`) can never shadow the session's own row by list order.
+ */
+function findRow<T>(
+  name: string,
+  rows: readonly T[],
+  keys: (row: T) => readonly (string | null)[],
+): T | undefined {
+  const target = matchKey(name);
+  if (target.length === 0) return undefined;
+  const exact = rows.find((row) => keys(row).some((key) => matchKey(key) === target));
+  if (exact !== undefined) return exact;
+  return rows.find((row) => keys(row).some((key) => sameTask(name, key)));
+}
+
+/**
  * Derive the badge state for one conversation from firstmate's real fleet.
  *
  * The default is idle. The primary conversation reflects the whole fleet: it
@@ -173,14 +191,14 @@ export function deriveSessionState(
   }
 
   if (kind === "secondmate") {
-    const mate = fleet.secondmates.find((entry) => sameTask(name, entry.id));
+    const mate = findRow(name, fleet.secondmates, (entry) => [entry.id]);
     if (mate === undefined) return "idle";
     if (mate.state === "captain_decision") return "needs_you";
     if (mate.state === "active_child_work" || mate.state === "working") return "working";
     return "idle";
   }
 
-  const worker = fleet.in_flight.find((entry) => sameTask(name, entry.id) || sameTask(name, entry.name));
+  const worker = findRow(name, fleet.in_flight, (entry) => [entry.id, entry.name]);
   return worker === undefined ? "idle" : "working";
 }
 

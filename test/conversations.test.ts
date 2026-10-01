@@ -127,6 +127,26 @@ test("deriveSessionState maps a secondmate's own state, not herdr's pane status"
   assert.equal(deriveSessionState("secondmate", "2ndmate-quiet", mates), "idle");
 });
 
+test("deriveSessionState binds each session to its own row when ids are prefixes", () => {
+  const mates = fleet({
+    secondmates: [
+      { id: "infra", state: "active_child_work" },
+      { id: "infra-2", state: "no_active_work" },
+    ],
+  });
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra", mates), "working");
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra-2", mates), "idle");
+
+  const workers = fleet({
+    in_flight: [
+      { id: "w1", name: "reach-slice", state: "working" },
+      { id: "w2", name: "reach-slice-2", state: "working" },
+    ],
+  });
+  assert.equal(deriveSessionState("worker", "reach-slice", workers), "working");
+  assert.equal(deriveSessionState("worker", "reach-slice-2", workers), "working");
+});
+
 test("deriveSessionState is unknown when firstmate's state cannot be read", () => {
   assert.equal(deriveSessionState("primary", "firstmate", null), "unknown");
   assert.equal(deriveSessionState("worker", "reach-slice", null), "unknown");
