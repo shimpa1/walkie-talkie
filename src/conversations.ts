@@ -130,25 +130,12 @@ function matchKey(value: string | null): string {
 }
 
 /**
- * Whether a session name identifies the same task as a fleet row's id or name.
- * Matching is best-effort and normalized (case, separators, and the `fm-` /
- * `2ndmate-` label prefixes); a short containment match is only accepted when
- * the shorter side is long enough to be a real task identifier.
- */
-function sameTask(a: string | null, b: string | null): boolean {
-  const left = matchKey(a);
-  const right = matchKey(b);
-  if (left.length === 0 || right.length === 0) return false;
-  if (left === right) return true;
-  const [short, long] = left.length <= right.length ? [left, right] : [right, left];
-  return short.length >= 4 && long.includes(short);
-}
-
-/**
- * Resolve a session name to at most one fleet row. An exact normalized-key
- * match across the whole row set is tried before any containment match, so a
- * sibling row whose id/name is a prefix (`reach-slice` vs `reach-slice-2`,
- * `infra` vs `infra-2`) can never shadow the session's own row by list order.
+ * Resolve a session name to the one fleet row it owns. Matching is a strict
+ * normalized-key identity (case, separators, and the `fm-` / `2ndmate-` label
+ * prefixes are ignored); there is no prefix/containment fallback, so a session
+ * whose own row is absent from the projection resolves to no row instead of a
+ * sibling (`reach-slice-2` never binds to `reach-slice`, `2ndmate-infra-2`
+ * never binds to `infra`).
  */
 function findRow<T>(
   name: string,
@@ -157,9 +144,7 @@ function findRow<T>(
 ): T | undefined {
   const target = matchKey(name);
   if (target.length === 0) return undefined;
-  const exact = rows.find((row) => keys(row).some((key) => matchKey(key) === target));
-  if (exact !== undefined) return exact;
-  return rows.find((row) => keys(row).some((key) => sameTask(name, key)));
+  return rows.find((row) => keys(row).some((key) => matchKey(key) === target));
 }
 
 /**

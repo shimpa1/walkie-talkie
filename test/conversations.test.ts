@@ -140,11 +140,25 @@ test("deriveSessionState binds each session to its own row when ids are prefixes
   const workers = fleet({
     in_flight: [
       { id: "w1", name: "reach-slice", state: "working" },
-      { id: "w2", name: "reach-slice-2", state: "working" },
+      { id: "w2", name: "reach-slice-2", state: "idle" },
     ],
   });
   assert.equal(deriveSessionState("worker", "reach-slice", workers), "working");
   assert.equal(deriveSessionState("worker", "reach-slice-2", workers), "working");
+});
+
+test("deriveSessionState resolves a session with no own row to no row, not a sibling", () => {
+  const mates = fleet({
+    secondmates: [{ id: "infra", state: "captain_decision" }],
+  });
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra", mates), "needs_you");
+  assert.equal(deriveSessionState("secondmate", "2ndmate-infra-2", mates), "idle");
+
+  const workers = fleet({
+    in_flight: [{ id: "w1", name: "reach-slice", state: "working" }],
+  });
+  assert.equal(deriveSessionState("worker", "reach-slice", workers), "working");
+  assert.equal(deriveSessionState("worker", "reach-slice-2", workers), "idle");
 });
 
 test("deriveSessionState is unknown when firstmate's state cannot be read", () => {
