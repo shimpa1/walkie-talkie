@@ -40,7 +40,7 @@ test("GET /api/sessions returns the fleet's live sessions", async () => {
     const result = await getJson(server.url, "/api/sessions", "t");
     assert.equal(result.status, 200);
     const sessions = (result.body as {
-      sessions: Array<{ id: string; kind: string; name: string; agent_session: string | null }>;
+      sessions: Array<{ id: string; kind: string; name: string; state: string; agent_session: string | null }>;
     }).sessions;
     assert.deepEqual(
       sessions.map((session) => [session.id, session.kind, session.name]),
@@ -53,6 +53,10 @@ test("GET /api/sessions returns the fleet's live sessions", async () => {
     );
     assert.equal(sessions[0]?.agent_session, "ses_primary");
     assert.equal(sessions.find((session) => session.id === "w9:p9")?.agent_session, null);
+    // The badge state comes from firstmate's fleet (the bearings fixture has one
+    // in-flight worker and no decision), never from herdr's pane status.
+    assert.equal(sessions[0]?.state, "working");
+    assert.equal(sessions.find((session) => session.id === "w3:p2")?.state, "idle");
   } finally {
     await server.close();
   }

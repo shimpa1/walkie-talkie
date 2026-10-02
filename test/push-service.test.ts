@@ -71,7 +71,7 @@ test("events map to short fixed notifications with a deep link", () => {
   assert.deepEqual(notificationFor({ kind: "reply", id: "n1" }), {
     title: "firstmate replied",
     body: "A reply to your queued instruction is ready.",
-    url: "/?view=receipts",
+    url: "/?view=conversations",
     tag: "reply",
   });
   assert.deepEqual(notificationFor({ kind: "decision", id: "d1" }), {
@@ -164,7 +164,7 @@ test("the firstmate event source reads only the documented fields", async () => 
   const source = new FirstmateEventSource(firstmate);
 
   const receipts = await source.receipts("");
-  assert.deepEqual(receipts.replies, []);
+  assert.deepEqual(receipts.replies, [{ id: "note-0", cursor: "000000000001" }]);
   assert.equal(receipts.cursor, "");
 
   const bearings = await source.bearings();

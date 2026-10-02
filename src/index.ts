@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { ConfigError, resolveConfig, type AppConfig } from "./config.js";
 import { Conversations } from "./conversations.js";
 import { OpencodeStore } from "./conversation-store.js";
+import { createFleetStateProvider } from "./fleet-state.js";
 import { Firstmate } from "./firstmate.js";
 import { Herdr } from "./herdr.js";
 import { PushStore } from "./push-store.js";
@@ -79,6 +80,7 @@ function main(): void {
       env: { ...process.env, FM_HOME: config.fmHome },
     }),
     new OpencodeStore({ dbPath: config.opencodeDbPath, log }),
+    createFleetStateProvider(firstmate),
   );
 
   let pushService: PushService | null = null;

@@ -20,7 +20,9 @@ const state = {
 
 const conversationState = {
   sessions: [],
+  threads: [],
   selectedId: null,
+  selectedThreadId: null,
   listTimer: null,
   outputTimer: null,
   busy: false,
@@ -197,26 +199,100 @@ async function loadStatus() {
   }
 }
 
-function receiptLine(receipt) {
-  const note = receipt || {};
-  const id = note.note_id || "(unknown)";
-  const outcome = note.outcome || "queued";
-  const announced = note.announced === false ? "wake pending" : "wake queued";
-  return `Queued ${id} (${outcome}); ${announced}.`;
+/** A timestamp from either Unix milliseconds or an ISO string, or "" if unusable. */
+function formatTimestamp(value) {
+  if (value === null || value === undefined || value === "") return "";
+  let ms;
+  if (typeof value === "number") ms = value;
+  else if (typeof value === "string" && /^\d+$/.test(value)) ms = Number(value);
+  else ms = Date.parse(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
-function showReceipt(receipt) {
-  const box = $("receipt-card");
-  box.hidden = false;
-  box.textContent = "";
-  box.appendChild(el("strong", null, "Instruction queued"));
-  box.appendChild(el("p", null, receiptLine(receipt)));
-  if (receipt && receipt.request_id) {
-    const line = el("p");
-    line.appendChild(document.createTextNode("Request id: "));
-    line.appendChild(el("code", null, receipt.request_id));
-    box.appendChild(line);
+function summarize(text) {
+  const firstLine = String(text || "").split("\n")[0].trim();
+  if (firstLine.length === 0) return "(empty instruction)";
+  return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+}
+
+/** Build the instruction threads from firstmate's receipts payload. */
+function buildThreads(payload) {
+  const byId = new Map();
+  const add = (note, handled) => {
+    const id = note.note_id || note.id || note.request_id;
+    if (!id) return;
+    byId.set(id, {
+      id,
+      body: note.body || note.text || "",
+      at: note.at || null,
+      requestId: note.request_id || null,
+      acknowledged: typeof note.acknowledged === "boolean" ? note.acknowledged : handled,
+      announced: note.announced,
+      reply: note.reply || null,
+    });
+  };
+  for (const note of Array.isArray(payload.pending) ? payload.pending : []) add(note, false);
+  for (const note of Array.isArray(payload.handled) ? payload.handled : []) add(note, true);
+  for (const reply of Array.isArray(payload.replies) ? payload.replies : []) {
+    const id = reply.id;
+    if (!id) continue;
+    const thread = byId.get(id);
+    if (thread) {
+      if (!thread.reply) thread.reply = reply;
+      continue;
+    }
+    byId.set(id, {
+      id,
+      body: "",
+      at: reply.at || null,
+      requestId: reply.request_id || null,
+      acknowledged: true,
+      announced: reply.announced,
+      reply,
+    });
   }
+  const threads = [...byId.values()];
+  threads.sort((a, b) => threadTime(b) - threadTime(a));
+  return threads;
+}
+
+/** The instruction text for a thread, or the reply's text when only a reply exists. */
+function threadText(thread) {
+  if (thread.body) return thread.body;
+  return thread.reply && thread.reply.body ? thread.reply.body : "";
+}
+
+function threadTime(thread) {
+  const value = (thread.reply && thread.reply.at) || thread.at;
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function threadState(thread) {
+  if (thread.reply) return { label: "replied", kind: "ok" };
+  if (thread.acknowledged) return { label: "working", kind: "warn" };
+  return { label: "queued", kind: "" };
+}
+
+function deliveryLine(thread) {
+  if (thread.reply) return "Delivered; firstmate replied.";
+  if (thread.acknowledged) return "Delivered; firstmate is working on it.";
+  if (thread.announced === false) return "Queued; firstmate has not been woken yet.";
+  return "Queued; waiting for firstmate.";
+}
+
+function selectedThread() {
+  return conversationState.threads.find((thread) => thread.id === conversationState.selectedThreadId) || null;
+}
+
+function selectedThreadById(id) {
+  return conversationState.threads.find((thread) => thread.id === id) || null;
 }
 
 async function submitNote(event) {
@@ -238,11 +314,14 @@ async function submitNote(event) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text, requestId: state.pendingRequestId }),
     });
-    showReceipt(receipt);
     status.textContent = "";
     state.pendingRequestId = null;
     state.pendingRequestText = null;
     $("note-text").value = "";
+    $("conversation-composer").hidden = true;
+    await loadThreads();
+    const noteId = receipt && (receipt.note_id || receipt.id);
+    if (noteId && selectedThreadById(noteId)) selectThread(noteId);
   } catch (error) {
     status.textContent = `Not queued: ${error.message}. Press send again to retry with the same request id.`;
   } finally {
@@ -310,34 +389,68 @@ function initVoice() {
   });
 }
 
-async function loadReceipts() {
-  const body = $("receipts-body");
+function applyThreads(payload) {
+  conversationState.threads = buildThreads(payload || {});
+  renderThreads();
+}
+
+function renderThreads() {
+  const body = $("threads-body");
   body.textContent = "";
+  const threads = conversationState.threads;
+  if (threads.length === 0) {
+    body.appendChild(el("div", "card empty", "No conversations yet. Start one."));
+    return;
+  }
+  for (const thread of threads) {
+    const card = el("button", "session-card thread-card");
+    card.type = "button";
+    card.dataset.id = thread.id;
+    if (thread.id === conversationState.selectedThreadId) card.classList.add("is-selected");
+
+    const head = el("div", "session-card-head");
+    head.appendChild(el("strong", null, summarize(threadText(thread))));
+    const info = threadState(thread);
+    head.appendChild(el("span", `badge ${info.kind}`, info.label));
+    card.appendChild(head);
+
+    const stamp = formatTimestamp(threadTime(thread) || null);
+    card.appendChild(el("div", "sub", stamp ? `${stamp} · ${deliveryLine(thread)}` : deliveryLine(thread)));
+    card.addEventListener("click", () => selectThread(thread.id));
+    body.appendChild(card);
+  }
+}
+
+async function loadThreads() {
   try {
     const payload = await api("/api/receipts");
-    const groups = [
-      ["Pending", payload.pending],
-      ["Handled", payload.handled],
-      ["Replies", payload.replies],
-    ];
-    for (const [title, items] of groups) {
-      const list = el("div", "cards");
-      const records = Array.isArray(items) ? items : [];
-      if (records.length === 0) list.appendChild(el("div", "card empty", `No ${title.toLowerCase()} receipts.`));
-      for (const item of records) {
-        const label = item.note_id || item.id || item.request_id || "receipt";
-        const sub = item.reply || item.body || item.text || item.cursor || "";
-        list.appendChild(card(label, sub, [[title.toLowerCase(), title === "Replies" ? "ok" : ""]]));
-      }
-      body.appendChild(section(title, list));
+    applyThreads(payload);
+    if (conversationState.selectedThreadId && !selectedThread()) closeConversation();
+    else if (conversationState.selectedThreadId) {
+      setConversationHeader();
+      renderThread();
     }
   } catch (error) {
-    body.appendChild(el("div", "card empty", `Could not load receipts: ${error.message}`));
+    if (error && error.status === 401) return;
+    const body = $("threads-body");
+    body.textContent = "";
+    body.appendChild(el("div", "card empty", `Could not load conversations: ${error.message}`));
   }
 }
 
 function selectedSession() {
   return conversationState.sessions.find((session) => session.id === conversationState.selectedId) || null;
+}
+
+function conversationStateKind(value) {
+  if (value === "needs_you") return "bad";
+  if (value === "working") return "warn";
+  return "";
+}
+
+function conversationStateLabel(value) {
+  if (value === "needs_you") return "needs you";
+  return value || "unknown";
 }
 
 function renderSessions(payload) {
@@ -347,7 +460,7 @@ function renderSessions(payload) {
   conversationState.sessions = sessions;
 
   if (sessions.length === 0) {
-    body.appendChild(el("div", "card empty", "No live conversations found."));
+    body.appendChild(el("div", "card empty", "No live sessions found."));
     return;
   }
 
@@ -359,7 +472,9 @@ function renderSessions(payload) {
 
     const head = el("div", "session-card-head");
     head.appendChild(el("strong", null, session.name || session.id));
-    head.appendChild(el("span", `badge ${stateKind(session.status)}`, session.status || "unknown"));
+    head.appendChild(
+      el("span", `badge ${conversationStateKind(session.state)}`, conversationStateLabel(session.state)),
+    );
     card.appendChild(head);
     card.appendChild(el("div", "sub", session.title || session.kind));
     card.appendChild(el("div", "session-card-meta", `${session.kind} · ${session.agent || "agent"} · ${session.id}`));
@@ -368,7 +483,18 @@ function renderSessions(payload) {
   }
 }
 
-function setConversationHeader(session) {
+function setConversationHeader() {
+  const status = $("conversation-status");
+  if (conversationState.selectedThreadId) {
+    const thread = selectedThread();
+    $("conversation-name").textContent = thread ? summarize(threadText(thread)) : "—";
+    $("conversation-sub").textContent = thread && thread.requestId ? `request ${thread.requestId}` : "";
+    const info = thread ? threadState(thread) : null;
+    status.textContent = info ? info.label : "—";
+    status.className = info ? `badge ${info.kind}` : "badge";
+    return;
+  }
+  const session = selectedSession();
   $("conversation-name").textContent = session ? session.name || session.id : "—";
   const parts = [];
   if (session) {
@@ -377,13 +503,13 @@ function setConversationHeader(session) {
     parts.push(session.id);
   }
   $("conversation-sub").textContent = parts.join(" · ");
-  const status = $("conversation-status");
-  const text = session && session.status ? session.status : null;
-  status.textContent = text || "—";
-  status.className = text ? `badge ${stateKind(text)}` : "badge";
+  const sessionState = session ? session.state : null;
+  status.textContent = sessionState ? conversationStateLabel(sessionState) : "—";
+  status.className = sessionState ? `badge ${conversationStateKind(sessionState)}` : "badge";
 }
 
 function selectSession(id) {
+  conversationState.selectedThreadId = null;
   conversationState.selectedId = id;
   conversationState.forceScroll = true;
   conversationState.source = null;
@@ -391,16 +517,37 @@ function selectSession(id) {
   conversationState.messages = [];
   conversationState.oldestCursor = null;
   conversationState.hasOlder = false;
+  $("conversation-composer").hidden = true;
   $("conversation-detail").hidden = false;
   $("conversations-pane").classList.add("is-detail");
-  setConversationHeader(selectedSession());
+  setConversationHeader();
+  renderThreads();
   renderSessions({ sessions: conversationState.sessions });
   showConversationMessage("Loading…");
   void refreshConversation();
 }
 
+function selectThread(id) {
+  conversationState.selectedId = null;
+  conversationState.selectedThreadId = id;
+  conversationState.forceScroll = true;
+  conversationState.source = null;
+  conversationState.agentSession = null;
+  conversationState.messages = [];
+  conversationState.oldestCursor = null;
+  conversationState.hasOlder = false;
+  $("conversation-composer").hidden = true;
+  $("conversation-detail").hidden = false;
+  $("conversations-pane").classList.add("is-detail");
+  setConversationHeader();
+  renderThreads();
+  renderSessions({ sessions: conversationState.sessions });
+  renderThread();
+}
+
 function closeConversation() {
   conversationState.selectedId = null;
+  conversationState.selectedThreadId = null;
   conversationState.source = null;
   conversationState.agentSession = null;
   conversationState.messages = [];
@@ -408,7 +555,27 @@ function closeConversation() {
   conversationState.hasOlder = false;
   $("conversation-detail").hidden = true;
   $("conversations-pane").classList.remove("is-detail");
+  renderThreads();
   renderSessions({ sessions: conversationState.sessions });
+}
+
+function renderThread() {
+  const box = conversationOutput();
+  box.textContent = "";
+  const thread = selectedThread();
+  if (!thread) {
+    box.appendChild(el("p", "hint", "This conversation is no longer available."));
+    return;
+  }
+  const messages = [];
+  if (thread.body) {
+    messages.push({ role: "user", label: "you", time: thread.at, text: thread.body });
+  }
+  if (thread.reply) {
+    messages.push({ role: "assistant", label: "firstmate", time: thread.reply.at, text: thread.reply.body });
+  }
+  for (const node of messageCards(messages)) box.appendChild(node);
+  box.appendChild(el("p", "hint thread-delivery", deliveryLine(thread)));
 }
 
 function conversationOutput() {
@@ -430,8 +597,13 @@ function messageCards(messages) {
   for (const message of messages) {
     const role = message.role === "user" ? "user" : "assistant";
     const card = el("article", `msg msg-${role}`);
-    const label = role === "user" ? "firstmate" : message.role === "assistant" ? "agent" : message.role;
-    card.appendChild(el("div", "msg-role", label));
+    const label =
+      message.label || (role === "user" ? "firstmate" : message.role === "assistant" ? "agent" : message.role);
+    const head = el("div", "msg-head");
+    head.appendChild(el("span", "msg-role", label));
+    const stamp = formatTimestamp(message.time);
+    if (stamp) head.appendChild(el("time", "msg-time", stamp));
+    card.appendChild(head);
     card.appendChild(el("div", "msg-text", message.text));
     nodes.push(card);
   }
@@ -479,7 +651,7 @@ function renderTerminal(payload) {
 function applyTerminal(payload) {
   conversationState.source = "terminal";
   conversationState.agentSession = payload.agent_session || null;
-  setConversationHeader(selectedSession());
+  setConversationHeader();
   renderTerminal(payload);
 }
 
@@ -543,7 +715,7 @@ function applyHistory(payload) {
   conversationState.messages = normalizeMessages(payload.messages);
   conversationState.oldestCursor = payload.oldest_cursor || null;
   conversationState.hasOlder = Boolean(payload.has_older);
-  setConversationHeader(selectedSession());
+  setConversationHeader();
   renderHistory();
 }
 
@@ -632,17 +804,20 @@ async function loadSessions() {
     const payload = await api("/api/sessions");
     renderSessions(payload);
     if (conversationState.selectedId && !selectedSession()) closeConversation();
-    else setConversationHeader(selectedSession());
+    else if (conversationState.selectedId) setConversationHeader();
   } catch (error) {
     if (error && error.status === 401) return;
     body.textContent = "";
-    body.appendChild(el("div", "card empty", `Could not load conversations: ${error.message}`));
+    body.appendChild(el("div", "card empty", `Could not load live sessions: ${error.message}`));
   }
 }
 
 function startConversationsPolling() {
   stopConversationsPolling();
-  conversationState.listTimer = setInterval(() => void loadSessions(), CONVERSATION_LIST_INTERVAL_MS);
+  conversationState.listTimer = setInterval(() => {
+    void loadSessions();
+    void loadThreads();
+  }, CONVERSATION_LIST_INTERVAL_MS);
   conversationState.outputTimer = setInterval(
     () => void refreshConversation(),
     CONVERSATION_OUTPUT_INTERVAL_MS,
@@ -802,10 +977,10 @@ function showView(name) {
     view.classList.toggle("is-active", view.id === `view-${name}`);
   }
   if (name === "status") void loadStatus();
-  if (name === "receipts") void loadReceipts();
   if (name === "settings") void refreshPushStatus();
   if (name === "conversations") {
     void loadSessions();
+    void loadThreads();
     void refreshConversation();
     startConversationsPolling();
   } else {
@@ -813,7 +988,7 @@ function showView(name) {
   }
 }
 
-const VIEWS = ["status", "conversations", "compose", "receipts", "settings"];
+const VIEWS = ["status", "conversations", "settings"];
 const TOKEN_SAVE_DELAY_MS = 300;
 let tokenSaveTimer = null;
 
@@ -872,12 +1047,22 @@ function init() {
     void loadHealth();
     if (state.view === "conversations") {
       void loadSessions();
+      void loadThreads();
       void refreshConversation();
     }
   });
   $("conversations-refresh").addEventListener("click", () => {
     void loadSessions();
+    void loadThreads();
     void refreshConversation();
+  });
+  $("new-conversation").addEventListener("click", () => {
+    $("conversation-composer").hidden = false;
+    $("note-text").focus?.();
+  });
+  $("compose-cancel").addEventListener("click", () => {
+    $("conversation-composer").hidden = true;
+    $("compose-status").textContent = "";
   });
   $("conversation-back").addEventListener("click", closeConversation);
   $("note-form").addEventListener("submit", submitNote);

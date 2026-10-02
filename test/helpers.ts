@@ -7,7 +7,8 @@ import { createServer, type Server } from "node:http";
 import type { AppConfig } from "../src/config.js";
 import { Conversations } from "../src/conversations.js";
 import type { ConversationStore } from "../src/conversation-store.js";
-import { Firstmate } from "../src/firstmate.js";
+import { createFleetStateProvider } from "../src/fleet-state.js";
+import { Firstmate, type FirstmateClient } from "../src/firstmate.js";
 import { Herdr } from "../src/herdr.js";
 import type { PushApi } from "../src/push-service.js";
 import { createRequestHandler } from "../src/server.js";
@@ -40,6 +41,10 @@ export async function startTestServer(options: {
   herdrSession?: string;
   /** Optional agent store double for the Conversations history route. */
   conversationStore?: ConversationStore;
+  /** Optional firstmate client double, overriding the binDir-backed one. */
+  firstmate?: FirstmateClient;
+  /** Overrides the receipts read bound so tests need not wait the default. */
+  receiptsReadTimeoutMs?: number;
 } = {}): Promise<TestServer> {
   const home = options.home ?? makeHome();
   const token = options.token ?? "test-token";
@@ -63,16 +68,21 @@ export async function startTestServer(options: {
     herdrBin: options.herdrBin ?? "herdr",
     opencodeDbPath: join(home, ".local", "share", "opencode", "opencode.db"),
   };
-  const firstmate = new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
+  const firstmate =
+    options.firstmate ?? new Firstmate({ binDir, env: { ...process.env, FM_HOME: home } });
   const conversations = new Conversations(
     new Herdr({ binPath: config.herdrBin, session: config.herdrSession, env: { ...process.env, FM_HOME: home } }),
     options.conversationStore ?? null,
+    createFleetStateProvider(firstmate),
   );
   const server: Server = createServer(
     createRequestHandler({
       config,
       firstmate,
       conversations,
+      ...(options.receiptsReadTimeoutMs !== undefined
+        ? { receiptsReadTimeoutMs: options.receiptsReadTimeoutMs }
+        : {}),
       ...(options.push ? { push: options.push } : {}),
     }),
   );

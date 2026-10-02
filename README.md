@@ -7,7 +7,7 @@ The first slice, **Walkie-Talkie**, let you see what the fleet is doing and drop
 instruction into firstmate's existing intake, end to end. This slice adds
 **push notifications**: firstmate can ping the phone when a pull request is
 ready for review, a decision is waiting, or a worker is blocked, plus a
-read-only **Conversations** view of the fleet's live sessions.
+**Conversations** view of the fleet's live sessions and instruction threads.
 
 ## What it does
 
@@ -15,16 +15,22 @@ read-only **Conversations** view of the fleet's live sessions.
   firstmate home, queues instructions into it, and pushes notifications to the
   installed web app.
 - A minimal installable web app served by the same service at `/` with a status
-  view, an instruction composer (with hold-to-talk voice input), a read-only
-  Conversations view of the fleet's live sessions, and a notification opt-in.
-- A **Conversations** view: a list of the fleet's live sessions (the primary
-  firstmate session and each worker/scout) and, for the selected session, its
-  **full conversation history**, refreshed live and scrollable back through the
-  whole session. The history is read from the coding agent's own session store
-  (opencode's SQLite database), not the terminal, so it is not limited to the
-  visible screen; when a session has no agent store the view falls back to the
-  terminal's visible output. It is also the reply channel: firstmate's answers
-  to queued instructions appear in the primary session's history.
+  view, one unified **Conversations** surface, and a notification opt-in.
+- A **Conversations** surface that is the single place to read and start a
+  conversation. It lists **instruction threads** - a queued note plus firstmate's
+  reply and delivery state - alongside the fleet's **live sessions** (the primary
+  firstmate session and each worker/scout). Tapping either opens the whole thing:
+  a thread shows the captain's message and the fleet's reply with a timestamp on
+  each, and a live session shows its **full conversation history**, refreshed live
+  and scrollable back through the whole session. "New conversation" opens the
+  instruction composer (with hold-to-talk voice input) inline and queues a note
+  through the one existing write. The history is read from the coding agent's own
+  session store (opencode's SQLite database), not the terminal, so it is not
+  limited to the visible screen; when a session has no agent store the view falls
+  back to the terminal's visible output. A live session's badge shows
+  firstmate's **real fleet state** (needs-you only when a decision or gate is
+  waiting on the captain, working when work is in flight, idle otherwise), never
+  the raw herdr pane status.
 - Self-hosted Web Push with VAPID: the service generates and holds its own key
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
@@ -58,9 +64,9 @@ decision/approval/merge action.
   runtime the view falls back to the terminal read.
 - A firstmate home with its `bin/` scripts, including `fm-inbox.sh` and
   `fm-bearings-snapshot.sh`.
-- For the Conversations view only: a reachable `herdr` CLI and a running herdr
-  session (see [Conversations](#conversations)). The status, compose, and
-  notification features do not need it.
+- For the live-session side of Conversations only: a reachable `herdr` CLI and a
+  running herdr session (see [Conversations](#conversations)). The status,
+  instruction-thread, and notification features do not need it.
 
 ## Install
 
@@ -396,12 +402,32 @@ Enable on this device**. A plain Safari tab cannot receive notifications.
 
 ## Conversations
 
-**Conversations** is a read-only view of the fleet from the phone: a list of
-every live session and, for the selected one, its **full conversation history**,
-refreshed live and scrollable back through the whole session. The list is the
-primary firstmate session plus each worker/scout session, and the primary
-session's history is also the reply channel, so firstmate's answers to queued
-instructions can be read in the app.
+**Conversations** is the single place to read and start a conversation from the
+phone. Its list holds two kinds of entry:
+
+- **Instruction threads** - each note firstmate has received (`fm-inbox receipts`)
+  together with its delivery state and firstmate's reply, newest first. Tapping
+  one opens the captain's message and the fleet's reply, each with a timestamp,
+  and the delivery/state line sits inside the thread rather than in a separate
+  Receipts view.
+- **Live sessions** - the primary firstmate session plus each worker/scout
+  session. Tapping one opens its **full conversation history**, refreshed live
+  and scrollable back through the whole session, with a timestamp on every
+  message.
+
+**New conversation** opens the instruction composer inline: sending queues the
+note through the one existing write and the new thread appears in the list.
+
+A live session's badge is derived from firstmate's own bearings snapshot
+(`fm-bearings-snapshot.sh --json`), never from herdr's pane status. The default
+is idle; the primary session reads needs-you only when a decision or gate is
+waiting on the captain, and working when work or a secondmate is in flight. A
+worker or secondmate session is matched to its own fleet row and is never
+labeled needs-you unless that row is genuinely a captain decision. A raw herdr
+`agent_status` of `blocked` therefore cannot make a conversation look like it
+needs the captain while nothing is in flight. The snapshot is cached for a short
+interval because the list polls far more often than fleet state changes; the raw
+pane status is still reported as `status` for diagnostics.
 
 A coding agent's terminal keeps no scrollback: herdr's `pane read` returns only
 the visible viewport (roughly one screen, even with a large `--lines`). The
@@ -454,9 +480,9 @@ Configuration:
   fallback.
 
 Every pane herdr reports is listed, so a pane with no registered agent still
-appears with an unknown status rather than the list going blank. If herdr is not
-reachable the Conversations view shows the error inline and the status, compose,
-and notification features are unaffected.
+appears with an unknown state rather than the list going blank. If herdr is not
+reachable the live-session list shows the error inline while the instruction
+threads, status, and notification features are unaffected.
 
 ## Voice input
 
@@ -514,7 +540,7 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `GET` | `/api/health` | `bin/fm-inbox.sh ready` (`fm-primary-ready.v1`), open |
 | `GET` | `/api/status` | `bin/fm-bearings-snapshot.sh --json` (`fm-bearings.v1`) |
 | `GET` | `/api/receipts?after=<cursor>` | `bin/fm-inbox.sh receipts [--after <cursor>]` |
-| `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list` |
+| `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list`; each `state` derived from `bin/fm-bearings-snapshot.sh --json` |
 | `GET` | `/api/sessions/<pane-id>?limit=<n>&before=<cursor>` | the agent's session store (read-only), else `herdr pane read <pane-id> --lines <n> --source recent --format text` |
 | `POST` | `/api/note` | `bin/fm-inbox.sh note --request-id <id> --json -` with text on stdin |
 | `GET` | `/api/push/config` | returns `{"publicKey"}` (open; see below) |
@@ -523,11 +549,15 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `POST` | `/api/push/test` | sends one test notification to all subscriptions |
 | `GET` | `/` | the web app |
 
-Firstmate's JSON is passed through unchanged. The two Conversations endpoints
-are the service's own shape rather than a firstmate passthrough:
+Firstmate's JSON is passed through unchanged by `/api/status`, `/api/receipts`,
+and `/api/health`. The live-session endpoint is the service's own shape:
 `GET /api/sessions` returns `{"sessions": [...]}` with `id`, `name`, `kind`
-(`primary`/`secondmate`/`worker`), `status`, `agent`, `agent_session`, `title`,
-`cwd`, `workspace_id`, and `tab_id`.
+(`primary`/`secondmate`/`worker`), `status` (the raw herdr pane status, kept for
+diagnostics), `state` (the firstmate-derived badge: `needs_you`, `working`,
+`idle`, or `unknown`), `agent`, `agent_session`, `title`, `cwd`, `workspace_id`,
+and `tab_id`. The browser builds the instruction threads from `/api/receipts`:
+each note's `at` and `body`, its `reply`, and its `acknowledged`/`announced`
+delivery state.
 
 `GET /api/sessions/<pane-id>` returns one of two shapes, distinguished by
 `source`:
@@ -605,9 +635,9 @@ transitive supply-chain surface in production.
 - All firstmate and herdr invocations use `execFile` with an argument array and
   `shell: false`. Request input is passed as a literal argument or on stdin and
   is never interpolated into a shell string.
-- The Conversations view is read-only: the herdr client permits only
-  `pane list`, `pane read`, `workspace list`, and `tab list`, and refuses every
-  other subcommand before a process is spawned. A session id that is not a
+- The herdr reads behind Conversations are read-only: the herdr client permits
+  only `pane list`, `pane read`, `workspace list`, and `tab list`, and refuses
+  every other subcommand before a process is spawned. A session id that is not a
   well-formed pane id (option-like or containing a path separator) is refused
   before any herdr call.
 - The agent session store is opened read-only and pinned with

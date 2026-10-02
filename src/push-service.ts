@@ -107,7 +107,7 @@ export function notificationFor(event: PushEvent): PushMessage {
       return {
         title: "firstmate replied",
         body: "A reply to your queued instruction is ready.",
-        url: "/?view=receipts",
+        url: "/?view=conversations",
         tag: "reply",
       };
     case "decision":

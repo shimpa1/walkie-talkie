@@ -10,6 +10,7 @@ import { clampHistoryLimit, isValidHistoryCursor } from "./conversation-store.js
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
 import { HerdrError, isValidPaneId } from "./herdr.js";
 import type { PushApi } from "./push-service.js";
+import { withTimeout } from "./timeout.js";
 import {
   isValidPushEndpoint,
   isValidPushSubscription,
@@ -25,8 +26,17 @@ export interface AppDeps {
   push?: PushApi;
   /** Read-only Conversations view; routes answer 503 without it. */
   conversations?: Conversations;
+  /** Bound on a single receipts read; defaults to DEFAULT_RECEIPTS_READ_TIMEOUT_MS. */
+  receiptsReadTimeoutMs?: number;
   log?: (line: string) => void;
 }
+
+/**
+ * A single receipts read is bounded so a slow or hung inbox can never hold the
+ * polling receipts response until Firstmate's own 60s child timeout. The bound
+ * is short relative to the browser's 5s poll.
+ */
+export const DEFAULT_RECEIPTS_READ_TIMEOUT_MS = 3_000;
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -220,6 +230,7 @@ async function serveStatic(deps: AppDeps, res: ServerResponse, pathname: string)
 
 export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const { firstmate } = deps;
+  const receiptsReadTimeoutMs = deps.receiptsReadTimeoutMs ?? DEFAULT_RECEIPTS_READ_TIMEOUT_MS;
 
   return (req, res): void => {
     void handle(req, res).catch((error: unknown) => {
@@ -294,7 +305,14 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
         const args = after === null || after === ""
           ? ["receipts"]
           : ["receipts", "--after", after];
-        const result = await firstmate.run(FM_SCRIPTS.inbox, args);
+        const result = await withTimeout(
+          firstmate.run(FM_SCRIPTS.inbox, args),
+          receiptsReadTimeoutMs,
+        );
+        if (result === null) {
+          sendError(res, 502, "firstmate receipts failed");
+          return;
+        }
         const body = parseJsonOutput(result.stdout);
         if (result.code !== 0 || body === null) {
           sendError(res, 502, result.stderr.trim() || "firstmate receipts failed");

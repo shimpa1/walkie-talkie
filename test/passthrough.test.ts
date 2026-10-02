@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { FirstmateClient, RunResult } from "../src/firstmate.js";
 import { FIXTURES_DIR, getJson, startTestServer } from "./helpers.js";
 
 function fixture(name: string): unknown {
@@ -44,6 +45,26 @@ test("GET /api/receipts forwards the after cursor to firstmate", async () => {
     assert.equal(result.status, 200);
     const body = result.body as { reply_cursor: string };
     assert.equal(body.reply_cursor, "cursor-42");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a hung receipts read is bounded and fails fast instead of holding the request", async () => {
+  const client: FirstmateClient = {
+    run(script, args) {
+      if (script === "fm-inbox.sh" && args[0] === "receipts") {
+        return new Promise<RunResult>(() => {});
+      }
+      return Promise.resolve({ stdout: "{}", stderr: "", code: 0 });
+    },
+  };
+  const server = await startTestServer({ token: "t", firstmate: client, receiptsReadTimeoutMs: 20 });
+  try {
+    const started = Date.now();
+    const result = await getJson(server.url, "/api/receipts", "t");
+    assert.equal(result.status, 502);
+    assert.ok(Date.now() - started < 2000, "the read is bounded, not held for the child timeout");
   } finally {
     await server.close();
   }

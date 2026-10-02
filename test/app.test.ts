@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -113,14 +113,12 @@ async function bootApp(
     }
     return element;
   };
-  const tabs = ["status", "conversations", "compose", "receipts", "settings"].map((view) => {
+  const tabs = ["status", "conversations", "settings"].map((view) => {
     const tab = makeElement(`tab-${view}`);
     tab.dataset.view = view;
     return tab;
   });
-  const views = ["status", "conversations", "compose", "receipts", "settings"].map((view) =>
-    makeElement(`view-${view}`),
-  );
+  const views = ["status", "conversations", "settings"].map((view) => makeElement(`view-${view}`));
 
   const globals: Array<[string, unknown]> = [
     ["localStorage", storage],
@@ -537,6 +535,148 @@ test("a history poll adopts has_older so messages beyond the latest window stay 
     getElement("conversations-refresh").dispatch("click");
 
     await waitFor(() => created.some((element) => element.className.includes("load-older")));
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Conversations tab lists instruction threads with their delivery state and time", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some((element) => element.className === "session-card thread-card" && element.dataset.id === "note-1"),
+    );
+    const subs = created.filter((element) => element.className === "sub").map((element) => element.textContent);
+    assert.ok(subs.some((text) => text.includes("Queued; waiting for firstmate.")));
+    assert.ok(subs.some((text) => text.includes("Delivered; firstmate replied.")));
+    // A thread row carries its own timestamp.
+    assert.ok(
+      created.some(
+        (element) => element.className === "session-card thread-card" && element.dataset.id === "note-0",
+      ),
+    );
+    const deliverySubs = subs.filter((text) => text.includes("Delivered;") || text.includes("Queued;"));
+    assert.ok(deliverySubs.some((text) => /\d/.test(text)), "thread delivery lines carry a time");
+  } finally {
+    await server.close();
+  }
+});
+
+test("tapping a thread opens the captain's message and the reply with timestamps", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some((element) => element.className === "session-card thread-card" && element.dataset.id === "note-0"),
+    );
+    const card = created.find(
+      (element) => element.className === "session-card thread-card" && element.dataset.id === "note-0",
+    );
+    assert.ok(card);
+    card.dispatch("click");
+
+    await waitFor(() =>
+      created.some((element) => element.className === "msg-text" && element.textContent === "all clear"),
+    );
+    const texts = created.filter((element) => element.className === "msg-text").map((element) => element.textContent);
+    assert.ok(texts.includes("status please"), "the captain's instruction is in the thread");
+    assert.ok(texts.includes("all clear"), "the reply is in the thread");
+
+    const times = created.filter((element) => element.className === "msg-time");
+    assert.ok(times.length >= 2, "both messages carry a timestamp");
+    assert.ok(times.every((element) => element.textContent.length > 0));
+    assert.ok(
+      created.some((element) => element.className.includes("thread-delivery")),
+      "the delivery state is shown inside the thread",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a blocked pane with nothing in flight shows idle, not blocked", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const dir = mkdtempSync(join(tmpdir(), "reach-app-state-"));
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  for (const name of ["herdr", "fm-bearings-snapshot.sh"]) {
+    cpSync(join(FAKE_BIN, name), join(binDir, name));
+    chmodSync(join(binDir, name), 0o755);
+  }
+  const panes = JSON.parse(readFileSync(join(FIXTURES_DIR, "herdr-panes.json"), "utf8")) as {
+    result: { panes: Array<{ agent_status?: string }> };
+  };
+  panes.result.panes[0]!.agent_status = "blocked";
+  writeFileSync(join(dir, "herdr-panes.json"), JSON.stringify(panes));
+  for (const name of ["herdr-workspaces.json", "herdr-tabs.json", "herdr-output.txt"]) {
+    cpSync(join(FIXTURES_DIR, name), join(dir, name));
+  }
+  writeFileSync(
+    join(dir, "bearings.json"),
+    JSON.stringify({ schema: "fm-bearings.v1", in_flight: [], secondmates: [], decisions_open: [], gates: [] }),
+  );
+
+  const server = await startTestServer({ token: "t", binDir, herdrBin: join(binDir, "herdr") });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some((element) => element.className === "session-card" && element.dataset.id === "w1:p1"),
+    );
+    const labels = created
+      .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
+      .map((element) => element.textContent);
+    assert.ok(labels.includes("idle"), "an idle fleet shows idle");
+    assert.ok(!labels.includes("blocked"), "herdr's raw pane status never drives the badge");
+  } finally {
+    await server.close();
+  }
+});
+
+test("New conversation opens the composer inline and queues a thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    getElement("new-conversation").dispatch("click");
+    assert.equal(getElement("conversation-composer").hidden, false);
+
+    getElement("note-text").value = "send a scout to the west gate";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+
+    const notesDir = join(server.home, "state", "notes");
+    await waitFor(() => existsSync(notesDir) && readdirSync(notesDir).length === 1);
+    await waitFor(() => getElement("conversation-composer").hidden === true);
   } finally {
     await server.close();
   }
