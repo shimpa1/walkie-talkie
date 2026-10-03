@@ -573,6 +573,12 @@ the images, and the provider credentials (opencode's `DEEPSEEK_API_KEY` /
 `OPENROUTER_API_KEY`, or `ANTHROPIC_API_KEY` for a Claude harness) for your
 cluster.
 
+### atus deploy record
+
+| Date | walkie-talkie | firstmate runtime | Source |
+| --- | --- | --- | --- |
+| 2026-10-03 | `62279d5d2415` (rebuilt) | `6eb5b4543933` (unchanged) | main at `62279d5` (merge of PR #24). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `62279d5`, so the running runtime image already matches main and was not rebuilt. |
+
 ## Upgrade
 
 ```sh
