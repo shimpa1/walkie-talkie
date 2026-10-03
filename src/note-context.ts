@@ -61,8 +61,9 @@ export function parseNoteContext(value: unknown): NoteContext | null | { error: 
 
 /** The note body firstmate receives: a context header line, a blank line, then the text. */
 export function composeNoteText(text: string, context: NoteContext | null): string {
-  if (context === null) return text;
+  const body = text.startsWith(CONTEXT_HEADER_PREFIX) ? `\\${text}` : text;
+  if (context === null) return body;
   const phrase = context.kind === "thread" ? THREAD_PHRASE : SESSION_PHRASE;
   const label = context.label ? ` ${JSON.stringify(context.label)}` : "";
-  return `${CONTEXT_HEADER_PREFIX} ${phrase} ${context.id}${label}\n\n${text}`;
+  return `${CONTEXT_HEADER_PREFIX} ${phrase} ${context.id}${label}\n\n${body}`;
 }

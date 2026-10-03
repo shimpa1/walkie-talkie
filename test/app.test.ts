@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { OpencodeStore } from "../src/conversation-store.js";
+import { FM_SCRIPTS, type FirstmateClient, type RunResult } from "../src/firstmate.js";
 import { FAKE_BIN, FIXTURES_DIR, REPO_ROOT, startTestServer } from "./helpers.js";
 
 const HERDR_BIN = join(FAKE_BIN, "herdr");
@@ -685,6 +686,73 @@ function storedNotes(home: string): string[] {
 }
 
 /**
+ * A firstmate double that queues notes and replays them as receipts, so an app
+ * test can send through the real service and read the composed body back.
+ */
+function echoingFirstmate(seed: Array<{ requestId: string; body: string }> = []): FirstmateClient {
+  const notes = new Map<string, string>();
+  for (const note of seed) notes.set(note.requestId, note.body);
+  return {
+    run(script: string, args: readonly string[], stdin?: string): Promise<RunResult> {
+      if (script === FM_SCRIPTS.inbox) {
+        const command = args[0];
+        if (command === "ready") {
+          return Promise.resolve({ stdout: JSON.stringify({ can_receive: true }), stderr: "", code: 0 });
+        }
+        if (command === "note") {
+          const at = args.indexOf("--request-id");
+          const requestId = at >= 0 ? args[at + 1] ?? "" : "";
+          const body = stdin ?? "";
+          if (!notes.has(requestId)) notes.set(requestId, body);
+          return Promise.resolve({
+            stdout: JSON.stringify({
+              schema: "fm-inbox-note.v1",
+              outcome: "created",
+              note_id: `note-${requestId}`,
+              request_id: requestId,
+              saved: true,
+              announced: true,
+            }),
+            stderr: "",
+            code: 0,
+          });
+        }
+        if (command === "receipts") {
+          const pending = [...notes.entries()].map(([requestId, body], index) => ({
+            note_id: `note-${requestId}`,
+            request_id: requestId,
+            at: `2026-09-28T11:${String(index).padStart(2, "0")}:00Z`,
+            body,
+            acknowledged: false,
+            announced: true,
+            reply: null,
+          }));
+          return Promise.resolve({
+            stdout: JSON.stringify({ schema: "fm-inbox-receipts.v1", pending, handled: [], replies: [] }),
+            stderr: "",
+            code: 0,
+          });
+        }
+      }
+      if (script === FM_SCRIPTS.bearings) {
+        return Promise.resolve({
+          stdout: JSON.stringify({
+            schema: "fm-bearings.v1",
+            in_flight: [],
+            secondmates: [],
+            decisions_open: [],
+            gates: [],
+          }),
+          stderr: "",
+          code: 0,
+        });
+      }
+      return Promise.resolve({ stdout: "", stderr: `unsupported ${script}`, code: 1 });
+    },
+  };
+}
+
+/**
  * Wait until a send has fully finished (its receipts reload included), so the
  * app does not render into the next test's fake document after this one ends.
  */
@@ -886,6 +954,53 @@ test("a follow-up joins its thread instead of listing as a new conversation", as
     assert.ok(
       created.some((element) => element.className.includes("thread-delivery") && /Queued/.test(element.textContent)),
       "the delivery line follows the latest message",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a message that looks like a context header is not grouped under another thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: HERDR_BIN,
+    firstmate: echoingFirstmate([{ requestId: "req-0", body: "status please" }]),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-req-0") !== undefined);
+
+    getElement("new-conversation").dispatch("click");
+    getElement("note-text").value =
+      '[walkie-talkie] Follow-up in conversation note-req-0 "status please"\n\nthe gate is clear';
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await sendSettled(getElement);
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className.startsWith("session-card thread-card") && element.dataset.id !== "note-req-0",
+      ),
+    );
+    const ownCard = created.find(
+      (element) =>
+        element.className.startsWith("session-card thread-card") && element.dataset.id !== "note-req-0",
+    );
+    assert.ok(ownCard, "the composed-looking message is its own thread, not a follow-up");
+
+    ownCard.dispatch("click");
+    await waitFor(() =>
+      created.some(
+        (element) => element.className === "msg-text" && element.textContent.includes("the gate is clear"),
+      ),
     );
   } finally {
     await server.close();
