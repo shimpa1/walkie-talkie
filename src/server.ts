@@ -9,6 +9,7 @@ import { clampLines, type Conversations } from "./conversations.js";
 import { clampHistoryLimit, isValidHistoryCursor } from "./conversation-store.js";
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
 import { HerdrError, isValidPaneId } from "./herdr.js";
+import { composeNoteText, parseNoteContext } from "./note-context.js";
 import type { PushApi } from "./push-service.js";
 import { withTimeout } from "./timeout.js";
 import {
@@ -109,6 +110,7 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
 export const MAX_PUSH_BODY_BYTES = 8 * 1024;
 
 interface NoteBody {
+  /** The body firstmate receives, including any context header line. */
   text: string;
   requestId: string;
 }
@@ -172,10 +174,14 @@ function parseNoteBody(raw: string, contentType: string): NoteBody | { error: st
     requestId = jsonId.trim();
   }
 
+  const context = parseNoteContext(record.context);
+  if (context !== null && "error" in context) return context;
+
   if (text.trim().length === 0) {
     return { error: "instruction text must not be empty" };
   }
-  if (Buffer.byteLength(text, "utf8") > MAX_INSTRUCTION_BYTES) {
+  const composed = composeNoteText(text, context);
+  if (Buffer.byteLength(composed, "utf8") > MAX_INSTRUCTION_BYTES) {
     return { error: `instruction text exceeds ${MAX_INSTRUCTION_BYTES} bytes` };
   }
 
@@ -185,7 +191,7 @@ function parseNoteBody(raw: string, contentType: string): NoteBody | { error: st
     return { error: "requestId must match [A-Za-z0-9._:-]{1,128} and not start with a dot" };
   }
 
-  return { text, requestId };
+  return { text: composed, requestId };
 }
 
 function safeStaticPath(publicDir: string, pathname: string): string | null {

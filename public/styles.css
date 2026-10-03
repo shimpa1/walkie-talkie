@@ -482,7 +482,7 @@ button.small {
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text);
   overflow: auto;
-  max-height: 62vh;
+  max-height: 52vh;
   min-height: 220px;
 }
 
@@ -539,12 +539,32 @@ button.small {
   font-style: italic;
 }
 
-.composer {
-  margin-bottom: 16px;
+.conversation-detail .composer {
+  position: sticky;
+  bottom: 0;
+  margin-top: 10px;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--bg);
 }
 
-.composer[hidden] {
-  display: none;
+.composer form {
+  gap: 8px;
+  padding: 10px;
+}
+
+.composer .hint,
+.composer textarea {
+  margin: 0;
+}
+
+.thread-context {
+  font-style: italic;
+}
+
+button.new-conversation {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
 }
 
 .msg-text {

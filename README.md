@@ -17,15 +17,17 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
 - A minimal installable web app served by the same service at `/` with a status
   view, one unified **Conversations** surface, and a notification opt-in.
 - A **Conversations** surface that is the single place to read and start a
-  conversation. It lists **instruction threads** - a queued note plus firstmate's
-  reply and delivery state - alongside the fleet's **live sessions** (the primary
-  firstmate session and each worker/scout). Tapping either opens the whole thing:
-  a thread shows the captain's message and the fleet's reply with a timestamp on
-  each, and a live session shows its **full conversation history**, refreshed live
-  and scrollable back through the whole session. "New conversation" opens the
-  instruction composer (with hold-to-talk voice input) inline and queues a note
-  through the one existing write. The history is read from the coding agent's own
-  session store (opencode's SQLite database), not the terminal, so it is not
+  conversation. It lists **instruction threads** - a queued note, any follow-ups
+  sent from it, firstmate's replies, and delivery state - alongside the fleet's
+  **live sessions** (the primary firstmate session and each worker/scout).
+  Tapping either opens the whole thing: a thread shows the captain's messages and
+  the fleet's replies with a timestamp on each, and a live session shows its
+  **full conversation history**, refreshed live
+  and scrollable back through the whole session. Every open conversation has a
+  composer at the bottom (with hold-to-talk voice input), and "New conversation"
+  opens the same composer for a fresh thread; every send queues a note to
+  firstmate through the one existing write. The history is read from the coding
+  agent's own session store (opencode's SQLite database), not the terminal, so it is not
   limited to the visible screen; when a session has no agent store the view falls
   back to the terminal's visible output. A live session's badge shows
   firstmate's **real fleet state** (needs-you only when a decision or gate is
@@ -405,18 +407,43 @@ Enable on this device**. A plain Safari tab cannot receive notifications.
 **Conversations** is the single place to read and start a conversation from the
 phone. Its list holds two kinds of entry:
 
-- **Instruction threads** - each note firstmate has received (`fm-inbox receipts`)
-  together with its delivery state and firstmate's reply, newest first. Tapping
-  one opens the captain's message and the fleet's reply, each with a timestamp,
-  and the delivery/state line sits inside the thread rather than in a separate
-  Receipts view.
+- **Instruction threads** - a note firstmate has received (`fm-inbox receipts`)
+  together with any follow-ups sent from it, each note's delivery state, and
+  firstmate's replies, newest first. Tapping one opens the captain's messages and
+  the fleet's replies, each with a timestamp, and the delivery/state line sits
+  inside the thread rather than in a separate Receipts view.
 - **Live sessions** - the primary firstmate session plus each worker/scout
   session. Tapping one opens its **full conversation history**, refreshed live
   and scrollable back through the whole session, with a timestamp on every
   message.
 
-**New conversation** opens the instruction composer inline: sending queues the
-note through the one existing write and the new thread appears in the list.
+**Composer** (changed 2026-10-03). Every open conversation - a thread or a live
+session - has a message box pinned to the bottom of the pane, and a full-width
+**+ New conversation** button at the top of the list opens the same pane for a
+fresh thread. Every send queues a note to firstmate through the one existing
+write (`POST /api/note`); nothing is ever typed into a session pane. A send from
+an open conversation carries that conversation as context:
+
+- from a **thread**, the note is a follow-up. It shows inside that thread in
+  order, under the thread's latest delivery state, instead of as a new entry in
+  the list;
+- from a **live session**, the note goes to firstmate, not to that session. It
+  names the session so firstmate knows which work the captain means, and it
+  appears in the list as its own thread marked "About live session ...".
+
+The service writes the context as the note's first line, for example
+`[walkie-talkie] Follow-up in conversation note-0 "status please"` or
+`[walkie-talkie] Sent while viewing live session w1:p1 "firstmate: ..."`,
+followed by a blank line and the captain's text. Firstmate reads it as part of
+the note. The app parses it back out of `/api/receipts` to group follow-ups, but
+only a header the service itself wrote: a message the captain types that begins
+with the same text is escaped with a leading backslash on the wire, so it stays
+its own thread instead of being grouped under the conversation it names, and the
+escape is stripped again before the app summarizes or renders it, so the captain
+sees exactly what they typed.
+A failed send keeps its request id: pressing send again from the same
+conversation with the same text retries idempotently. Changing the text or the
+conversation mints a new id.
 
 A live session's badge is derived from firstmate's own bearings snapshot
 (`fm-bearings-snapshot.sh --json`), never from herdr's pane status. The default
@@ -486,7 +513,8 @@ threads, status, and notification features are unaffected.
 
 ## Voice input
 
-The instruction composer has a **Hold to talk** microphone button, and it works
+The conversation composer - at the bottom of every open conversation and of
+**+ New conversation** - has a **Hold to talk** microphone button, and it works
 the same way on desktop, Android, and iOS. While the button is held (with a
 pointer or touch, or with Space/Enter from the keyboard), speech is transcribed
 with the browser's Web Speech API (`SpeechRecognition`, or
@@ -497,7 +525,7 @@ new session right away and appends to the same dictation, so a pause never ends
 capture and later sentences are not dropped. Silence while the button is held
 is not an error; capture simply keeps waiting.
 
-Releasing the button (or pressing **Queue instruction** while dictating) seals
+Releasing the button (or pressing **Send to firstmate** while dictating) seals
 the dictation: whatever is on screen at that moment, including words the
 browser had not yet finalized, stays in the textarea, and any recognition
 result that arrives afterwards is ignored. A late result can never rewrite the
@@ -580,7 +608,13 @@ create a subscription, and anyone who has it still cannot send a notification
 without the private key. The subscribe/unsubscribe/test endpoints require the
 bearer token like the rest of the API.
 
-`POST /api/note` accepts a JSON body `{"text": "...", "requestId": "..."}`.
+`POST /api/note` accepts a JSON body `{"text": "...", "requestId": "..."}`, with an
+optional `"context": {"kind": "thread" | "session", "id": "...", "label": "..."}`
+naming the conversation the note was written from. A thread `id` must be a
+firstmate note id and a session `id` a herdr pane id. The `label` is flattened
+to one line of at most 120 characters. The service writes the context as the
+note's first line (see [Conversations](#conversations)), and a malformed
+context is a 400.
 The client supplies a stable request id; a retry with the same id is idempotent
 and queues exactly once. If no id is supplied, the service generates one and
 returns it. Request ids must match firstmate's own contract:

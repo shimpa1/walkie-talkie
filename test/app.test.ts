@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { OpencodeStore } from "../src/conversation-store.js";
+import { FM_SCRIPTS, type FirstmateClient, type RunResult } from "../src/firstmate.js";
 import { FAKE_BIN, FIXTURES_DIR, REPO_ROOT, startTestServer } from "./helpers.js";
 
 const HERDR_BIN = join(FAKE_BIN, "herdr");
@@ -40,6 +41,7 @@ interface FakeElement {
   className: string;
   textContent: string;
   value: string;
+  placeholder: string;
   hidden: boolean;
   dataset: Record<string, string>;
   classList: { toggle: () => void; add: () => void; remove: () => void };
@@ -56,6 +58,7 @@ function makeElement(id: string): FakeElement {
     className: "",
     textContent: "",
     value: "",
+    placeholder: "",
     hidden: false,
     dataset: {},
     classList: { toggle: () => {}, add: () => {}, remove: () => {} },
@@ -101,6 +104,7 @@ async function bootApp(
   storage: MemoryStorage,
   fetchImpl: (path: string, init?: RequestInit) => Promise<Response>,
   search = "",
+  windowExtras: Record<string, unknown> = {},
 ): Promise<AppHarness> {
   bootCount += 1;
   const elements = new Map<string, FakeElement>();
@@ -139,7 +143,7 @@ async function bootApp(
         },
       },
     ],
-    ["window", { location: { origin: "http://localhost", search } }],
+    ["window", { location: { origin: "http://localhost", search }, ...windowExtras }],
     ["navigator", {}],
     ["fetch", fetchImpl],
     // The conversation view's polling is exercised through its Refresh button,
@@ -656,7 +660,457 @@ test("a blocked pane with nothing in flight shows idle, not blocked", async () =
   }
 });
 
-test("New conversation opens the composer inline and queues a thread", async () => {
+interface SentNote {
+  text: string;
+  requestId: string;
+  context?: { kind: string; id: string; label: string };
+}
+
+/** Pass requests through to the test server, recording every POST /api/note body. */
+function recordingFetch(
+  serverUrl: string,
+  sent: SentNote[],
+  override?: (path: string, init?: RequestInit) => Response | null,
+): (path: string, init?: RequestInit) => Promise<Response> {
+  return async (path, init) => {
+    if (path === "/api/note" && init?.method === "POST") sent.push(JSON.parse(String(init.body)) as SentNote);
+    const replaced = override?.(path, init) ?? null;
+    if (replaced !== null) return replaced;
+    return nativeFetch(serverUrl + path, init);
+  };
+}
+
+function storedNotes(home: string): string[] {
+  const dir = join(home, "state", "notes");
+  return existsSync(dir) ? readdirSync(dir).map((name) => readFileSync(join(dir, name), "utf8")) : [];
+}
+
+/**
+ * A firstmate double that queues notes and replays them as receipts, so an app
+ * test can send through the real service and read the composed body back.
+ */
+function echoingFirstmate(seed: Array<{ requestId: string; body: string }> = []): FirstmateClient {
+  const notes = new Map<string, string>();
+  for (const note of seed) notes.set(note.requestId, note.body);
+  return {
+    run(script: string, args: readonly string[], stdin?: string): Promise<RunResult> {
+      if (script === FM_SCRIPTS.inbox) {
+        const command = args[0];
+        if (command === "ready") {
+          return Promise.resolve({ stdout: JSON.stringify({ can_receive: true }), stderr: "", code: 0 });
+        }
+        if (command === "note") {
+          const at = args.indexOf("--request-id");
+          const requestId = at >= 0 ? args[at + 1] ?? "" : "";
+          const body = stdin ?? "";
+          if (!notes.has(requestId)) notes.set(requestId, body);
+          return Promise.resolve({
+            stdout: JSON.stringify({
+              schema: "fm-inbox-note.v1",
+              outcome: "created",
+              note_id: `note-${requestId}`,
+              request_id: requestId,
+              saved: true,
+              announced: true,
+            }),
+            stderr: "",
+            code: 0,
+          });
+        }
+        if (command === "receipts") {
+          const pending = [...notes.entries()].map(([requestId, body], index) => ({
+            note_id: `note-${requestId}`,
+            request_id: requestId,
+            at: `2026-09-28T11:${String(index).padStart(2, "0")}:00Z`,
+            body,
+            acknowledged: false,
+            announced: true,
+            reply: null,
+          }));
+          return Promise.resolve({
+            stdout: JSON.stringify({ schema: "fm-inbox-receipts.v1", pending, handled: [], replies: [] }),
+            stderr: "",
+            code: 0,
+          });
+        }
+      }
+      if (script === FM_SCRIPTS.bearings) {
+        return Promise.resolve({
+          stdout: JSON.stringify({
+            schema: "fm-bearings.v1",
+            in_flight: [],
+            secondmates: [],
+            decisions_open: [],
+            gates: [],
+          }),
+          stderr: "",
+          code: 0,
+        });
+      }
+      return Promise.resolve({ stdout: "", stderr: `unsupported ${script}`, code: 1 });
+    },
+  };
+}
+
+/**
+ * Wait until a send has fully finished (its receipts reload included), so the
+ * app does not render into the next test's fake document after this one ends.
+ */
+async function sendSettled(getElement: (id: string) => FakeElement): Promise<void> {
+  await waitFor(() => (getElement("send") as FakeElement & { disabled?: boolean }).disabled === false);
+}
+
+function findCard(created: FakeElement[], className: string, id: string): FakeElement | undefined {
+  return created.find((element) => element.className.startsWith(className) && element.dataset.id === id);
+}
+
+test("New conversation opens the conversation pane with its composer and queues a thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  try {
+    const { getElement } = await bootApp(storage, recordingFetch(server.url, sent), "?view=conversations");
+
+    getElement("new-conversation").dispatch("click");
+    assert.equal(getElement("conversation-detail").hidden, false);
+    assert.equal(getElement("conversation-composer").hidden, false);
+    assert.equal(getElement("conversation-name").textContent, "New conversation");
+
+    getElement("note-text").value = "send a scout to the west gate";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+
+    await waitFor(() => storedNotes(server.home).length === 1);
+    assert.deepEqual(storedNotes(server.home), ["send a scout to the west gate"]);
+    assert.equal(sent[0]?.context, undefined, "a new conversation carries no context");
+    await waitFor(() => getElement("note-text").value === "");
+    await sendSettled(getElement);
+    assert.equal(getElement("conversation-composer").hidden, false, "the composer stays available");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an open thread keeps a composer and a send from it carries the thread as context", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  try {
+    const { getElement, created } = await bootApp(storage, recordingFetch(server.url, sent), "?view=conversations");
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    assert.equal(getElement("conversation-detail").hidden, false);
+    assert.equal(getElement("conversation-composer").hidden, false, "an open conversation has a place to type");
+    assert.match(getElement("note-text").placeholder, /Reply/);
+
+    getElement("note-text").value = "and the east gate too";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+
+    await waitFor(() => storedNotes(server.home).length === 1);
+    await sendSettled(getElement);
+    assert.deepEqual(sent[0]?.context, { kind: "thread", id: "note-0", label: "status please" });
+    assert.equal(
+      storedNotes(server.home)[0],
+      '[walkie-talkie] Follow-up in conversation note-0 "status please"\n\nand the east gate too',
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("an open live session keeps a composer and a send names the session for firstmate", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  try {
+    const { getElement, created } = await bootApp(storage, recordingFetch(server.url, sent), "?view=conversations");
+
+    await waitFor(() => findCard(created, "session-card", "w1:p1") !== undefined);
+    findCard(created, "session-card", "w1:p1")!.dispatch("click");
+
+    assert.equal(getElement("conversation-composer").hidden, false);
+    assert.match(getElement("compose-hint").textContent, /not into this session/);
+
+    getElement("note-text").value = "is this one stuck?";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+
+    await waitFor(() => storedNotes(server.home).length === 1);
+    assert.deepEqual(sent[0]?.context, {
+      kind: "session",
+      id: "w1:p1",
+      label: "firstmate: Continuing walkie-talkie project work",
+    });
+    assert.equal(
+      storedNotes(server.home)[0],
+      '[walkie-talkie] Sent while viewing live session w1:p1 "firstmate: Continuing walkie-talkie project work"' +
+        "\n\nis this one stuck?",
+    );
+    await waitFor(() => /Sent to firstmate/.test(getElement("compose-status").textContent));
+    await sendSettled(getElement);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a failed send retries with the same request id; another conversation gets a new one", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  let failNext = true;
+  const fail = (path: string, init?: RequestInit): Response | null => {
+    if (path !== "/api/note" || init?.method !== "POST" || !failNext) return null;
+    failNext = false;
+    return new Response(JSON.stringify({ error: "firstmate unreachable" }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      recordingFetch(server.url, sent, fail),
+      "?view=conversations",
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+    getElement("note-text").value = "repeat after me";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => /Not queued/.test(getElement("compose-status").textContent));
+
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => storedNotes(server.home).length === 1);
+    await sendSettled(getElement);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1]?.requestId, sent[0]?.requestId, "the retry reuses the request id");
+
+    findCard(created, "session-card thread-card", "note-1")!.dispatch("click");
+    getElement("note-text").value = "repeat after me";
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => storedNotes(server.home).length === 2);
+    await sendSettled(getElement);
+    assert.notEqual(sent[2]?.requestId, sent[0]?.requestId, "a different conversation is a different request");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a follow-up joins its thread instead of listing as a new conversation", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const receipts = {
+    schema: "fm-inbox-receipts.v1",
+    pending: [
+      {
+        note_id: "note-2",
+        request_id: "req-2",
+        at: "2026-09-28T11:10:00Z",
+        body: '[walkie-talkie] Follow-up in conversation note-0 "status please"\n\nand the east gate?',
+        acknowledged: false,
+        announced: true,
+        reply: null,
+      },
+    ],
+    handled: [
+      {
+        note_id: "note-0",
+        request_id: "req-0",
+        at: "2026-09-28T11:00:00Z",
+        body: "status please",
+        acknowledged: true,
+        announced: true,
+        reply: { id: "note-0", at: "2026-09-28T11:05:00Z", body: "all clear" },
+      },
+    ],
+    replies: [],
+  };
+  const override = (path: string): Response | null =>
+    path === "/api/receipts"
+      ? new Response(JSON.stringify(receipts), { status: 200, headers: { "content-type": "application/json" } })
+      : null;
+  try {
+    const { created } = await bootApp(storage, recordingFetch(server.url, [], override), "?view=conversations");
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    assert.equal(findCard(created, "session-card thread-card", "note-2"), undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    await waitFor(() =>
+      created.some((element) => element.className === "msg-text" && element.textContent === "and the east gate?"),
+    );
+    const texts = created.filter((element) => element.className === "msg-text").map((element) => element.textContent);
+    assert.deepEqual(texts.slice(-3), ["status please", "all clear", "and the east gate?"]);
+    assert.ok(
+      created.some((element) => element.className.includes("thread-delivery") && /Queued/.test(element.textContent)),
+      "the delivery line follows the latest message",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a message that looks like a context header is not grouped under another thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: HERDR_BIN,
+    firstmate: echoingFirstmate([{ requestId: "req-0", body: "status please" }]),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-req-0") !== undefined);
+
+    const typed = '[walkie-talkie] Follow-up in conversation note-req-0 "status please"\n\nthe gate is clear';
+    getElement("new-conversation").dispatch("click");
+    getElement("note-text").value = typed;
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await sendSettled(getElement);
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className.startsWith("session-card thread-card") && element.dataset.id !== "note-req-0",
+      ),
+    );
+    const ownCard = created.find(
+      (element) =>
+        element.className.startsWith("session-card thread-card") && element.dataset.id !== "note-req-0",
+    );
+    assert.ok(ownCard, "the composed-looking message is its own thread, not a follow-up");
+
+    ownCard.dispatch("click");
+    await waitFor(() =>
+      created.some((element) => element.className === "msg-text" && element.textContent === typed),
+    );
+    assert.ok(
+      !created.some((element) => element.textContent.startsWith("\\[walkie-talkie]")),
+      "the service's escape never reaches the captain's display",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a follow-up whose text begins with the context header is shown as typed", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: HERDR_BIN,
+    firstmate: echoingFirstmate([{ requestId: "0", body: "status please" }]),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    const typed =
+      '[walkie-talkie] Follow-up in conversation note-0 "status please"\n\nand the east gate too';
+    getElement("note-text").value = typed;
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await sendSettled(getElement);
+
+    await waitFor(() =>
+      created.some((element) => element.className === "msg-text" && element.textContent === typed),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+/** A stand-in for the browser's SpeechRecognition that the test can drive. */
+class FakeSpeechRecognition {
+  static last: FakeSpeechRecognition | null = null;
+  lang = "";
+  continuous = false;
+  interimResults = false;
+  onresult: ((event: unknown) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onend: (() => void) | null = null;
+  started = false;
+
+  constructor() {
+    FakeSpeechRecognition.last = this;
+  }
+
+  start(): void {
+    this.started = true;
+  }
+
+  stop(): void {}
+
+  abort(): void {}
+}
+
+function finalTranscript(transcript: string): unknown {
+  const result = Object.assign([{ transcript }], { isFinal: true });
+  return { resultIndex: 0, results: [result] };
+}
+
+test("the mic is shown in the composer when the browser has speech recognition", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+      { webkitSpeechRecognition: FakeSpeechRecognition },
+    );
+    assert.equal(getElement("mic").hidden, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("an installed iPhone app with speech recognition still shows the mic", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+      {
+        webkitSpeechRecognition: FakeSpeechRecognition,
+        navigator: { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", standalone: true },
+      },
+    );
+    assert.equal(getElement("mic").hidden, false, "the working voice input is not gated away on iOS");
+  } finally {
+    await server.close();
+  }
+});
+
+test("without speech recognition the mic stays hidden and typing still works", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
   const storage = new MemoryStorage();
@@ -667,16 +1121,43 @@ test("New conversation opens the composer inline and queues a thread", async () 
       (path, init) => nativeFetch(server.url + path, init),
       "?view=conversations",
     );
-
-    getElement("new-conversation").dispatch("click");
+    assert.equal(getElement("mic").hidden, true);
     assert.equal(getElement("conversation-composer").hidden, false);
+  } finally {
+    await server.close();
+  }
+});
 
-    getElement("note-text").value = "send a scout to the west gate";
+test("holding the mic in an open thread dictates into its composer and sends with the thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      recordingFetch(server.url, sent),
+      "?view=conversations",
+      { webkitSpeechRecognition: FakeSpeechRecognition },
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    const mic = getElement("mic");
+    mic.dispatch("pointerdown", { preventDefault: () => {}, pointerId: 1 });
+    const recognition = FakeSpeechRecognition.last;
+    assert.ok(recognition?.started, "holding the mic starts recognition");
+    recognition!.onresult?.(finalTranscript("check the west gate"));
+    mic.dispatch("pointerup");
+    assert.equal(getElement("note-text").value, "check the west gate");
+
     getElement("note-form").dispatch("submit", { preventDefault: () => {} });
-
-    const notesDir = join(server.home, "state", "notes");
-    await waitFor(() => existsSync(notesDir) && readdirSync(notesDir).length === 1);
-    await waitFor(() => getElement("conversation-composer").hidden === true);
+    await waitFor(() => storedNotes(server.home).length === 1);
+    await sendSettled(getElement);
+    assert.deepEqual(sent[0]?.context, { kind: "thread", id: "note-0", label: "status please" });
+    assert.equal(sent[0]?.text, "check the west gate");
   } finally {
     await server.close();
   }
