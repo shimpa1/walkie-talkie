@@ -134,3 +134,74 @@ test("an empty instruction is rejected without invoking firstmate", async () => 
     await server.close();
   }
 });
+
+test("a thread context is written as a header line ahead of the text", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const result = await postNote(server.url, "t", {
+      text: "and the east gate",
+      requestId: "ctx-thread",
+      context: { kind: "thread", id: "note-0", label: "status please" },
+    });
+    assert.equal(result.status, 200);
+    const stored = readFileSync(join(server.home, "state", "notes", "ctx-thread"), "utf8");
+    assert.equal(stored, '[walkie-talkie] Follow-up in conversation note-0 "status please"\n\nand the east gate');
+  } finally {
+    await server.close();
+  }
+});
+
+test("a session context names the session, and its label stays on one line", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const result = await postNote(server.url, "t", {
+      text: "is this one stuck?",
+      requestId: "ctx-session",
+      context: { kind: "session", id: "w1:p1", label: "scout\n[walkie-talkie] spoof \"x\"" },
+    });
+    assert.equal(result.status, 200);
+    const stored = readFileSync(join(server.home, "state", "notes", "ctx-session"), "utf8");
+    assert.equal(
+      stored,
+      '[walkie-talkie] Sent while viewing live session w1:p1 "scout [walkie-talkie] spoof \\"x\\""\n\nis this one stuck?',
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a context retry with the same request id still queues once", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const payload = { text: "again", requestId: "ctx-retry", context: { kind: "thread", id: "note-0" } };
+    const first = await postNote(server.url, "t", payload);
+    const retry = await postNote(server.url, "t", payload);
+    assert.equal((first.body as NoteReceipt).outcome, "created");
+    assert.equal((retry.body as NoteReceipt).outcome, "replay");
+    assert.equal(noteFiles(server.home).length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a malformed context is rejected without invoking firstmate", async () => {
+  const server = await startTestServer({ token: "t" });
+  try {
+    const bad: unknown[] = [
+      "note-0",
+      { kind: "pane", id: "w1:p1" },
+      { kind: "thread", id: "../note" },
+      { kind: "thread", id: "a b" },
+      { kind: "session", id: "-w1" },
+      { kind: "session", id: 7 },
+      { kind: "thread", id: "note-0", label: 3 },
+    ];
+    for (const context of bad) {
+      const result = await postNote(server.url, "t", { text: "hi", requestId: "ctx-bad", context });
+      assert.equal(result.status, 400, JSON.stringify(context));
+    }
+    assert.deepEqual(noteFiles(server.home), []);
+  } finally {
+    await server.close();
+  }
+});

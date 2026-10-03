@@ -1,4 +1,4 @@
-import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
+import { createVoiceInput, speechRecognitionCtor, voiceSupport } from "./voice.js";
 import {
   createApi,
   forgetToken,
@@ -12,7 +12,7 @@ import {
 const state = {
   token: readToken(localStorage),
   pendingRequestId: null,
-  pendingRequestText: null,
+  pendingRequestKey: null,
   status: null,
   voice: null,
   view: null,
@@ -23,6 +23,7 @@ const conversationState = {
   threads: [],
   selectedId: null,
   selectedThreadId: null,
+  composingNew: false,
   listTimer: null,
   outputTimer: null,
   busy: false,
@@ -221,15 +222,68 @@ function summarize(text) {
   return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
 }
 
-/** Build the instruction threads from firstmate's receipts payload. */
+/**
+ * The context header the service writes as the first line of a note sent from
+ * an open conversation (src/note-context.ts). Parsing it back lets a follow-up
+ * join its thread and lets the thread show where a note was written from.
+ */
+const CONTEXT_HEADER =
+  /^\[walkie-talkie\] (Follow-up in conversation|Sent while viewing live session) (\S+)(?: ("(?:[^"\\\n]|\\.)*"))?\n\n/;
+
+function splitNoteContext(body) {
+  const text = String(body || "");
+  const match = CONTEXT_HEADER.exec(text);
+  if (!match) return { context: null, text };
+  let label = "";
+  if (match[3]) {
+    try {
+      label = String(JSON.parse(match[3]));
+    } catch {
+      label = "";
+    }
+  }
+  const kind = match[1].startsWith("Follow-up") ? "thread" : "session";
+  return { context: { kind, id: match[2], label }, text: text.slice(match[0].length) };
+}
+
+function noteTime(note) {
+  const value = (note.reply && note.reply.at) || note.at;
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function sentTime(note) {
+  const ms = typeof note.at === "number" ? note.at : Date.parse(note.at);
+  return Number.isFinite(ms) ? ms : noteTime(note);
+}
+
+/** The thread a follow-up belongs to: the first note up its chain of thread contexts. */
+function rootNoteId(note, notes) {
+  let current = note;
+  const seen = new Set();
+  while (current.context && current.context.kind === "thread" && !seen.has(current.id)) {
+    seen.add(current.id);
+    const parent = notes.get(current.context.id);
+    if (!parent) break;
+    current = parent;
+  }
+  return current.id;
+}
+
+/**
+ * Build the instruction threads from firstmate's receipts payload. A thread is
+ * one note plus every follow-up sent from it, in the order they were sent.
+ */
 function buildThreads(payload) {
-  const byId = new Map();
+  const notes = new Map();
   const add = (note, handled) => {
     const id = note.note_id || note.id || note.request_id;
     if (!id) return;
-    byId.set(id, {
+    const parsed = splitNoteContext(note.body || note.text || "");
+    notes.set(id, {
       id,
-      body: note.body || note.text || "",
+      body: parsed.text,
+      context: parsed.context,
       at: note.at || null,
       requestId: note.request_id || null,
       acknowledged: typeof note.acknowledged === "boolean" ? note.acknowledged : handled,
@@ -242,14 +296,15 @@ function buildThreads(payload) {
   for (const reply of Array.isArray(payload.replies) ? payload.replies : []) {
     const id = reply.id;
     if (!id) continue;
-    const thread = byId.get(id);
-    if (thread) {
-      if (!thread.reply) thread.reply = reply;
+    const note = notes.get(id);
+    if (note) {
+      if (!note.reply) note.reply = reply;
       continue;
     }
-    byId.set(id, {
+    notes.set(id, {
       id,
       body: "",
+      context: null,
       at: reply.at || null,
       requestId: reply.request_id || null,
       acknowledged: true,
@@ -257,42 +312,116 @@ function buildThreads(payload) {
       reply,
     });
   }
-  const threads = [...byId.values()];
+  const byRoot = new Map();
+  for (const note of notes.values()) {
+    const rootId = rootNoteId(note, notes);
+    const thread = byRoot.get(rootId) || { id: rootId, notes: [] };
+    thread.notes.push(note);
+    byRoot.set(rootId, thread);
+  }
+  const threads = [...byRoot.values()];
+  for (const thread of threads) {
+    thread.notes.sort((a, b) => sentTime(a) - sentTime(b) || (a.id === thread.id ? -1 : b.id === thread.id ? 1 : 0));
+  }
   threads.sort((a, b) => threadTime(b) - threadTime(a));
   return threads;
 }
 
+function rootNote(thread) {
+  return thread.notes.find((note) => note.id === thread.id) || thread.notes[0];
+}
+
+function latestNote(thread) {
+  return thread.notes[thread.notes.length - 1];
+}
+
 /** The instruction text for a thread, or the reply's text when only a reply exists. */
 function threadText(thread) {
-  if (thread.body) return thread.body;
-  return thread.reply && thread.reply.body ? thread.reply.body : "";
+  const root = rootNote(thread);
+  if (root.body) return root.body;
+  return root.reply && root.reply.body ? root.reply.body : "";
 }
 
 function threadTime(thread) {
-  const value = (thread.reply && thread.reply.at) || thread.at;
-  const ms = typeof value === "number" ? value : Date.parse(value);
-  return Number.isFinite(ms) ? ms : 0;
+  return Math.max(0, ...thread.notes.map(noteTime));
 }
 
 function threadState(thread) {
-  if (thread.reply) return { label: "replied", kind: "ok" };
-  if (thread.acknowledged) return { label: "working", kind: "warn" };
+  const note = latestNote(thread);
+  if (note.reply) return { label: "replied", kind: "ok" };
+  if (note.acknowledged) return { label: "working", kind: "warn" };
   return { label: "queued", kind: "" };
 }
 
 function deliveryLine(thread) {
-  if (thread.reply) return "Delivered; firstmate replied.";
-  if (thread.acknowledged) return "Delivered; firstmate is working on it.";
-  if (thread.announced === false) return "Queued; firstmate has not been woken yet.";
+  const note = latestNote(thread);
+  if (note.reply) return "Delivered; firstmate replied.";
+  if (note.acknowledged) return "Delivered; firstmate is working on it.";
+  if (note.announced === false) return "Queued; firstmate has not been woken yet.";
   return "Queued; waiting for firstmate.";
+}
+
+/** Where a thread's first note was written from, when it was not a new conversation. */
+function contextLine(context) {
+  if (!context) return "";
+  const label = context.label ? ` (${context.label})` : "";
+  if (context.kind === "session") return `About live session ${context.id}${label}`;
+  return `Follow-up to conversation ${context.id}${label}`;
+}
+
+function threadIdForNote(noteId) {
+  const thread = conversationState.threads.find((item) => item.notes.some((note) => note.id === noteId));
+  return thread ? thread.id : null;
 }
 
 function selectedThread() {
   return conversationState.threads.find((thread) => thread.id === conversationState.selectedThreadId) || null;
 }
 
-function selectedThreadById(id) {
-  return conversationState.threads.find((thread) => thread.id === id) || null;
+/** The conversation a message from the open composer is about, or null for a new one. */
+function composerContext() {
+  if (conversationState.selectedThreadId) {
+    const thread = selectedThread();
+    return {
+      kind: "thread",
+      id: conversationState.selectedThreadId,
+      label: thread ? summarize(threadText(thread)) : "",
+    };
+  }
+  if (conversationState.selectedId) {
+    const session = selectedSession();
+    const label = session ? [session.name || session.id, session.title].filter(Boolean).join(": ") : "";
+    return { kind: "session", id: conversationState.selectedId, label };
+  }
+  return null;
+}
+
+function composerMode() {
+  if (conversationState.selectedThreadId) return "thread";
+  if (conversationState.selectedId) return "session";
+  return "new";
+}
+
+const COMPOSER_MODES = {
+  new: {
+    placeholder: "What should the fleet know or do next?",
+    hint: "Starts a new conversation: this queues a note into firstmate's existing intake. It makes no decision and changes no project.",
+  },
+  thread: {
+    placeholder: "Reply to firstmate in this conversation…",
+    hint: "Queues a follow-up note to firstmate, marked as part of this conversation.",
+  },
+  session: {
+    placeholder: "Tell firstmate about this session…",
+    hint: "Goes to firstmate, not into this session; the note names this session so firstmate knows what you mean.",
+  },
+};
+
+function setComposerMode() {
+  const mode = COMPOSER_MODES[composerMode()];
+  $("note-text").placeholder = mode.placeholder;
+  $("compose-hint").textContent = mode.hint;
+  $("compose-status").textContent = "";
 }
 
 async function submitNote(event) {
@@ -300,10 +429,15 @@ async function submitNote(event) {
   if (state.voice) state.voice.stop();
   const text = $("note-text").value.trim();
   if (!text) return;
-  if (!state.pendingRequestId || state.pendingRequestText !== text) {
+  const context = composerContext();
+  const mode = composerMode();
+  const key = JSON.stringify([context ? context.kind : "", context ? context.id : "", text]);
+  if (!state.pendingRequestId || state.pendingRequestKey !== key) {
     state.pendingRequestId = mintRequestId();
-    state.pendingRequestText = text;
+    state.pendingRequestKey = key;
   }
+  const payload = { text, requestId: state.pendingRequestId };
+  if (context) payload.context = context;
   const button = $("send");
   const status = $("compose-status");
   button.disabled = true;
@@ -312,16 +446,16 @@ async function submitNote(event) {
     const receipt = await api("/api/note", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, requestId: state.pendingRequestId }),
+      body: JSON.stringify(payload),
     });
-    status.textContent = "";
     state.pendingRequestId = null;
-    state.pendingRequestText = null;
+    state.pendingRequestKey = null;
     $("note-text").value = "";
-    $("conversation-composer").hidden = true;
+    status.textContent = mode === "session" ? "Sent to firstmate. Its reply appears under Conversations." : "";
     await loadThreads();
     const noteId = receipt && (receipt.note_id || receipt.id);
-    if (noteId && selectedThreadById(noteId)) selectThread(noteId);
+    const threadId = noteId ? threadIdForNote(noteId) : null;
+    if (mode !== "session" && threadId && composerMode() === mode) selectThread(threadId);
   } catch (error) {
     status.textContent = `Not queued: ${error.message}. Press send again to retry with the same request id.`;
   } finally {
@@ -331,13 +465,25 @@ async function submitNote(event) {
 
 function initVoice() {
   const button = $("mic");
+  const note = $("voice-note");
   const status = $("compose-status");
-  const Recognition = speechRecognitionCtor();
-  if (!Recognition) {
-    button.hidden = true;
+  const support = voiceSupport();
+  button.hidden = false;
+  if (!support.available) {
+    // Explain instead of hiding: the captain should know why there is no voice
+    // button and that the keyboard's own dictation still works in this box.
+    button.textContent = "Voice unavailable";
+    button.classList.add("is-unavailable");
+    button.setAttribute("aria-disabled", "true");
+    button.setAttribute("aria-describedby", "voice-note");
+    note.textContent = support.reason;
+    note.hidden = false;
+    button.addEventListener("click", () => $("note-text").focus?.());
     return;
   }
-  button.hidden = false;
+  note.hidden = true;
+  button.textContent = "Talk";
+  const Recognition = speechRecognitionCtor();
 
   const voice = createVoiceInput({
     createRecognition: () => new Recognition(),
@@ -349,43 +495,20 @@ function initVoice() {
       const listening = state === "listening";
       button.classList.toggle("is-listening", listening);
       button.setAttribute("aria-pressed", listening ? "true" : "false");
-      button.textContent = listening ? "Listening…" : "Hold to talk";
-      if (listening) status.textContent = "Listening… release to stop.";
+      button.textContent = listening ? "Stop" : "Talk";
+      if (listening) status.textContent = "Listening… tap Stop when you are done.";
       else if (message) status.textContent = message;
       else status.textContent = "";
     },
   });
   state.voice = voice;
 
-  const begin = (event) => {
+  // A tap toggles dictation. Starting from a click keeps recognition inside a
+  // user gesture, which Safari requires; a touch pointerdown does not count.
+  button.addEventListener("click", (event) => {
     event.preventDefault();
-    if (typeof button.setPointerCapture === "function") {
-      try {
-        button.setPointerCapture(event.pointerId);
-      } catch {
-        // Capture is a convenience; the release handlers still stop the voice.
-      }
-    }
-    voice.start();
-  };
-  const end = () => voice.stop();
-
-  button.addEventListener("pointerdown", begin);
-  button.addEventListener("pointerup", end);
-  button.addEventListener("pointercancel", end);
-  button.addEventListener("pointerleave", end);
-  button.addEventListener("contextmenu", (event) => event.preventDefault());
-  button.addEventListener("keydown", (event) => {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      voice.start();
-    }
-  });
-  button.addEventListener("keyup", (event) => {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      voice.stop();
-    }
+    if (voice.isListening()) voice.stop();
+    else voice.start();
   });
 }
 
@@ -416,6 +539,10 @@ function renderThreads() {
 
     const stamp = formatTimestamp(threadTime(thread) || null);
     card.appendChild(el("div", "sub", stamp ? `${stamp} · ${deliveryLine(thread)}` : deliveryLine(thread)));
+    const about = contextLine(rootNote(thread).context);
+    const count = thread.notes.length > 1 ? `${thread.notes.length} messages` : "";
+    const meta = [count, about].filter(Boolean).join(" · ");
+    if (meta) card.appendChild(el("div", "session-card-meta", meta));
     card.addEventListener("click", () => selectThread(thread.id));
     body.appendChild(card);
   }
@@ -425,6 +552,14 @@ async function loadThreads() {
   try {
     const payload = await api("/api/receipts");
     applyThreads(payload);
+    if (conversationState.selectedThreadId && !selectedThread()) {
+      // A note can move under its parent once the parent shows up in receipts.
+      const owner = threadIdForNote(conversationState.selectedThreadId);
+      if (owner) {
+        conversationState.selectedThreadId = owner;
+        renderThreads();
+      }
+    }
     if (conversationState.selectedThreadId && !selectedThread()) closeConversation();
     else if (conversationState.selectedThreadId) {
       setConversationHeader();
@@ -485,10 +620,18 @@ function renderSessions(payload) {
 
 function setConversationHeader() {
   const status = $("conversation-status");
+  if (conversationState.composingNew) {
+    $("conversation-name").textContent = "New conversation";
+    $("conversation-sub").textContent = "Firstmate replies in a new thread.";
+    status.textContent = "new";
+    status.className = "badge";
+    return;
+  }
   if (conversationState.selectedThreadId) {
     const thread = selectedThread();
     $("conversation-name").textContent = thread ? summarize(threadText(thread)) : "—";
-    $("conversation-sub").textContent = thread && thread.requestId ? `request ${thread.requestId}` : "";
+    const root = thread ? rootNote(thread) : null;
+    $("conversation-sub").textContent = root && root.requestId ? `request ${root.requestId}` : "";
     const info = thread ? threadState(thread) : null;
     status.textContent = info ? info.label : "—";
     status.className = info ? `badge ${info.kind}` : "badge";
@@ -508,7 +651,33 @@ function setConversationHeader() {
   status.className = sessionState ? `badge ${conversationStateKind(sessionState)}` : "badge";
 }
 
+/** Show the detail pane with its composer, matched to what is now open. */
+function openDetail() {
+  if (state.voice) state.voice.stop();
+  $("conversation-detail").hidden = false;
+  $("conversations-pane").classList.add("is-detail");
+  setConversationHeader();
+  setComposerMode();
+  renderThreads();
+  renderSessions({ sessions: conversationState.sessions });
+}
+
+function openNewConversation() {
+  conversationState.selectedId = null;
+  conversationState.selectedThreadId = null;
+  conversationState.composingNew = true;
+  conversationState.source = null;
+  conversationState.agentSession = null;
+  conversationState.messages = [];
+  conversationState.oldestCursor = null;
+  conversationState.hasOlder = false;
+  openDetail();
+  showConversationMessage("Write the first message below. Firstmate's reply appears here.");
+  $("note-text").focus?.();
+}
+
 function selectSession(id) {
+  conversationState.composingNew = false;
   conversationState.selectedThreadId = null;
   conversationState.selectedId = id;
   conversationState.forceScroll = true;
@@ -517,17 +686,13 @@ function selectSession(id) {
   conversationState.messages = [];
   conversationState.oldestCursor = null;
   conversationState.hasOlder = false;
-  $("conversation-composer").hidden = true;
-  $("conversation-detail").hidden = false;
-  $("conversations-pane").classList.add("is-detail");
-  setConversationHeader();
-  renderThreads();
-  renderSessions({ sessions: conversationState.sessions });
+  openDetail();
   showConversationMessage("Loading…");
   void refreshConversation();
 }
 
 function selectThread(id) {
+  conversationState.composingNew = false;
   conversationState.selectedId = null;
   conversationState.selectedThreadId = id;
   conversationState.forceScroll = true;
@@ -536,16 +701,13 @@ function selectThread(id) {
   conversationState.messages = [];
   conversationState.oldestCursor = null;
   conversationState.hasOlder = false;
-  $("conversation-composer").hidden = true;
-  $("conversation-detail").hidden = false;
-  $("conversations-pane").classList.add("is-detail");
-  setConversationHeader();
-  renderThreads();
-  renderSessions({ sessions: conversationState.sessions });
+  openDetail();
   renderThread();
 }
 
 function closeConversation() {
+  if (state.voice) state.voice.stop();
+  conversationState.composingNew = false;
   conversationState.selectedId = null;
   conversationState.selectedThreadId = null;
   conversationState.source = null;
@@ -555,27 +717,38 @@ function closeConversation() {
   conversationState.hasOlder = false;
   $("conversation-detail").hidden = true;
   $("conversations-pane").classList.remove("is-detail");
+  setComposerMode();
   renderThreads();
   renderSessions({ sessions: conversationState.sessions });
 }
 
 function renderThread() {
   const box = conversationOutput();
+  const nearBottom = conversationNearBottom(box);
+  const previousScrollTop = box.scrollTop;
   box.textContent = "";
   const thread = selectedThread();
   if (!thread) {
     box.appendChild(el("p", "hint", "This conversation is no longer available."));
     return;
   }
+  const about = contextLine(rootNote(thread).context);
+  if (about) box.appendChild(el("p", "hint thread-context", about));
   const messages = [];
-  if (thread.body) {
-    messages.push({ role: "user", label: "you", time: thread.at, text: thread.body });
-  }
-  if (thread.reply) {
-    messages.push({ role: "assistant", label: "firstmate", time: thread.reply.at, text: thread.reply.body });
+  for (const note of thread.notes) {
+    if (note.body) messages.push({ role: "user", label: "you", time: note.at, text: note.body });
+    if (note.reply) {
+      messages.push({ role: "assistant", label: "firstmate", time: note.reply.at, text: note.reply.body });
+    }
   }
   for (const node of messageCards(messages)) box.appendChild(node);
   box.appendChild(el("p", "hint thread-delivery", deliveryLine(thread)));
+  if (nearBottom || conversationState.forceScroll) {
+    box.scrollTop = box.scrollHeight;
+    conversationState.forceScroll = false;
+  } else {
+    box.scrollTop = previousScrollTop;
+  }
 }
 
 function conversationOutput() {
@@ -1056,19 +1229,12 @@ function init() {
     void loadThreads();
     void refreshConversation();
   });
-  $("new-conversation").addEventListener("click", () => {
-    $("conversation-composer").hidden = false;
-    $("note-text").focus?.();
-  });
-  $("compose-cancel").addEventListener("click", () => {
-    $("conversation-composer").hidden = true;
-    $("compose-status").textContent = "";
-  });
+  $("new-conversation").addEventListener("click", openNewConversation);
   $("conversation-back").addEventListener("click", closeConversation);
   $("note-form").addEventListener("submit", submitNote);
   $("note-text").addEventListener("input", () => {
     state.pendingRequestId = null;
-    state.pendingRequestText = null;
+    state.pendingRequestKey = null;
   });
   initVoice();
   const tokenInput = $("token-input");

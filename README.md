@@ -22,9 +22,10 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
   firstmate session and each worker/scout). Tapping either opens the whole thing:
   a thread shows the captain's message and the fleet's reply with a timestamp on
   each, and a live session shows its **full conversation history**, refreshed live
-  and scrollable back through the whole session. "New conversation" opens the
-  instruction composer (with hold-to-talk voice input) inline and queues a note
-  through the one existing write. The history is read from the coding agent's own
+  and scrollable back through the whole session. Every open conversation has a
+  composer at the bottom (with tap-to-talk voice input where the browser allows
+  it), and "New conversation" opens the same composer for a fresh thread; every
+  send queues a note to firstmate through the one existing write. The history is read from the coding agent's own
   session store (opencode's SQLite database), not the terminal, so it is not
   limited to the visible screen; when a session has no agent store the view falls
   back to the terminal's visible output. A live session's badge shows
@@ -415,8 +416,28 @@ phone. Its list holds two kinds of entry:
   and scrollable back through the whole session, with a timestamp on every
   message.
 
-**New conversation** opens the instruction composer inline: sending queues the
-note through the one existing write and the new thread appears in the list.
+**Composer** (changed 2026-10-03). Every open conversation - a thread or a live
+session - has a message box pinned to the bottom of the pane, and a full-width
+**+ New conversation** button at the top of the list opens the same pane for a
+fresh thread. Every send queues a note to firstmate through the one existing
+write (`POST /api/note`); nothing is ever typed into a session pane. A send from
+an open conversation carries that conversation as context:
+
+- from a **thread**, the note is a follow-up. It shows inside that thread in
+  order, under the thread's latest delivery state, instead of as a new entry in
+  the list;
+- from a **live session**, the note goes to firstmate, not to that session. It
+  names the session so firstmate knows which work the captain means, and it
+  appears in the list as its own thread marked "About live session ...".
+
+The service writes the context as the note's first line, for example
+`[walkie-talkie] Follow-up in conversation note-0 "status please"` or
+`[walkie-talkie] Sent while viewing live session w1:p1 "firstmate: ..."`,
+followed by a blank line and the captain's text. Firstmate reads it as part of
+the note. The app parses it back out of `/api/receipts` to group follow-ups.
+A failed send keeps its request id: pressing send again from the same
+conversation with the same text retries idempotently. Changing the text or the
+conversation mints a new id.
 
 A live session's badge is derived from firstmate's own bearings snapshot
 (`fm-bearings-snapshot.sh --json`), never from herdr's pane status. The default
@@ -486,22 +507,22 @@ threads, status, and notification features are unaffected.
 
 ## Voice input
 
-The instruction composer has a **Hold to talk** microphone button, and it works
-the same way on desktop, Android, and iOS. While the button is held (with a
-pointer or touch, or with Space/Enter from the keyboard), speech is transcribed
-with the browser's Web Speech API (`SpeechRecognition`, or
-`webkitSpeechRecognition` where that is the only name) and written into the
-instruction textarea. Release to stop. The browser ends each recognition
-session at a pause in speech; while the button is still held, the app starts a
-new session right away and appends to the same dictation, so a pause never ends
-capture and later sentences are not dropped. Silence while the button is held
-is not an error; capture simply keeps waiting.
+The composer has a **Talk** microphone button (changed 2026-10-03 from
+hold-to-talk). Tap **Talk** to start dictating and tap **Stop** when you are done.
+Speech is transcribed with the browser's Web Speech API (`SpeechRecognition`,
+or `webkitSpeechRecognition` where that is the only name) and written into the
+message box. Recognition starts from a tap (a `click`) because Safari only
+starts recognition inside a user gesture, and a touch `pointerdown` does not
+count as one. The browser ends each recognition session at a pause in speech.
+While dictation is on, the app starts a new session right away and appends to
+the same dictation, so a pause never ends capture and later sentences are not
+dropped. Silence while dictating is not an error; capture simply keeps waiting.
 
-Releasing the button (or pressing **Queue instruction** while dictating) seals
-the dictation: whatever is on screen at that moment, including words the
-browser had not yet finalized, stays in the textarea, and any recognition
-result that arrives afterwards is ignored. A late result can never rewrite the
-composer after the instruction has been sent.
+Tapping **Stop** (or pressing **Send to firstmate** while dictating) seals the
+dictation: whatever is on screen at that moment, including words the browser
+had not yet finalized, stays in the message box, and any recognition result
+that arrives afterwards is ignored. A late result can never rewrite the
+composer after the message has been sent.
 
 The composed text then goes out through the same `POST /api/note` path as typing:
 voice is only an input method for the note, not a second write path. The app
@@ -509,17 +530,28 @@ records nothing, uploads no audio (there is no audio endpoint), and adds no
 transcription service of its own; recognition is performed by the browser's
 Web Speech API.
 
-The control is hidden when the browser has no Web Speech API, so it never
-breaks the composer. A listening state and short messages for the common
-failures (`not-allowed`, `audio-capture`, `network`) appear next to the send
-button.
+When the browser cannot do speech recognition, the button stays visible as
+**Voice unavailable** and a line under it says why, instead of the control
+silently disappearing. Tapping it focuses the message box so the keyboard's own
+dictation key is one tap away. The reasons are:
 
-Browser support is uneven. Chrome, Edge, and Safari (desktop and iOS) ship the
-API; Firefox does not. On iOS, voice input needs **Safari** (the API is not
-exposed to other iOS browsers' web views), and, as with push, the page must be a
-secure context. If the API is unavailable, the mic control is hidden and you can
-still dictate with the OS keyboard's microphone key directly in the instruction
-field; that dictation remains a fallback and writes into the same textarea.
+- **iPhone/iPad app added to the Home Screen.** WebKit does not run speech
+  recognition in Home Screen web apps (or in `SFSafariViewController`), even
+  where it exposes `webkitSpeechRecognition`
+  ([WebKit bug 225298](https://bugs.webkit.org/show_bug.cgi?id=225298), still
+  open as "RESOLVED LATER"). This is why the installed app on a phone shows no
+  working voice button. Use the **microphone key on the iOS keyboard**, which
+  works in the installed app and writes into the same message box. Or open the
+  app in a Safari tab, where the **Talk** button works; Safari keeps its own
+  storage, so you paste the token there once.
+- **Plain `http://` page.** Speech recognition needs a secure context. Open the
+  app over HTTPS (for example through Caddy, or `tailscale serve`).
+- **No API.** Firefox and some other browsers do not ship speech recognition.
+
+Recognition errors show a short message next to the send button: `not-allowed`
+(microphone blocked), `service-not-allowed` (on iOS this also means Dictation
+is off: Settings > General > Keyboard > Enable Dictation), `audio-capture`,
+and `network`. Each message also points to keyboard dictation as the fallback.
 
 ## Run on Kubernetes
 
@@ -580,7 +612,13 @@ create a subscription, and anyone who has it still cannot send a notification
 without the private key. The subscribe/unsubscribe/test endpoints require the
 bearer token like the rest of the API.
 
-`POST /api/note` accepts a JSON body `{"text": "...", "requestId": "..."}`.
+`POST /api/note` accepts a JSON body `{"text": "...", "requestId": "..."}`, with an
+optional `"context": {"kind": "thread" | "session", "id": "...", "label": "..."}`
+naming the conversation the note was written from. A thread `id` must be a
+firstmate note id and a session `id` a herdr pane id. The `label` is flattened
+to one line of at most 120 characters. The service writes the context as the
+note's first line (see [Conversations](#conversations)), and a malformed
+context is a 400.
 The client supplies a stable request id; a retry with the same id is idempotent
 and queues exactly once. If no id is supplied, the service generates one and
 returns it. Request ids must match firstmate's own contract:
