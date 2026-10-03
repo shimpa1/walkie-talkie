@@ -230,10 +230,17 @@ function summarize(text) {
 const CONTEXT_HEADER =
   /^\[walkie-talkie\] (Follow-up in conversation|Sent while viewing live session) (\S+)(?: ("(?:[^"\\\n]|\\.)*"))?\n\n/;
 
+const ESCAPED_CONTEXT_HEADER = "\\[walkie-talkie]";
+
+/** Undo the service's escape of a captain message that itself looks like a header. */
+function unescapeNoteText(text) {
+  return text.startsWith(ESCAPED_CONTEXT_HEADER) ? text.slice(1) : text;
+}
+
 function splitNoteContext(body) {
   const text = String(body || "");
   const match = CONTEXT_HEADER.exec(text);
-  if (!match) return { context: null, text };
+  if (!match) return { context: null, text: unescapeNoteText(text) };
   let label = "";
   if (match[3]) {
     try {
@@ -243,7 +250,7 @@ function splitNoteContext(body) {
     }
   }
   const kind = match[1].startsWith("Follow-up") ? "thread" : "session";
-  return { context: { kind, id: match[2], label }, text: text.slice(match[0].length) };
+  return { context: { kind, id: match[2], label }, text: unescapeNoteText(text.slice(match[0].length)) };
 }
 
 function noteTime(note) {

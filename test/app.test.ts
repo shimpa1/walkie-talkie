@@ -978,9 +978,9 @@ test("a message that looks like a context header is not grouped under another th
 
     await waitFor(() => findCard(created, "session-card thread-card", "note-req-0") !== undefined);
 
+    const typed = '[walkie-talkie] Follow-up in conversation note-req-0 "status please"\n\nthe gate is clear';
     getElement("new-conversation").dispatch("click");
-    getElement("note-text").value =
-      '[walkie-talkie] Follow-up in conversation note-req-0 "status please"\n\nthe gate is clear';
+    getElement("note-text").value = typed;
     getElement("note-form").dispatch("submit", { preventDefault: () => {} });
     await sendSettled(getElement);
 
@@ -998,9 +998,44 @@ test("a message that looks like a context header is not grouped under another th
 
     ownCard.dispatch("click");
     await waitFor(() =>
-      created.some(
-        (element) => element.className === "msg-text" && element.textContent.includes("the gate is clear"),
-      ),
+      created.some((element) => element.className === "msg-text" && element.textContent === typed),
+    );
+    assert.ok(
+      !created.some((element) => element.textContent.startsWith("\\[walkie-talkie]")),
+      "the service's escape never reaches the captain's display",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a follow-up whose text begins with the context header is shown as typed", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({
+    token: "t",
+    herdrBin: HERDR_BIN,
+    firstmate: echoingFirstmate([{ requestId: "0", body: "status please" }]),
+  });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    const typed =
+      '[walkie-talkie] Follow-up in conversation note-0 "status please"\n\nand the east gate too';
+    getElement("note-text").value = typed;
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await sendSettled(getElement);
+
+    await waitFor(() =>
+      created.some((element) => element.className === "msg-text" && element.textContent === typed),
     );
   } finally {
     await server.close();
