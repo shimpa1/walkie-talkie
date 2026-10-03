@@ -17,11 +17,12 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
 - A minimal installable web app served by the same service at `/` with a status
   view, one unified **Conversations** surface, and a notification opt-in.
 - A **Conversations** surface that is the single place to read and start a
-  conversation. It lists **instruction threads** - a queued note plus firstmate's
-  reply and delivery state - alongside the fleet's **live sessions** (the primary
-  firstmate session and each worker/scout). Tapping either opens the whole thing:
-  a thread shows the captain's message and the fleet's reply with a timestamp on
-  each, and a live session shows its **full conversation history**, refreshed live
+  conversation. It lists **instruction threads** - a queued note, any follow-ups
+  sent from it, firstmate's replies, and delivery state - alongside the fleet's
+  **live sessions** (the primary firstmate session and each worker/scout).
+  Tapping either opens the whole thing: a thread shows the captain's messages and
+  the fleet's replies with a timestamp on each, and a live session shows its
+  **full conversation history**, refreshed live
   and scrollable back through the whole session. Every open conversation has a
   composer at the bottom (with hold-to-talk voice input), and "New conversation"
   opens the same composer for a fresh thread; every send queues a note to
@@ -406,11 +407,11 @@ Enable on this device**. A plain Safari tab cannot receive notifications.
 **Conversations** is the single place to read and start a conversation from the
 phone. Its list holds two kinds of entry:
 
-- **Instruction threads** - each note firstmate has received (`fm-inbox receipts`)
-  together with its delivery state and firstmate's reply, newest first. Tapping
-  one opens the captain's message and the fleet's reply, each with a timestamp,
-  and the delivery/state line sits inside the thread rather than in a separate
-  Receipts view.
+- **Instruction threads** - a note firstmate has received (`fm-inbox receipts`)
+  together with any follow-ups sent from it, each note's delivery state, and
+  firstmate's replies, newest first. Tapping one opens the captain's messages and
+  the fleet's replies, each with a timestamp, and the delivery/state line sits
+  inside the thread rather than in a separate Receipts view.
 - **Live sessions** - the primary firstmate session plus each worker/scout
   session. Tapping one opens its **full conversation history**, refreshed live
   and scrollable back through the whole session, with a timestamp on every
@@ -436,8 +437,10 @@ The service writes the context as the note's first line, for example
 followed by a blank line and the captain's text. Firstmate reads it as part of
 the note. The app parses it back out of `/api/receipts` to group follow-ups, but
 only a header the service itself wrote: a message the captain types that begins
-with the same text is escaped with a leading backslash, so it stays its own
-thread instead of being grouped under the conversation it names.
+with the same text is escaped with a leading backslash on the wire, so it stays
+its own thread instead of being grouped under the conversation it names, and the
+escape is stripped again before the app summarizes or renders it, so the captain
+sees exactly what they typed.
 A failed send keeps its request id: pressing send again from the same
 conversation with the same text retries idempotently. Changing the text or the
 conversation mints a new id.
