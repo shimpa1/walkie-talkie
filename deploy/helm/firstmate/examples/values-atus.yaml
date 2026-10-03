@@ -77,13 +77,13 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    # Commit 62279d5: main at the merge of PR #24, the unified Conversations
-    # surface. Deployed 2026-10-03. The previous running image was
-    # fed7d3a6f55e, built from commit fed7d3a (PR #19).
+    # Commit e4dc8b5: main at the merge of PR #26, the persistent composer in
+    # every conversation. Deployed 2026-10-03. The previous running image was
+    # 62279d5d2415, built from commit 62279d5 (PR #24).
     # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:62279d5d2415 --push .
-    tag: "62279d5d2415"
+    #     -t shimpa/walkie-talkie:e4dc8b5e7db3 --push .
+    tag: "e4dc8b5e7db3"
     pullPolicy: IfNotPresent
   # The Conversations view reads the pod's own herdr session through the herdr
   # CLI; the walkie-talkie image does not bundle it, so the chart installs it
