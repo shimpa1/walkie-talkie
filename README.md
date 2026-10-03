@@ -434,7 +434,10 @@ The service writes the context as the note's first line, for example
 `[walkie-talkie] Follow-up in conversation note-0 "status please"` or
 `[walkie-talkie] Sent while viewing live session w1:p1 "firstmate: ..."`,
 followed by a blank line and the captain's text. Firstmate reads it as part of
-the note. The app parses it back out of `/api/receipts` to group follow-ups.
+the note. The app parses it back out of `/api/receipts` to group follow-ups, but
+only a header the service itself wrote: a message the captain types that begins
+with the same text is escaped with a leading backslash, so it stays its own
+thread instead of being grouped under the conversation it names.
 A failed send keeps its request id: pressing send again from the same
 conversation with the same text retries idempotently. Changing the text or the
 conversation mints a new id.

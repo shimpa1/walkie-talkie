@@ -59,7 +59,11 @@ export function parseNoteContext(value: unknown): NoteContext | null | { error: 
   return { kind, id, label: label === undefined ? "" : cleanLabel(label) };
 }
 
-/** The note body firstmate receives: a context header line, a blank line, then the text. */
+/**
+ * The note body firstmate receives: a context header line, a blank line, then
+ * the text. Text that itself starts with the header prefix is escaped with a
+ * leading backslash, so the app only ever groups a header the service composed.
+ */
 export function composeNoteText(text: string, context: NoteContext | null): string {
   const body = text.startsWith(CONTEXT_HEADER_PREFIX) ? `\\${text}` : text;
   if (context === null) return body;
