@@ -1,4 +1,4 @@
-import { createVoiceInput, speechRecognitionCtor, voiceSupport } from "./voice.js";
+import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
 import {
   createApi,
   forgetToken,
@@ -465,25 +465,13 @@ async function submitNote(event) {
 
 function initVoice() {
   const button = $("mic");
-  const note = $("voice-note");
   const status = $("compose-status");
-  const support = voiceSupport();
-  button.hidden = false;
-  if (!support.available) {
-    // Explain instead of hiding: the captain should know why there is no voice
-    // button and that the keyboard's own dictation still works in this box.
-    button.textContent = "Voice unavailable";
-    button.classList.add("is-unavailable");
-    button.setAttribute("aria-disabled", "true");
-    button.setAttribute("aria-describedby", "voice-note");
-    note.textContent = support.reason;
-    note.hidden = false;
-    button.addEventListener("click", () => $("note-text").focus?.());
+  const Recognition = speechRecognitionCtor();
+  if (!Recognition) {
+    button.hidden = true;
     return;
   }
-  note.hidden = true;
-  button.textContent = "Talk";
-  const Recognition = speechRecognitionCtor();
+  button.hidden = false;
 
   const voice = createVoiceInput({
     createRecognition: () => new Recognition(),
@@ -495,20 +483,43 @@ function initVoice() {
       const listening = state === "listening";
       button.classList.toggle("is-listening", listening);
       button.setAttribute("aria-pressed", listening ? "true" : "false");
-      button.textContent = listening ? "Stop" : "Talk";
-      if (listening) status.textContent = "Listening… tap Stop when you are done.";
+      button.textContent = listening ? "Listening…" : "Hold to talk";
+      if (listening) status.textContent = "Listening… release to stop.";
       else if (message) status.textContent = message;
       else status.textContent = "";
     },
   });
   state.voice = voice;
 
-  // A tap toggles dictation. Starting from a click keeps recognition inside a
-  // user gesture, which Safari requires; a touch pointerdown does not count.
-  button.addEventListener("click", (event) => {
+  const begin = (event) => {
     event.preventDefault();
-    if (voice.isListening()) voice.stop();
-    else voice.start();
+    if (typeof button.setPointerCapture === "function") {
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is a convenience; the release handlers still stop the voice.
+      }
+    }
+    voice.start();
+  };
+  const end = () => voice.stop();
+
+  button.addEventListener("pointerdown", begin);
+  button.addEventListener("pointerup", end);
+  button.addEventListener("pointercancel", end);
+  button.addEventListener("pointerleave", end);
+  button.addEventListener("contextmenu", (event) => event.preventDefault());
+  button.addEventListener("keydown", (event) => {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      voice.start();
+    }
+  });
+  button.addEventListener("keyup", (event) => {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      voice.stop();
+    }
   });
 }
 

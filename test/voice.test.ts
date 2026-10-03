@@ -17,7 +17,6 @@ import type {
 interface VoiceModule {
   createVoiceInput: (options: unknown) => VoiceInput;
   speechRecognitionCtor: (scope?: unknown) => unknown;
-  voiceSupport: (scope?: unknown) => { available: boolean; code: string; reason: string };
 }
 
 let cached: VoiceModule | null = null;
@@ -371,62 +370,4 @@ test("dictated text is queued through /api/note and late results cannot refill t
   rec.recognition.onresult?.(transcriptEvent([{ transcript: "check the west gate", final: true }]));
   rec.recognition.onend?.();
   assert.equal(rec.text(), "");
-});
-
-const IPHONE_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15";
-
-test("voiceSupport offers recognition in a secure browser tab that has the API", async () => {
-  const { voiceSupport } = await loadVoice();
-  const support = voiceSupport({ isSecureContext: true, webkitSpeechRecognition: FakeRecognition });
-  assert.deepEqual(support, { available: true, code: "available", reason: "" });
-  // Safari on iPhone in a normal tab is supported.
-  const safari = voiceSupport({
-    isSecureContext: true,
-    webkitSpeechRecognition: FakeRecognition,
-    navigator: { userAgent: IPHONE_AGENT, standalone: false },
-    matchMedia: () => ({ matches: false }),
-  });
-  assert.equal(safari.available, true);
-});
-
-test("voiceSupport explains the iOS Home Screen app even when the constructor is exposed", async () => {
-  const { voiceSupport } = await loadVoice();
-  const iphone = voiceSupport({
-    isSecureContext: true,
-    webkitSpeechRecognition: FakeRecognition,
-    navigator: { userAgent: IPHONE_AGENT, standalone: true },
-  });
-  assert.equal(iphone.available, false);
-  assert.equal(iphone.code, "ios-home-screen");
-  assert.match(iphone.reason, /Home Screen/);
-  assert.match(iphone.reason, /keyboard/);
-
-  // iPadOS reports a Mac platform; touch points and display-mode identify it.
-  const ipad = voiceSupport({
-    isSecureContext: true,
-    webkitSpeechRecognition: FakeRecognition,
-    navigator: { userAgent: "Mozilla/5.0 (Macintosh)", platform: "MacIntel", maxTouchPoints: 5 },
-    matchMedia: (query: string) => ({ matches: query === "(display-mode: standalone)" }),
-  });
-  assert.equal(ipad.code, "ios-home-screen");
-
-  // A desktop installed app is not affected.
-  const desktop = voiceSupport({
-    isSecureContext: true,
-    webkitSpeechRecognition: FakeRecognition,
-    navigator: { userAgent: "Mozilla/5.0 (Macintosh)", platform: "MacIntel", maxTouchPoints: 0 },
-    matchMedia: () => ({ matches: true }),
-  });
-  assert.equal(desktop.available, true);
-});
-
-test("voiceSupport explains an insecure page and a browser without the API", async () => {
-  const { voiceSupport } = await loadVoice();
-  const insecure = voiceSupport({ isSecureContext: false, webkitSpeechRecognition: FakeRecognition });
-  assert.equal(insecure.code, "insecure-context");
-  assert.match(insecure.reason, /https/);
-
-  const missing = voiceSupport({ isSecureContext: true });
-  assert.equal(missing.code, "no-api");
-  assert.match(missing.reason, /no built-in speech recognition/);
 });

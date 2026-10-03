@@ -1007,7 +1007,36 @@ test("a message that looks like a context header is not grouped under another th
   }
 });
 
-test("the mic is offered when the browser has speech recognition", async () => {
+/** A stand-in for the browser's SpeechRecognition that the test can drive. */
+class FakeSpeechRecognition {
+  static last: FakeSpeechRecognition | null = null;
+  lang = "";
+  continuous = false;
+  interimResults = false;
+  onresult: ((event: unknown) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onend: (() => void) | null = null;
+  started = false;
+
+  constructor() {
+    FakeSpeechRecognition.last = this;
+  }
+
+  start(): void {
+    this.started = true;
+  }
+
+  stop(): void {}
+
+  abort(): void {}
+}
+
+function finalTranscript(transcript: string): unknown {
+  const result = Object.assign([{ transcript }], { isFinal: true });
+  return { resultIndex: 0, results: [result] };
+}
+
+test("the mic is shown in the composer when the browser has speech recognition", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
   const storage = new MemoryStorage();
@@ -1017,38 +1046,15 @@ test("the mic is offered when the browser has speech recognition", async () => {
       storage,
       (path, init) => nativeFetch(server.url + path, init),
       "?view=conversations",
-      { isSecureContext: true, webkitSpeechRecognition: class {} },
+      { webkitSpeechRecognition: FakeSpeechRecognition },
     );
     assert.equal(getElement("mic").hidden, false);
-    assert.equal(getElement("mic").textContent, "Talk");
-    assert.equal(getElement("voice-note").hidden, true);
   } finally {
     await server.close();
   }
 });
 
-test("without speech recognition the mic stays visible and explains why", async () => {
-  const { TOKEN_KEY } = await loadTokenMessages();
-  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
-  const storage = new MemoryStorage();
-  storage.setItem(TOKEN_KEY, "t");
-  try {
-    const { getElement } = await bootApp(
-      storage,
-      (path, init) => nativeFetch(server.url + path, init),
-      "?view=conversations",
-    );
-    assert.equal(getElement("mic").hidden, false, "the mic is never silently hidden");
-    assert.equal(getElement("mic").textContent, "Voice unavailable");
-    assert.equal(getElement("voice-note").hidden, false);
-    assert.match(getElement("voice-note").textContent, /no built-in speech recognition/);
-    assert.match(getElement("voice-note").textContent, /keyboard/);
-  } finally {
-    await server.close();
-  }
-});
-
-test("an installed iPhone app explains that iOS blocks speech recognition there", async () => {
+test("an installed iPhone app with speech recognition still shows the mic", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
   const storage = new MemoryStorage();
@@ -1059,13 +1065,64 @@ test("an installed iPhone app explains that iOS blocks speech recognition there"
       (path, init) => nativeFetch(server.url + path, init),
       "?view=conversations",
       {
-        isSecureContext: true,
-        webkitSpeechRecognition: class {},
+        webkitSpeechRecognition: FakeSpeechRecognition,
         navigator: { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", standalone: true },
       },
     );
-    assert.equal(getElement("mic").textContent, "Voice unavailable");
-    assert.match(getElement("voice-note").textContent, /Home Screen/);
+    assert.equal(getElement("mic").hidden, false, "the working voice input is not gated away on iOS");
+  } finally {
+    await server.close();
+  }
+});
+
+test("without speech recognition the mic stays hidden and typing still works", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { getElement } = await bootApp(
+      storage,
+      (path, init) => nativeFetch(server.url + path, init),
+      "?view=conversations",
+    );
+    assert.equal(getElement("mic").hidden, true);
+    assert.equal(getElement("conversation-composer").hidden, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("holding the mic in an open thread dictates into its composer and sends with the thread", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const sent: SentNote[] = [];
+  try {
+    const { getElement, created } = await bootApp(
+      storage,
+      recordingFetch(server.url, sent),
+      "?view=conversations",
+      { webkitSpeechRecognition: FakeSpeechRecognition },
+    );
+
+    await waitFor(() => findCard(created, "session-card thread-card", "note-0") !== undefined);
+    findCard(created, "session-card thread-card", "note-0")!.dispatch("click");
+
+    const mic = getElement("mic");
+    mic.dispatch("pointerdown", { preventDefault: () => {}, pointerId: 1 });
+    const recognition = FakeSpeechRecognition.last;
+    assert.ok(recognition?.started, "holding the mic starts recognition");
+    recognition!.onresult?.(finalTranscript("check the west gate"));
+    mic.dispatch("pointerup");
+    assert.equal(getElement("note-text").value, "check the west gate");
+
+    getElement("note-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => storedNotes(server.home).length === 1);
+    await sendSettled(getElement);
+    assert.deepEqual(sent[0]?.context, { kind: "thread", id: "note-0", label: "status please" });
+    assert.equal(sent[0]?.text, "check the west gate");
   } finally {
     await server.close();
   }

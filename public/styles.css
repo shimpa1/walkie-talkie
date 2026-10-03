@@ -304,15 +304,10 @@ button.ghost {
 }
 
 button.mic {
-  touch-action: manipulation;
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
-}
-
-button.mic.is-unavailable {
-  border-style: dashed;
-  opacity: 0.75;
 }
 
 button.mic.is-listening {
@@ -560,14 +555,6 @@ button.small {
 .composer .hint,
 .composer textarea {
   margin: 0;
-}
-
-.voice-note[hidden] {
-  display: none;
-}
-
-.voice-note {
-  color: var(--warn);
 }
 
 .thread-context {

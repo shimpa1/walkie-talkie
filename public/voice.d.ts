@@ -51,21 +51,3 @@ export interface VoiceInput {
 export function speechRecognitionCtor(scope?: VoiceScope | null): unknown;
 
 export function createVoiceInput(options: VoiceInputOptions): VoiceInput;
-
-export type VoiceSupportCode = "available" | "ios-home-screen" | "insecure-context" | "no-api";
-
-export interface VoiceSupport {
-  available: boolean;
-  code: VoiceSupportCode;
-  reason: string;
-}
-
-export interface VoiceSupportScope extends VoiceScope {
-  isSecureContext?: boolean;
-  navigator?: { userAgent?: string; platform?: string; maxTouchPoints?: number; standalone?: boolean };
-  matchMedia?: (query: string) => { matches: boolean };
-}
-
-export const UNAVAILABLE_REASONS: Record<Exclude<VoiceSupportCode, "available">, string>;
-
-export function voiceSupport(scope?: VoiceSupportScope | null): VoiceSupport;

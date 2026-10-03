@@ -70,10 +70,11 @@
                 <textarea id="note-text" name="text" rows="3" placeholder="What should the fleet know or do next?" required></textarea>
                 <div class="row">
                   <button id="send" type="submit">Send to firstmate</button>
-                  <button id="mic" class="ghost mic" type="button" aria-pressed="false">Talk</button>
+                  <button id="mic" class="ghost mic" type="button" aria-pressed="false" hidden>
+                    Hold to talk
+                  </button>
                   <span id="compose-status" class="hint" role="status"></span>
                 </div>
-                <p id="voice-note" class="hint voice-note" hidden></p>
                 <p id="compose-hint" class="hint compose-hint">
                   Starts a new conversation: this queues a note into firstmate's
                   existing intake. It makes no decision and changes no project.
