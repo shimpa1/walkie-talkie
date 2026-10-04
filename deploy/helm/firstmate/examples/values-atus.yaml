@@ -77,14 +77,15 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    # Commit d9702fc: main at the merge of PR #28, accurate firstmate state
-    # (GET /api/firstmate, queued-note age and firstmate busy/idle/blocked/not
-    # running, the Status-tab firstmate card). Deployed 2026-10-04. The previous
-    # running image was e4dc8b5e7db3, built from commit e4dc8b5 (PR #26).
+    # Commit 36ac8b8: main at the merge of PR #30, a Status screen that stays
+    # current on the installed phone app (network-first service worker, refresh
+    # on foreground/pageshow, no polling while hidden, reload into a new deploy
+    # on resume). Deployed 2026-10-04. The previous running image was
+    # d9702fcbf9d9, built from commit d9702fc (PR #28).
     # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:d9702fcbf9d9 --push .
-    tag: "d9702fcbf9d9"
+    #     -t shimpa/walkie-talkie:36ac8b81ad5b --push .
+    tag: "36ac8b81ad5b"
     pullPolicy: IfNotPresent
   # The Conversations view reads the pod's own herdr session through the herdr
   # CLI; the walkie-talkie image does not bundle it, so the chart installs it
