@@ -82,7 +82,6 @@ const SIGNIN_MESSAGES = {
   expired: "That sign-in expired or was started in another window. Try again.",
   denied: "GitHub sign-in was cancelled.",
   not_invited: "This GitHub account is not invited. Ask the admin to invite you.",
-  suspended: "This account is suspended. Ask the admin.",
   busy: "Too many sign-in attempts right now. Wait a minute and try again.",
   signed_out: "You are signed out.",
 };
@@ -107,31 +106,32 @@ function rememberedMode() {
 
 /**
  * Ask the service which mode it runs in. A standalone service has no
- * /auth/session (404), so anything but a gateway answer means standalone. When
- * the probe cannot reach the service at all, the last answer stands, so an
- * offline launch behind the gateway does not fall back to the token form.
+ * /auth/session, so only a 404 means standalone. When the probe gets no usable
+ * answer (unreachable, a 5xx during a rollout, an unreadable body), the last
+ * answer stands, so a launch behind the gateway does not fall back to the
+ * token form.
  */
 async function probeMode() {
+  const unknown = () =>
+    rememberedMode() === "gateway" ? { signedIn: true, user: null, legacyBearer: false } : null;
   let response;
   try {
     response = await fetch("/auth/session", { headers: { accept: "application/json" } });
   } catch {
-    return rememberedMode() === "gateway" ? { signedIn: true, user: null, legacyBearer: false } : null;
+    return unknown();
   }
-  if (!response.ok) {
+  if (response.status === 404) {
     rememberMode("standalone");
     return null;
   }
+  if (!response.ok) return unknown();
   let payload = null;
   try {
     payload = await response.json();
   } catch {
     payload = null;
   }
-  if (!payload || payload.mode !== "gateway") {
-    rememberMode("standalone");
-    return null;
-  }
+  if (!payload || payload.mode !== "gateway") return unknown();
   rememberMode("gateway");
   return {
     signedIn: payload.signed_in === true,

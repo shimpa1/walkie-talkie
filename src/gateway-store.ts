@@ -221,13 +221,6 @@ export class GatewayStore {
     this.db.prepare("UPDATE users SET login = ?, last_login_at = ? WHERE id = ?").run(login, now, userId);
   }
 
-  setUserState(userId: string, state: UserState): void {
-    this.transaction(() => {
-      this.db.prepare("UPDATE users SET state = ? WHERE id = ?").run(state, userId);
-      if (state !== "active") this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
-    });
-  }
-
   // ---- sessions ----------------------------------------------------------
 
   /** Create a session and return its raw id; only the hash is stored. */
@@ -278,13 +271,6 @@ export class GatewayStore {
   deleteSession(id: string): boolean {
     const result = this.db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(sha256Hex(id));
     return asNumber(result.changes) > 0;
-  }
-
-  countSessions(userId: string): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?").get(userId) as
-      | { n: number }
-      | undefined;
-    return row === undefined ? 0 : asNumber(row.n);
   }
 
   // ---- login attempts ----------------------------------------------------
@@ -341,19 +327,6 @@ export class GatewayStore {
     this.db
       .prepare("INSERT INTO audit (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)")
       .run(entry.at, entry.actor, entry.action, entry.subject, entry.detail === null ? null : JSON.stringify(entry.detail));
-  }
-
-  recentAudit(limit = 100): AuditEntry[] {
-    const rows = this.db
-      .prepare("SELECT at, actor, action, subject, detail FROM audit ORDER BY id DESC LIMIT ?")
-      .all(limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      at: asNumber(row.at),
-      actor: row.actor === null ? null : String(row.actor),
-      action: String(row.action),
-      subject: row.subject === null ? null : String(row.subject),
-      detail: row.detail === null ? null : (JSON.parse(String(row.detail)) as AuditEntry["detail"]),
-    }));
   }
 }
 

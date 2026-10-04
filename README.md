@@ -646,7 +646,7 @@ Gateway routes, besides the forwarded API and the web app:
 | `GET` | `/healthz` | the gateway's own liveness, open; no firstmate data |
 | `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate"} \| null, "legacy_bearer"}` |
 | `GET` | `/auth/github/start` | begins GitHub sign-in (rate-limited) |
-| `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|suspended\|busy>` |
+| `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|busy>` |
 | `POST` | `/auth/logout` | ends this session |
 
 Without a session, a forwarded API call answers `401 {"error": "signed_out"}`.

@@ -1748,3 +1748,20 @@ test("with the legacy bridge on, an unsigned device keeps working on its token a
     await server.close();
   }
 });
+
+test("a 503 from the probe on a device that remembered the gateway keeps it on the gateway", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem("walkie-talkie.mode", "gateway");
+  const gateway = gatewayDouble(server, { signedIn: true });
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> =>
+    path === "/auth/session" ? new Response("upstream unavailable", { status: 503 }) : gateway.fetchImpl(path, init);
+  try {
+    const { getElement } = await bootApp(storage, fetchImpl);
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/status"));
+    assert.equal(storage.getItem("walkie-talkie.mode"), "gateway", "the remembered mode is not overwritten");
+    assert.equal(getElement("tabs").hidden, false, "the app opens, not the token form");
+  } finally {
+    await server.close();
+  }
+});

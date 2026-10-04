@@ -49,7 +49,7 @@ interface Principal {
 }
 
 /** Why a sign-in ended without a session; the app shows a message for each. */
-type SignInOutcome = "failed" | "expired" | "denied" | "not_invited" | "suspended" | "busy";
+type SignInOutcome = "failed" | "expired" | "denied" | "not_invited" | "busy";
 
 export const SESSION_SCHEMA = "walkie-talkie-session.v1";
 
@@ -244,10 +244,6 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
       store.audit({ at, actor: null, action: "signin.refused", subject: null, detail: { github_id: identity.id, reason: "not_invited" } });
       log(`sign-in refused: github ${identity.id} is not invited`);
       return signInRedirect(res, "not_invited", cleared);
-    }
-    if (user.state !== "active") {
-      store.audit({ at, actor: user.id, action: "signin.refused", subject: user.id, detail: { reason: user.state } });
-      return signInRedirect(res, "suspended", cleared);
     }
 
     store.recordLogin(user.id, identity.login, at);

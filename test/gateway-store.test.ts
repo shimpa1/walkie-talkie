@@ -15,6 +15,7 @@ import {
   sha256Hex,
 } from "../src/gateway-store.js";
 import { RateLimiter } from "../src/rate-limit.js";
+import { readAudit } from "./gateway-helpers.js";
 
 const T0 = Date.parse("2026-10-04T12:00:00Z");
 
@@ -67,7 +68,7 @@ test("a session slides its idle window and ends at the absolute limit", () => {
     assert.ok(store.touchSession(session, at), "regular use keeps the session");
   }
   assert.equal(store.touchSession(session, T0 + SESSION_ABSOLUTE_MS), null, "the absolute limit ends it");
-  assert.equal(store.countSessions(user.id), 0, "an expired session is deleted");
+  assert.equal(store.touchSession(session, T0 + 1000), null, "an expired session stays gone");
   store.close();
 });
 
@@ -76,19 +77,6 @@ test("an idle session expires", () => {
   const user = store.createUser(1001, "captain", T0);
   const session = store.createSession(user.id, "Mac", T0);
   assert.equal(store.touchSession(session, T0 + SESSION_IDLE_MS), null);
-  store.close();
-});
-
-test("suspending a user revokes every session; resuming does not bring them back", () => {
-  const store = GatewayStore.open(sqlite, ":memory:");
-  const user = store.createUser(1001, "captain", T0);
-  const one = store.createSession(user.id, "Mac", T0);
-  const two = store.createSession(user.id, "iPhone", T0);
-  store.setUserState(user.id, "suspended");
-  assert.equal(store.countSessions(user.id), 0);
-  store.setUserState(user.id, "active");
-  assert.equal(store.touchSession(one, T0), null);
-  assert.equal(store.touchSession(two, T0), null);
   store.close();
 });
 
@@ -120,15 +108,16 @@ test("concurrent unfinished sign-ins are capped", () => {
   store.close();
 });
 
-test("the audit log keeps actions in order", () => {
-  const store = GatewayStore.open(sqlite, ":memory:");
+test("the audit log keeps actions in order", async () => {
+  const path = tempDbPath();
+  const store = GatewayStore.open(sqlite, path);
   store.audit({ at: T0, actor: null, action: "first", subject: null, detail: null });
   store.audit({ at: T0 + 1, actor: "u_x", action: "second", subject: "u_x", detail: { reason: "test", n: 1, ok: true } });
-  assert.deepEqual(store.recentAudit(), [
+  store.close();
+  assert.deepEqual(await readAudit(path), [
     { at: T0 + 1, actor: "u_x", action: "second", subject: "u_x", detail: { reason: "test", n: 1, ok: true } },
     { at: T0, actor: null, action: "first", subject: null, detail: null },
   ]);
-  store.close();
 });
 
 test("cookies are parsed defensively and always set as __Host- cookies", () => {

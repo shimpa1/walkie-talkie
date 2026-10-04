@@ -11,6 +11,7 @@ import {
   CLIENT_ID,
   CLIENT_SECRET,
   ORIGIN,
+  readAudit,
   sessionHeaders,
   setCookie,
   signIn,
@@ -162,7 +163,7 @@ test("a declared admin signs in, gets a __Host- session cookie, and is reported 
 
     const user = w.gateway.store.userByGithubId(ADMIN.id);
     assert.equal(user?.login, "captain");
-    const actions = w.gateway.store.recentAudit().map((entry) => entry.action);
+    const actions = (await readAudit(w.gateway.config.gateway?.dbPath ?? "")).map((entry) => entry.action);
     assert.deepEqual(actions.sort(), ["signin", "user.created"]);
   } finally {
     await w.close();
@@ -206,7 +207,7 @@ test("an account nobody declared is refused at the door and nothing is created f
     assert.equal(result.location, "/?signin=not_invited");
     assert.equal(result.session, null);
     assert.equal(w.gateway.store.userByGithubId(STRANGER.id), null);
-    const [entry] = w.gateway.store.recentAudit();
+    const [entry] = await readAudit(w.gateway.config.gateway?.dbPath ?? "");
     assert.equal(entry?.action, "signin.refused");
     assert.deepEqual(entry?.detail, { github_id: STRANGER.id, reason: "not_invited" });
   } finally {
@@ -308,25 +309,6 @@ test("a profile read GitHub refuses fails the sign-in", async () => {
     const result = await signIn(w.gateway, w.github, ADMIN);
     assert.equal(result.location, "/?signin=failed");
     assert.equal(result.session, null);
-  } finally {
-    await w.close();
-  }
-});
-
-test("a suspended user is refused and loses every session at once", async () => {
-  const w = await world();
-  try {
-    const first = await signIn(w.gateway, w.github, CREW);
-    assert.ok(first.session);
-    const user = w.gateway.store.userByGithubId(CREW.id);
-    assert.ok(user);
-    w.gateway.store.setUserState(user.id, "suspended");
-
-    const api = await fetch(`${w.gateway.url}/api/status`, { headers: sessionHeaders(first.session) });
-    assert.equal(api.status, 401);
-    const again = await signIn(w.gateway, w.github, CREW);
-    assert.equal(again.location, "/?signin=suspended");
-    assert.equal(again.session, null);
   } finally {
     await w.close();
   }
@@ -600,7 +582,7 @@ test("sign-out needs the app's origin, ends the session, and clears the cookie",
     assert.equal(out.status, 200);
     assert.match(setCookie(out, SESSION_COOKIE) ?? "", /Max-Age=0/);
     assert.equal((await fetch(`${w.gateway.url}/api/status`, { headers: sessionHeaders(session) })).status, 401);
-    assert.ok(w.gateway.store.recentAudit().some((entry) => entry.action === "signout"));
+    assert.ok((await readAudit(w.gateway.config.gateway?.dbPath ?? "")).some((entry) => entry.action === "signout"));
   } finally {
     await w.close();
   }
@@ -682,7 +664,7 @@ test("no secret ever reaches a log line, the audit log, or the database file", a
       if (exchange.codeVerifier) secrets.push(exchange.codeVerifier);
     }
     const logs = w.gateway.logs.join("\n");
-    const audit = JSON.stringify(w.gateway.store.recentAudit());
+    const audit = JSON.stringify(await readAudit(w.gateway.config.gateway?.dbPath ?? ""));
     w.gateway.closeStore();
     const dbBytes = readFileSync(w.gateway.config.gateway?.dbPath ?? "").toString("latin1");
     for (const secret of secrets) {

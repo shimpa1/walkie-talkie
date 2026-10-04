@@ -8,7 +8,7 @@ import type { AppConfig } from "../src/config.js";
 import { LOGIN_COOKIE, SESSION_COOKIE } from "../src/cookies.js";
 import type { GatewayConfig, StaticTenant } from "../src/gateway-config.js";
 import { createGatewayHandler, defaultSignInLimits } from "../src/gateway.js";
-import { GatewayStore } from "../src/gateway-store.js";
+import { GatewayStore, type AuditEntry } from "../src/gateway-store.js";
 import { GithubOAuth, type GithubIdentity } from "../src/github-oauth.js";
 import type { RateLimiter } from "../src/rate-limit.js";
 import { PUBLIC_DIR } from "./helpers.js";
@@ -16,6 +16,24 @@ import { PUBLIC_DIR } from "./helpers.js";
 export const ORIGIN = "https://walkie.example";
 export const CLIENT_ID = "Iv1.testclientid";
 export const CLIENT_SECRET = "canary-client-secret-5f2b9c";
+
+/** Read the audit table straight from the database file, newest first. */
+export async function readAudit(dbPath: string): Promise<AuditEntry[]> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(dbPath);
+  try {
+    const rows = db.prepare("SELECT at, actor, action, subject, detail FROM audit ORDER BY id DESC").all();
+    return rows.map((row) => ({
+      at: Number(row.at),
+      actor: row.actor === null ? null : String(row.actor),
+      action: String(row.action),
+      subject: row.subject === null ? null : String(row.subject),
+      detail: row.detail === null ? null : (JSON.parse(String(row.detail)) as AuditEntry["detail"]),
+    }));
+  } finally {
+    db.close();
+  }
+}
 
 async function listen(server: Server): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
