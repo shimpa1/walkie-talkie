@@ -46,6 +46,7 @@ interface FakeElement {
   dataset: Record<string, string>;
   classList: { toggle: () => void; add: () => void; remove: () => void };
   setAttribute: () => void;
+  children: FakeElement[];
   appendChild: (child: unknown) => unknown;
   addEventListener: (type: string, handler: (event: unknown) => void) => void;
   dispatch: (type: string, event?: unknown) => void;
@@ -53,7 +54,7 @@ interface FakeElement {
 
 function makeElement(id: string): FakeElement {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
-  return {
+  const element: FakeElement = {
     id,
     className: "",
     textContent: "",
@@ -63,7 +64,13 @@ function makeElement(id: string): FakeElement {
     dataset: {},
     classList: { toggle: () => {}, add: () => {}, remove: () => {} },
     setAttribute: () => {},
-    appendChild: (child) => child,
+    children: [],
+    appendChild: (child) => {
+      if (child !== null && typeof child === "object" && "className" in child) {
+        element.children.push(child as FakeElement);
+      }
+      return child;
+    },
     addEventListener: (type, handler) => {
       const handlers = listeners.get(type) ?? [];
       handlers.push(handler);
@@ -73,6 +80,20 @@ function makeElement(id: string): FakeElement {
       for (const handler of listeners.get(type) ?? []) handler(event ?? {});
     },
   };
+  return element;
+}
+
+/** Every badge label under a container, so a test can scope which card it checks. */
+function badgeTexts(container: FakeElement): string[] {
+  const labels: string[] = [];
+  const walk = (node: FakeElement): void => {
+    if (typeof node.className === "string" && node.className.split(" ").includes("badge")) {
+      labels.push(node.textContent);
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(container);
+  return labels;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -96,6 +117,7 @@ interface AppHarness {
   tokenInput: FakeElement;
   settingsStatus: FakeElement;
   created: FakeElement[];
+  statusPoll: () => void;
 }
 
 let bootCount = 0;
@@ -107,6 +129,23 @@ async function bootApp(
   windowExtras: Record<string, unknown> = {},
 ): Promise<AppHarness> {
   bootCount += 1;
+  const boot = bootCount;
+  // Every booted app reads `document` from globalThis, so an earlier test's
+  // app whose response lands late would render into this test's document
+  // (its cards land in `created` with that app's own click handlers). Once a
+  // newer app boots, an older app's responses never settle.
+  const live = <T>(value: T): Promise<T> =>
+    boot === bootCount ? Promise.resolve(value) : new Promise<T>(() => {});
+  const isolatedFetch = async (path: string, init?: RequestInit): Promise<Response> => {
+    const response = await fetchImpl(path, init);
+    const text = await live(await response.text());
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: () => live(text),
+      json: () => live(text).then((raw) => JSON.parse(raw) as unknown),
+    } as Response;
+  };
   const elements = new Map<string, FakeElement>();
   const created: FakeElement[] = [];
   const getElement = (id: string): FakeElement => {
@@ -123,6 +162,12 @@ async function bootApp(
     return tab;
   });
   const views = ["status", "conversations", "settings"].map((view) => makeElement(`view-${view}`));
+  const intervals: Array<{ fn: () => void; delayMs: number }> = [];
+  const statusPoll = (): void => {
+    const entry = intervals.find((interval) => interval.delayMs === 15000);
+    assert.ok(entry, "the status view registers a poll interval");
+    entry.fn();
+  };
 
   const globals: Array<[string, unknown]> = [
     ["localStorage", storage],
@@ -145,10 +190,14 @@ async function bootApp(
     ],
     ["window", { location: { origin: "http://localhost", search }, ...windowExtras }],
     ["navigator", {}],
-    ["fetch", fetchImpl],
+    ["fetch", isolatedFetch],
     // The conversation view's polling is exercised through its Refresh button,
-    // so interval timers are inert here to keep the test deterministic.
-    ["setInterval", () => 0],
+    // so interval timers are captured but never fire on their own here to keep
+    // the test deterministic; a test drives one explicitly when it needs a tick.
+    ["setInterval", (fn: () => void, delayMs?: number) => {
+      intervals.push({ fn, delayMs: Number(delayMs) || 0 });
+      return intervals.length;
+    }],
     ["clearInterval", () => {}],
   ];
   for (const [name, value] of globals) {
@@ -162,6 +211,7 @@ async function bootApp(
     tokenInput: getElement("token-input"),
     settingsStatus: getElement("settings-status"),
     created,
+    statusPoll,
   };
 }
 
@@ -559,8 +609,16 @@ test("the Conversations tab lists instruction threads with their delivery state 
     await waitFor(() =>
       created.some((element) => element.className === "session-card thread-card" && element.dataset.id === "note-1"),
     );
+    // The queued note says how long it has waited and what firstmate is doing
+    // (the fixture's primary pane is working).
+    await waitFor(() =>
+      created.some((element) => element.className === "sub" && element.textContent.includes("firstmate is working")),
+    );
     const subs = created.filter((element) => element.className === "sub").map((element) => element.textContent);
-    assert.ok(subs.some((text) => text.includes("Queued; waiting for firstmate.")));
+    assert.ok(
+      subs.some((text) => /Queued \d+ h(?: \d+ min)?; firstmate is working and has not picked it up yet\./.test(text)),
+      `queued line carries its age and firstmate's activity: ${subs.join(" | ")}`,
+    );
     assert.ok(subs.some((text) => text.includes("Delivered; firstmate replied.")));
     // A thread row carries its own timestamp.
     assert.ok(
@@ -641,7 +699,7 @@ test("a blocked pane with nothing in flight shows idle, not blocked", async () =
   const storage = new MemoryStorage();
   storage.setItem(TOKEN_KEY, "t");
   try {
-    const { created } = await bootApp(
+    const { created, getElement } = await bootApp(
       storage,
       (path, init) => nativeFetch(server.url + path, init),
       "?view=conversations",
@@ -650,11 +708,9 @@ test("a blocked pane with nothing in flight shows idle, not blocked", async () =
     await waitFor(() =>
       created.some((element) => element.className === "session-card" && element.dataset.id === "w1:p1"),
     );
-    const labels = created
-      .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
-      .map((element) => element.textContent);
+    const labels = badgeTexts(getElement("sessions-body"));
     assert.ok(labels.includes("idle"), "an idle fleet shows idle");
-    assert.ok(!labels.includes("blocked"), "herdr's raw pane status never drives the badge");
+    assert.ok(!labels.includes("blocked"), "herdr's raw pane status never drives the session badge");
   } finally {
     await server.close();
   }
@@ -1158,6 +1214,254 @@ test("holding the mic in an open thread dictates into its composer and sends wit
     await sendSettled(getElement);
     assert.deepEqual(sent[0]?.context, { kind: "thread", id: "note-0", label: "status please" });
     assert.equal(sent[0]?.text, "check the west gate");
+  } finally {
+    await server.close();
+  }
+});
+
+test("the health banner survives a status read that answers after it", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  // Live, /api/health answers in ~160 ms and /api/status in ~1.7 s; hold the
+  // status read until the health response has been delivered.
+  let healthDelivered: () => void = () => {};
+  const healthDone = new Promise<void>((resolve) => {
+    healthDelivered = resolve;
+  });
+  let statusDelivered = false;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/status") {
+      await healthDone;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await nativeFetch(server.url + path, init);
+      statusDelivered = true;
+      return response;
+    }
+    const response = await nativeFetch(server.url + path, init);
+    if (path === "/api/health") setTimeout(healthDelivered, 0);
+    return response;
+  };
+  try {
+    const { getElement } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => statusDelivered);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(banner.hidden, false, "the status read must not erase the health banner");
+    assert.equal(banner.textContent, "firstmate reachable — can receive: yes");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a null health payload reads as reachable with unknown readiness, not an error", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const nullHealth = (path: string): Response | null =>
+    path === "/api/health"
+      ? new Response("null", { status: 200, headers: { "content-type": "application/json" } })
+      : null;
+  try {
+    const { getElement } = await bootApp(storage, recordingFetch(server.url, [], nullHealth));
+    const banner = getElement("connection-banner");
+    await waitFor(() => banner.textContent.includes("can receive"));
+    assert.equal(banner.textContent, "firstmate reachable — can receive: unknown");
+    assert.equal(banner.hidden, false, "a null health payload is shown, not hidden");
+    assert.ok(!banner.className.includes("bad"), `a null health payload is not an error banner: ${banner.className}`);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the status poll replaces a transient health failure banner once /api/health answers again", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  let healthCalls = 0;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/health") {
+      healthCalls += 1;
+      if (healthCalls === 1) throw new Error("boom");
+    }
+    return nativeFetch(server.url + path, init);
+  };
+  try {
+    const { getElement, statusPoll } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => banner.textContent.includes("not reachable"));
+    statusPoll();
+    await waitFor(() => banner.textContent === "firstmate reachable — can receive: yes");
+    assert.equal(banner.hidden, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a health answer after a failed status read leaves the status error visible", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  let statusFailed: () => void = () => {};
+  const statusDone = new Promise<void>((resolve) => {
+    statusFailed = resolve;
+  });
+  let healthDelivered = 0;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/status") {
+      setTimeout(statusFailed, 0);
+      return new Response(JSON.stringify({ error: "snapshot failed" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (path === "/api/health") {
+      await statusDone;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await nativeFetch(server.url + path, init);
+      healthDelivered += 1;
+      return response;
+    }
+    return nativeFetch(server.url + path, init);
+  };
+  try {
+    const { getElement, statusPoll } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => healthDelivered === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.match(banner.textContent, /^Could not load fleet status/);
+    statusPoll();
+    await waitFor(() => healthDelivered === 2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.match(banner.textContent, /^Could not load fleet status/);
+    assert.ok(banner.className.includes("bad"), `the status error stays an error banner: ${banner.className}`);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a failed firstmate read shows a could-not-read card, not a loading one", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const failing = (path: string): Response | null =>
+    path === "/api/firstmate"
+      ? new Response(JSON.stringify({ error: "boom" }), { status: 500, headers: { "content-type": "application/json" } })
+      : null;
+  try {
+    const { created, getElement } = await bootApp(storage, recordingFetch(server.url, [], failing));
+    await waitFor(() => created.some((element) => element.textContent === "Could not read firstmate's state"));
+    const body = getElement("firstmate-body");
+    assert.ok(
+      !body.children.some((child) => child.textContent === "Reading firstmate's state…"),
+      "a failed read is not shown as loading",
+    );
+    assert.deepEqual(badgeTexts(body), ["unknown"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Status tab shows firstmate's own state: busy, receiving, and what is queued", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { created } = await bootApp(storage, (path, init) => nativeFetch(server.url + path, init));
+    await waitFor(() =>
+      created.some((element) => element.className === "sub" && element.textContent.startsWith("Receiving notes")),
+    );
+    const sub = created.find((element) => element.className === "sub" && element.textContent.startsWith("Receiving notes"));
+    assert.match(sub!.textContent, /^Receiving notes · 1 queued, oldest \d+ h/);
+    const badges = created
+      .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
+      .map((element) => element.textContent);
+    assert.ok(badges.includes("working"), `firstmate's primary is working: ${badges.join(", ")}`);
+  } finally {
+    await server.close();
+  }
+});
+
+/** Serve one canned /api/firstmate live state and pass everything else through. */
+function firstmateLiveOverride(live: Record<string, unknown>): (path: string) => Response | null {
+  return (path) =>
+    path === "/api/firstmate"
+      ? new Response(JSON.stringify(live), { status: 200, headers: { "content-type": "application/json" } })
+      : null;
+}
+
+test("a blocked firstmate is shown blocked, and its queued note says it waits on a prompt", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const override = firstmateLiveOverride({
+    schema: "walkie-talkie-firstmate.v1",
+    observed_at: "2026-10-04T00:00:00Z",
+    activity: "blocked",
+    primary: { id: "w1:p1", agent: "opencode", status: "blocked" },
+    can_receive: true,
+    watcher_beacon_age_seconds: 1,
+    queue: { queued: 1, oldest_queued_at: "2026-09-28T11:40:00Z" },
+  });
+  try {
+    const { created, getElement } = await bootApp(
+      storage,
+      recordingFetch(server.url, [], override),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className === "sub" &&
+          element.textContent.includes("firstmate is blocked waiting on a prompt"),
+      ),
+    );
+    const badges = badgeTexts(getElement("firstmate-body"));
+    assert.ok(badges.includes("blocked"), `a blocked firstmate shows blocked: ${badges.join(", ")}`);
+    assert.ok(!badges.includes("idle"), "a blocked firstmate is never shown as idle");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an unrecognized firstmate activity is shown unknown, never idle", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const override = firstmateLiveOverride({
+    schema: "walkie-talkie-firstmate.v1",
+    observed_at: "2026-10-04T00:00:00Z",
+    activity: "unknown",
+    primary: { id: "w1:p1", agent: "opencode", status: "summoned" },
+    can_receive: true,
+    watcher_beacon_age_seconds: 1,
+    queue: { queued: 1, oldest_queued_at: "2026-09-28T11:40:00Z" },
+  });
+  try {
+    const { created, getElement } = await bootApp(
+      storage,
+      recordingFetch(server.url, [], override),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className === "sub" && element.textContent.includes("firstmate's state is unknown"),
+      ),
+    );
+    const badges = badgeTexts(getElement("firstmate-body"));
+    assert.ok(badges.includes("unknown"), `an unrecognized activity shows unknown: ${badges.join(", ")}`);
+    assert.ok(!badges.includes("idle"), "an unrecognized activity is never shown as idle");
   } finally {
     await server.close();
   }
