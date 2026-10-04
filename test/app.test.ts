@@ -118,6 +118,12 @@ interface AppHarness {
   settingsStatus: FakeElement;
   created: FakeElement[];
   statusPoll: () => void;
+  /** How many uncleared intervals of this delay are registered. */
+  activeIntervals: (delayMs: number) => number;
+  /** Background or foreground the page, firing visibilitychange as a browser does. */
+  setVisibility: (visibility: "visible" | "hidden") => void;
+  /** Fire window pageshow, persisted when the page comes back from the back-forward cache. */
+  pageshow: (persisted: boolean) => void;
 }
 
 let bootCount = 0;
@@ -162,18 +168,26 @@ async function bootApp(
     return tab;
   });
   const views = ["status", "conversations", "settings"].map((view) => makeElement(`view-${view}`));
-  const intervals: Array<{ fn: () => void; delayMs: number }> = [];
+  const intervals: Array<{ fn: () => void; delayMs: number; cleared: boolean }> = [];
+  const activeIntervals = (delayMs: number): number =>
+    intervals.filter((interval) => interval.delayMs === delayMs && !interval.cleared).length;
   const statusPoll = (): void => {
-    const entry = intervals.find((interval) => interval.delayMs === 15000);
+    const entry = intervals.findLast((interval) => interval.delayMs === 10000 && !interval.cleared);
     assert.ok(entry, "the status view registers a poll interval");
     entry.fn();
+  };
+  const documentListeners = makeElement("document");
+  const windowListeners = makeElement("window");
+  const fakeDocument = {
+    visibilityState: "visible",
+    addEventListener: documentListeners.addEventListener,
   };
 
   const globals: Array<[string, unknown]> = [
     ["localStorage", storage],
     [
       "document",
-      {
+      Object.assign(fakeDocument, {
         getElementById: getElement,
         createElement: (tag: string) => {
           const element = makeElement(tag);
@@ -186,19 +200,29 @@ async function bootApp(
           if (selector === ".view") return views;
           return [];
         },
+      }),
+    ],
+    [
+      "window",
+      {
+        location: { origin: "http://localhost", search },
+        addEventListener: windowListeners.addEventListener,
+        ...windowExtras,
       },
     ],
-    ["window", { location: { origin: "http://localhost", search }, ...windowExtras }],
     ["navigator", {}],
     ["fetch", isolatedFetch],
     // The conversation view's polling is exercised through its Refresh button,
     // so interval timers are captured but never fire on their own here to keep
     // the test deterministic; a test drives one explicitly when it needs a tick.
     ["setInterval", (fn: () => void, delayMs?: number) => {
-      intervals.push({ fn, delayMs: Number(delayMs) || 0 });
+      intervals.push({ fn, delayMs: Number(delayMs) || 0, cleared: false });
       return intervals.length;
     }],
-    ["clearInterval", () => {}],
+    ["clearInterval", (id: number) => {
+      const entry = intervals[id - 1];
+      if (entry) entry.cleared = true;
+    }],
   ];
   for (const [name, value] of globals) {
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
@@ -212,6 +236,12 @@ async function bootApp(
     settingsStatus: getElement("settings-status"),
     created,
     statusPoll,
+    activeIntervals,
+    setVisibility: (visibility) => {
+      fakeDocument.visibilityState = visibility;
+      documentListeners.dispatch("visibilitychange");
+    },
+    pageshow: (persisted) => windowListeners.dispatch("pageshow", { persisted }),
   };
 }
 
@@ -1362,6 +1392,111 @@ test("a failed firstmate read shows a could-not-read card, not a loading one", a
       "a failed read is not shown as loading",
     );
     assert.deepEqual(badgeTexts(body), ["unknown"]);
+  } finally {
+    await server.close();
+  }
+});
+
+/**
+ * Serve /api/status from a snapshot whose observed time the test moves, and
+ * count each read, so a fresh read is told apart from what was on screen.
+ */
+function fleetStatusDouble(server: { url: string }): {
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>;
+  reads: Record<string, number>;
+  setGenerated: (value: string) => void;
+} {
+  let generated = "2026-10-04T10:00:00Z";
+  const reads: Record<string, number> = {};
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    const route = path.split("?")[0] ?? path;
+    reads[route] = (reads[route] ?? 0) + 1;
+    if (route === "/api/status") {
+      return new Response(JSON.stringify({ generated, in_flight: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return nativeFetch(server.url + path, init);
+  };
+  return { fetchImpl, reads, setGenerated: (value) => (generated = value) };
+}
+
+function showsObserved(getElement: (id: string) => FakeElement, generated: string): boolean {
+  return getElement("status-body").children.some((child) => child.textContent === `Observed ${generated}`);
+}
+
+test("returning the app to the foreground re-reads the Status screen at once, and nothing polls while it is hidden", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const { fetchImpl, reads, setGenerated } = fleetStatusDouble(server);
+  try {
+    const { getElement, activeIntervals, setVisibility } = await bootApp(storage, fetchImpl);
+    await waitFor(() => showsObserved(getElement, "2026-10-04T10:00:00Z"));
+    assert.equal(activeIntervals(10000), 1, "the Status screen polls while it is on screen");
+
+    setVisibility("hidden");
+    assert.equal(activeIntervals(10000), 0, "nothing polls while the app is in the background");
+
+    setGenerated("2026-10-04T10:05:00Z");
+    const firstmateReads = reads["/api/firstmate"] ?? 0;
+    const healthReads = reads["/api/health"] ?? 0;
+    // No poll tick fires here: coming back to the foreground alone refreshes it.
+    setVisibility("visible");
+    await waitFor(() => showsObserved(getElement, "2026-10-04T10:05:00Z"));
+    await waitFor(() => (reads["/api/firstmate"] ?? 0) > firstmateReads && (reads["/api/health"] ?? 0) > healthReads);
+    assert.equal(activeIntervals(10000), 1, "polling resumes once rather than stacking timers");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a page restored from the back-forward cache re-reads the Status screen", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const { fetchImpl, reads, setGenerated } = fleetStatusDouble(server);
+  try {
+    const { getElement, pageshow } = await bootApp(storage, fetchImpl);
+    await waitFor(() => showsObserved(getElement, "2026-10-04T10:00:00Z"));
+    const statusReads = reads["/api/status"];
+
+    pageshow(false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(reads["/api/status"], statusReads, "a first page load is not refreshed twice");
+
+    setGenerated("2026-10-04T10:05:00Z");
+    pageshow(true);
+    await waitFor(() => showsObserved(getElement, "2026-10-04T10:05:00Z"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Conversations view stops polling in the background and re-reads when shown", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const { fetchImpl, reads } = fleetStatusDouble(server);
+  try {
+    const { activeIntervals, setVisibility } = await bootApp(storage, fetchImpl, "?view=conversations");
+    await waitFor(() => (reads["/api/sessions"] ?? 0) === 1);
+    assert.equal(activeIntervals(5000), 1);
+    assert.equal(activeIntervals(3000), 1);
+
+    setVisibility("hidden");
+    assert.equal(activeIntervals(5000), 0);
+    assert.equal(activeIntervals(3000), 0);
+
+    setVisibility("visible");
+    await waitFor(() => (reads["/api/sessions"] ?? 0) === 2);
+    assert.equal(activeIntervals(5000), 1);
+    assert.equal(activeIntervals(3000), 1);
+    assert.equal(activeIntervals(10000), 0, "the Status poll stays off outside the Status screen");
   } finally {
     await server.close();
   }

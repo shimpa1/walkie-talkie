@@ -18,8 +18,9 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
   view, one unified **Conversations** surface, and a notification opt-in. The
   status view opens with a **firstmate** card - whether the primary is working,
   idle, blocked, or not running, whether it is receiving notes, and how many
-  notes are queued and for how long - above the fleet's work, and refreshes
-  itself while open.
+  notes are queued and for how long - above the fleet's work. It refreshes
+  itself every 10 seconds while on screen and at once when the app returns to
+  the foreground, and stops polling while the app is in the background.
 - A **Conversations** surface that is the single place to read and start a
   conversation. It lists **instruction threads** - a queued note, any follow-ups
   sent from it, firstmate's replies, and delivery state (a queued note says how
@@ -409,6 +410,12 @@ On iOS and iPadOS, web push only works from a web app that has been **added to
 the Home Screen**, and only on **iOS 16.4 or newer**. In Safari, tap Share ->
 **Add to Home Screen**, open the app from the new icon, then use **Settings ->
 Enable on this device**. A plain Safari tab cannot receive notifications.
+
+A Home Screen app is usually resumed rather than relaunched. The service worker
+loads the app's files from the network on every launch (the cached copy only
+answers offline), and an open app checks for a new deploy each time it returns
+to the foreground and reloads into it, unless a note is typed, dictating, or
+still sending.
 
 ## Conversations
 
