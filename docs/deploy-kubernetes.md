@@ -579,6 +579,7 @@ cluster.
 | --- | --- | --- | --- |
 | 2026-10-03 | `62279d5d2415` (rebuilt) | `6eb5b4543933` (unchanged) | main at `62279d5` (merge of PR #24). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `62279d5`, so the running runtime image already matches main and was not rebuilt. |
 | 2026-10-03 | `e4dc8b5e7db3` (rebuilt) | `6eb5b4543933` (unchanged) | main at `e4dc8b5` (merge of PR #26). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `e4dc8b5`, so the running runtime image already matches main and was not rebuilt. |
+| 2026-10-04 | `d9702fcbf9d9` (rebuilt) | `6eb5b4543933` (unchanged) | main at `d9702fc` (merge of PR #28). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `d9702fc`, so the running runtime image already matches main and was not rebuilt. |
 
 ## Upgrade
 
