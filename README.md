@@ -15,10 +15,17 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
   firstmate home, queues instructions into it, and pushes notifications to the
   installed web app.
 - A minimal installable web app served by the same service at `/` with a status
-  view, one unified **Conversations** surface, and a notification opt-in.
+  view, one unified **Conversations** surface, and a notification opt-in. The
+  status view opens with a **firstmate** card - whether the primary is working,
+  idle, or not running, whether it is receiving notes, and how many notes are
+  queued and for how long - above the fleet's work, and refreshes itself while
+  open.
 - A **Conversations** surface that is the single place to read and start a
   conversation. It lists **instruction threads** - a queued note, any follow-ups
-  sent from it, firstmate's replies, and delivery state - alongside the fleet's
+  sent from it, firstmate's replies, and delivery state (a queued note says how
+  long it has waited and whether firstmate is working or idle, from the same
+  live state as the status view, so a slow pickup reads differently from a
+  stuck one) - alongside the fleet's
   **live sessions** (the primary firstmate session and each worker/scout).
   Tapping either opens the whole thing: a thread shows the captain's messages and
   the fleet's replies with a timestamp on each, and a live session shows its
@@ -567,6 +574,7 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | --- | --- | --- |
 | `GET` | `/api/health` | `bin/fm-inbox.sh ready` (`fm-primary-ready.v1`), open |
 | `GET` | `/api/status` | `bin/fm-bearings-snapshot.sh --json` (`fm-bearings.v1`) |
+| `GET` | `/api/firstmate` | `herdr pane list` (the primary pane), `bin/fm-inbox.sh ready`, and `bin/fm-inbox.sh receipts` |
 | `GET` | `/api/receipts?after=<cursor>` | `bin/fm-inbox.sh receipts [--after <cursor>]` |
 | `GET` | `/api/sessions` | `herdr pane list` joined with `workspace list` and `tab list`; each `state` derived from `bin/fm-bearings-snapshot.sh --json` |
 | `GET` | `/api/sessions/<pane-id>?limit=<n>&before=<cursor>` | the agent's session store (read-only), else `herdr pane read <pane-id> --lines <n> --source recent --format text` |
@@ -577,8 +585,29 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `POST` | `/api/push/test` | sends one test notification to all subscriptions |
 | `GET` | `/` | the web app |
 
-Firstmate's JSON is passed through unchanged by `/api/status`, `/api/receipts`,
-and `/api/health`. The live-session endpoint is the service's own shape:
+Firstmate's JSON is passed through unchanged by `/api/status` and
+`/api/receipts`, and by `/api/health` with one correction. `fm-inbox.sh ready`
+judges the session lock by its pid, which a service in its own container (the
+Kubernetes deployment) cannot see, so it reports `can_receive: false` while
+firstmate is draining notes. When that is the only reason - the lock reads
+`stale`/`unknown` without a live harness and the wake consumer is `unknown`,
+not `down` - and herdr shows an agent running in the primary pane and the
+watcher beacon is within firstmate's 300 s guard grace, `/api/health` reports
+`can_receive: true` with `can_receive_basis:
+"herdr-primary-agent-and-watcher-beacon"`, keeping firstmate's own `lock` and
+`wake_consumer` as reported. The service never looks at firstmate's processes
+or environment.
+
+`GET /api/firstmate` is the one live-state view the status card and the queued
+conversations share: `{"schema": "walkie-talkie-firstmate.v1", "observed_at",
+"activity", "primary", "can_receive", "watcher_beacon_age_seconds", "queue"}`.
+`activity` is `busy` (herdr reports the primary pane `working`), `idle`,
+`not_running` (no primary pane, or no agent in it), or `unknown` (herdr
+unreadable); `primary` is `{"id", "agent", "status"}` or null; `can_receive` is
+the corrected readiness above; `queue` is `{"queued", "oldest_queued_at"}` over
+the unacknowledged notes, or null when receipts cannot be read.
+
+The live-session endpoint is the service's own shape:
 `GET /api/sessions` returns `{"sessions": [...]}` with `id`, `name`, `kind`
 (`primary`/`secondmate`/`worker`), `status` (the raw herdr pane status, kept for
 diagnostics), `state` (the firstmate-derived badge: `needs_you`, `working`,

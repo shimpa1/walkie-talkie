@@ -148,6 +148,11 @@ h2 {
   border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
 }
 
+.banner.warn {
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+}
+
 .meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

@@ -14,6 +14,9 @@ const state = {
   pendingRequestId: null,
   pendingRequestKey: null,
   status: null,
+  /** Firstmate's own live state from /api/firstmate; Status and Conversations share it. */
+  firstmate: null,
+  statusTimer: null,
   voice: null,
   view: null,
 };
@@ -36,22 +39,31 @@ const conversationState = {
 };
 
 const CONVERSATION_LIST_INTERVAL_MS = 5000;
+const STATUS_INTERVAL_MS = 15000;
 const CONVERSATION_OUTPUT_INTERVAL_MS = 3000;
 const CONVERSATION_OUTPUT_LINES = 400;
 const CONVERSATION_HISTORY_LIMIT = 200;
 
 const $ = (id) => document.getElementById(id);
 
-function setBanner(message, kind) {
+/**
+ * The connection banner is shared by the health check and the status read, so
+ * each owner only ever clears its own message: a successful status read must
+ * not erase the health line that answered first.
+ */
+function setBanner(message, kind, owner) {
   const banner = $("connection-banner");
   if (!message) {
+    if (owner && banner.dataset.owner !== owner) return;
     banner.hidden = true;
     banner.textContent = "";
+    banner.dataset.owner = "";
     return;
   }
   banner.hidden = false;
   banner.className = `banner ${kind || ""}`;
   banner.textContent = message;
+  banner.dataset.owner = owner || "";
 }
 
 function handleUnauthorized(_response, token) {
@@ -193,10 +205,93 @@ async function loadStatus() {
   try {
     const payload = await api("/api/status");
     renderStatus(payload);
-    setBanner(null);
+    setBanner(null, "", "status");
   } catch (error) {
     if (error && error.status === 401) return;
-    setBanner(`Could not load fleet status: ${error.message}`, "bad");
+    setBanner(`Could not load fleet status: ${error.message}`, "bad", "status");
+  }
+}
+
+/** How long ago something happened, compactly: "40s", "4 min", "2 h 5 min". */
+function formatAge(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
+function ageSince(value) {
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(ms) && ms > 0 ? formatAge((Date.now() - ms) / 1000) : "";
+}
+
+const FIRSTMATE_ACTIVITY = {
+  busy: { label: "working", kind: "warn", phrase: "firstmate is working and has not picked it up yet" },
+  idle: { label: "idle", kind: "ok", phrase: "firstmate is idle and has not picked it up yet" },
+  not_running: { label: "not running", kind: "bad", phrase: "firstmate is not running" },
+};
+
+function firstmateActivity() {
+  const live = state.firstmate;
+  return (live && FIRSTMATE_ACTIVITY[live.activity]) || null;
+}
+
+/** The Status tab's firstmate card: is it up, busy, receiving, and what is queued. */
+function renderFirstmate() {
+  const box = $("firstmate-body");
+  box.textContent = "";
+  const live = state.firstmate;
+  if (!live) {
+    box.appendChild(el("div", "card empty", "Reading firstmate's state…"));
+    return;
+  }
+  const activity = firstmateActivity() || { label: "unknown", kind: "" };
+  const receiving =
+    live.can_receive === true ? "Receiving notes" : live.can_receive === false ? "Not receiving notes" : "Receiving: unknown";
+  let queued = "Queue unknown";
+  if (live.queue) {
+    const oldest = live.queue.oldest_queued_at ? ageSince(live.queue.oldest_queued_at) : "";
+    queued =
+      live.queue.queued === 0
+        ? "Nothing queued"
+        : `${live.queue.queued} queued${oldest ? `, oldest ${oldest}` : ""}`;
+  }
+  box.appendChild(card("firstmate", `${receiving} · ${queued}`, [[activity.label, activity.kind]]));
+}
+
+async function loadFirstmate() {
+  try {
+    state.firstmate = await api("/api/firstmate");
+  } catch (error) {
+    if (error && error.status === 401) return;
+    // Unknown is shown as unknown; the thread list keeps what is on screen
+    // until its own next poll rather than redrawing on a failed read.
+    state.firstmate = null;
+    renderFirstmate();
+    return;
+  }
+  renderFirstmate();
+  if (state.view === "conversations") {
+    renderThreads();
+    if (conversationState.selectedThreadId && selectedThread()) renderThread();
+  }
+}
+
+function startStatusPolling() {
+  stopStatusPolling();
+  state.statusTimer = setInterval(() => {
+    void loadStatus();
+    void loadFirstmate();
+  }, STATUS_INTERVAL_MS);
+}
+
+function stopStatusPolling() {
+  if (state.statusTimer !== null) {
+    clearInterval(state.statusTimer);
+    state.statusTimer = null;
   }
 }
 
@@ -357,15 +452,25 @@ function threadState(thread) {
   const note = latestNote(thread);
   if (note.reply) return { label: "replied", kind: "ok" };
   if (note.acknowledged) return { label: "working", kind: "warn" };
-  return { label: "queued", kind: "" };
+  const age = note.at ? ageSince(note.at) : "";
+  return { label: age ? `queued ${age}` : "queued", kind: "" };
 }
 
+/**
+ * A queued note says how long it has waited and what firstmate is doing, from
+ * the same live state as the Status tab, so a slow pickup reads differently
+ * from a stuck one.
+ */
 function deliveryLine(thread) {
   const note = latestNote(thread);
   if (note.reply) return "Delivered; firstmate replied.";
   if (note.acknowledged) return "Delivered; firstmate is working on it.";
-  if (note.announced === false) return "Queued; firstmate has not been woken yet.";
-  return "Queued; waiting for firstmate.";
+  const age = note.at ? ageSince(note.at) : "";
+  const queued = age ? `Queued ${age}` : "Queued";
+  if (note.announced === false) return `${queued}; firstmate has not been woken yet.`;
+  const activity = firstmateActivity();
+  if (activity) return `${queued}; ${activity.phrase}.`;
+  return `${queued}; waiting for firstmate.`;
 }
 
 /** Where a thread's first note was written from, when it was not a new conversation. */
@@ -1008,6 +1113,7 @@ function startConversationsPolling() {
   conversationState.listTimer = setInterval(() => {
     void loadSessions();
     void loadThreads();
+    void loadFirstmate();
   }, CONVERSATION_LIST_INTERVAL_MS);
   conversationState.outputTimer = setInterval(
     () => void refreshConversation(),
@@ -1153,9 +1259,10 @@ async function loadHealth() {
     const response = await fetch("/api/health");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    setBanner(`firstmate reachable — can receive: ${payload.can_receive ? "yes" : "no"}`, "ok");
+    const canReceive = payload.can_receive === true ? "yes" : payload.can_receive === false ? "no" : "unknown";
+    setBanner(`firstmate reachable — can receive: ${canReceive}`, payload.can_receive === true ? "ok" : "warn", "health");
   } catch (error) {
-    setBanner(`firstmate not reachable: ${error.message}`, "bad");
+    setBanner(`firstmate not reachable: ${error.message}`, "bad", "health");
   }
 }
 
@@ -1167,11 +1274,18 @@ function showView(name) {
   for (const view of document.querySelectorAll(".view")) {
     view.classList.toggle("is-active", view.id === `view-${name}`);
   }
-  if (name === "status") void loadStatus();
+  if (name === "status") {
+    void loadStatus();
+    void loadFirstmate();
+    startStatusPolling();
+  } else {
+    stopStatusPolling();
+  }
   if (name === "settings") void refreshPushStatus();
   if (name === "conversations") {
     void loadSessions();
     void loadThreads();
+    void loadFirstmate();
     void refreshConversation();
     startConversationsPolling();
   } else {
@@ -1236,6 +1350,7 @@ function init() {
   $("refresh").addEventListener("click", () => {
     void loadStatus();
     void loadHealth();
+    void loadFirstmate();
     if (state.view === "conversations") {
       void loadSessions();
       void loadThreads();
@@ -1245,6 +1360,7 @@ function init() {
   $("conversations-refresh").addEventListener("click", () => {
     void loadSessions();
     void loadThreads();
+    void loadFirstmate();
     void refreshConversation();
   });
   $("new-conversation").addEventListener("click", openNewConversation);

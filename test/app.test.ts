@@ -559,8 +559,16 @@ test("the Conversations tab lists instruction threads with their delivery state 
     await waitFor(() =>
       created.some((element) => element.className === "session-card thread-card" && element.dataset.id === "note-1"),
     );
+    // The queued note says how long it has waited and what firstmate is doing
+    // (the fixture's primary pane is working).
+    await waitFor(() =>
+      created.some((element) => element.className === "sub" && element.textContent.includes("firstmate is working")),
+    );
     const subs = created.filter((element) => element.className === "sub").map((element) => element.textContent);
-    assert.ok(subs.some((text) => text.includes("Queued; waiting for firstmate.")));
+    assert.ok(
+      subs.some((text) => /Queued \d+ h(?: \d+ min)?; firstmate is working and has not picked it up yet\./.test(text)),
+      `queued line carries its age and firstmate's activity: ${subs.join(" | ")}`,
+    );
     assert.ok(subs.some((text) => text.includes("Delivered; firstmate replied.")));
     // A thread row carries its own timestamp.
     assert.ok(
@@ -1158,6 +1166,63 @@ test("holding the mic in an open thread dictates into its composer and sends wit
     await sendSettled(getElement);
     assert.deepEqual(sent[0]?.context, { kind: "thread", id: "note-0", label: "status please" });
     assert.equal(sent[0]?.text, "check the west gate");
+  } finally {
+    await server.close();
+  }
+});
+
+test("the health banner survives a status read that answers after it", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  // Live, /api/health answers in ~160 ms and /api/status in ~1.7 s; hold the
+  // status read until the health response has been delivered.
+  let healthDelivered: () => void = () => {};
+  const healthDone = new Promise<void>((resolve) => {
+    healthDelivered = resolve;
+  });
+  let statusDelivered = false;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/status") {
+      await healthDone;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await nativeFetch(server.url + path, init);
+      statusDelivered = true;
+      return response;
+    }
+    const response = await nativeFetch(server.url + path, init);
+    if (path === "/api/health") setTimeout(healthDelivered, 0);
+    return response;
+  };
+  try {
+    const { getElement } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => statusDelivered);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(banner.hidden, false, "the status read must not erase the health banner");
+    assert.equal(banner.textContent, "firstmate reachable — can receive: yes");
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Status tab shows firstmate's own state: busy, receiving, and what is queued", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  try {
+    const { created } = await bootApp(storage, (path, init) => nativeFetch(server.url + path, init));
+    await waitFor(() =>
+      created.some((element) => element.className === "sub" && element.textContent.startsWith("Receiving notes")),
+    );
+    const sub = created.find((element) => element.className === "sub" && element.textContent.startsWith("Receiving notes"));
+    assert.match(sub!.textContent, /^Receiving notes · 1 queued, oldest \d+ h/);
+    const badges = created
+      .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
+      .map((element) => element.textContent);
+    assert.ok(badges.includes("working"), `firstmate's primary is working: ${badges.join(", ")}`);
   } finally {
     await server.close();
   }

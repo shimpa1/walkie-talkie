@@ -1,4 +1,4 @@
-const CACHE = "walkie-talkie-shell-v6";
+const CACHE = "walkie-talkie-shell-v7";
 const SHELL = [
   "/",
   "/index.html",

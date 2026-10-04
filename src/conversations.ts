@@ -280,6 +280,19 @@ export class Conversations {
   }
 
   /**
+   * The classified sessions without the fleet-state read: enough to find the
+   * primary pane and what herdr sees running in it.
+   */
+  async panes(): Promise<ConversationSession[]> {
+    const panes = await this.herdr.listPanes();
+    const [workspaces, tabs] = await Promise.all([
+      this.herdr.listWorkspaces().catch(() => [] as HerdrWorkspace[]),
+      this.herdr.listTabs().catch(() => [] as HerdrTab[]),
+    ]);
+    return buildSessions(panes, workspaces, tabs, null);
+  }
+
+  /**
    * Read one session's detail: its full conversation from the agent store when
    * possible, else the terminal's visible screen. The pane-to-agent-session map
    * comes from the most recent `list`; a miss refreshes it once.
