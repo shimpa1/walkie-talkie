@@ -227,7 +227,9 @@ export interface GatewayOptions {
   token?: string;
   dbPath?: string;
   trustedProxyHops?: number;
+  accessRequests?: boolean;
   signInLimits?: { perClient: RateLimiter; global: RateLimiter };
+  linkLimits?: { perClient: RateLimiter; global: RateLimiter };
   proxyTimeoutMs?: number;
 }
 
@@ -244,6 +246,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
     dbPath,
     legacyBearer: options.legacyBearer ?? false,
     trustedProxyHops: options.trustedProxyHops ?? 0,
+    accessRequests: options.accessRequests ?? true,
   };
   const config: AppConfig = {
     mode: "gateway",
@@ -287,6 +290,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
       now,
       log: (line) => logs.push(line),
       signInLimits: options.signInLimits ?? defaultSignInLimits(now),
+      ...(options.linkLimits !== undefined ? { linkLimits: options.linkLimits } : {}),
       ...(options.proxyTimeoutMs !== undefined ? { proxyTimeoutMs: options.proxyTimeoutMs } : {}),
     }),
   );

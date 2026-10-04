@@ -587,10 +587,15 @@ each with their own firstmate. In this mode it:
   `state` and PKCE S256, no scopes requested). Identity is the GitHub numeric
   id, so a renamed or re-registered login cannot take over an account; the
   GitHub access token is used once to read the profile and then dropped;
-- lets in only accounts the operator **declared**: the admins
-  (`FM_WT_ADMINS`) and the owners of declared firstmates
-  (`FM_WT_STATIC_TENANTS`). Anyone else is refused at the door, and nothing is
-  created for them;
+- is **invite-only**: nobody can create an account on their own. An account
+  gets in only in one of these ways:
+  - The operator declared it: the admins (`FM_WT_ADMINS`) and the owners of
+    declared firstmates (`FM_WT_STATIC_TENANTS`).
+  - An admin invited its GitHub login.
+  - An admin approved the **access request** that its first sign-in recorded.
+
+  With access requests turned off, any other account is refused and nothing is
+  recorded for it;
 - keeps a **session** in an HttpOnly, `Secure`, `SameSite=Lax` cookie named
   `__Host-wt_session`. The server stores only its SHA-256 hash. A session ends
   after 30 idle days and after 90 days in any case, and on sign-out;
@@ -616,6 +621,7 @@ token.
 | users and sessions database (SQLite) | `FM_WT_GATEWAY_DB` | `gatewayDb` | `./walkie-talkie.gateway.db` |
 | accept the retiring shared token (`FM_WT_TOKEN`) as the first admin | `FM_WT_LEGACY_BEARER` | `legacyBearer` | `false` |
 | reverse-proxy hops whose `X-Forwarded-For` is trusted | `FM_WT_TRUSTED_PROXY_HOPS` | `trustedProxyHops` | `0` |
+| record uninvited sign-ins as access requests (`false`: strict invite-only) | `FM_WT_ACCESS_REQUESTS` | `accessRequests` | `true` |
 
 Registering the GitHub OAuth App:
 
@@ -639,6 +645,49 @@ old shared token:
 - Once that phone signs in with GitHub, the app forgets the token.
 - Turn the bridge off once every device has signed in.
 
+### Invites, access requests and devices
+
+Admins work from the app's **Admin** tab, which only admins see:
+
+- **Invite.** Inviting a GitHub login lets that login sign in with GitHub
+  within 14 days. Re-inviting extends the open invite.
+- **Spending an invite.** The first sign-in by that login spends the invite and
+  pins the account's numeric id, so a later owner of the same login gets
+  nothing from it. An invite can be revoked before it is used.
+- **Access requests.** An uninvited sign-in becomes an access request, and that
+  person sees "waiting for the admin's approval". There are at most 50 pending
+  requests; one left unanswered expires after 30 days.
+  - **Approve** makes the account a user; its next sign-in gets in.
+  - **Deny** is remembered for 30 days, so repeat sign-ins do not re-queue it.
+- **Suspend** signs a user out everywhere and blocks their sign-in. **Resume**
+  undoes it.
+- **Remove** deletes the user. They would need a new invite or approval to get
+  back in.
+
+Accounts declared in the configuration (admins and static tenant owners) are
+managed there, not in the app: they cannot be suspended or removed, and an admin
+cannot suspend or remove themselves. Admins see who has access, never anyone's
+firstmate.
+
+Every user's **Settings** lists the devices where they are signed in. From
+there they can sign out one device or all the others.
+
+**Link a device** handles a home-screen app whose GitHub redirect returns to the
+browser instead of the app (iOS keeps the two cookie jars apart):
+
+1. On a device that is already signed in, Link a device shows a code like
+   `ABCD-EFGH`.
+2. On the new device, enter the code on the sign-in screen under **Use link
+   code**. That device gets its own session as the same user.
+
+A link code:
+
+- works once and expires after 5 minutes;
+- is replaced when a new one is made;
+- uses an unambiguous alphabet: about 40 bits, no `0/O` or `1/I`;
+- is stored only as its hash;
+- is redeemed only from the app's own origin, under a strict rate limit.
+
 Gateway routes, besides the forwarded API and the web app:
 
 | Method | Path | Purpose |
@@ -646,8 +695,24 @@ Gateway routes, besides the forwarded API and the web app:
 | `GET` | `/healthz` | the gateway's own liveness, open; no firstmate data |
 | `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate"} \| null, "legacy_bearer"}` |
 | `GET` | `/auth/github/start` | begins GitHub sign-in (rate-limited) |
-| `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|busy>` |
+| `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|pending\|suspended\|busy>` |
 | `POST` | `/auth/logout` | ends this session |
+| `POST` | `/auth/link/code` | session: makes a link code, `{"code": "ABCD-EFGH", "expires_at"}` |
+| `POST` | `/auth/link/redeem` | `{"code"}`: signs this device in (rate-limited); `400 {"error": "invalid_code"}` otherwise |
+| `GET` / `DELETE` | `/api/me/devices` | session: list this user's devices / sign out all the others |
+| `DELETE` | `/api/me/devices/<id>` | session: sign out one of this user's devices |
+| `GET` / `POST` | `/api/admin/invites` | admin: open invites / invite `{"login"}` |
+| `DELETE` | `/api/admin/invites/<id>` | admin: revoke an open invite |
+| `GET` | `/api/admin/requests` | admin: pending access requests |
+| `POST` | `/api/admin/requests/<github-id>/approve`, `.../deny` | admin: decide a request |
+| `GET` | `/api/admin/users` | admin: every user, with role, state, device count and whether they have a firstmate |
+| `POST` | `/api/admin/users/<id>/suspend`, `.../resume` | admin: suspend or resume a user |
+| `DELETE` | `/api/admin/users/<id>` | admin: remove a user |
+| `GET` | `/api/admin/audit` | admin: the latest 100 audit entries (ids and outcomes, never secrets) |
+
+The `/api/me/*` and `/api/admin/*` routes take a GitHub session only. The
+retiring shared token never reaches them, and a non-admin gets 403 on the admin
+routes.
 
 Without a session, a forwarded API call answers `401 {"error": "signed_out"}`.
 A signed-in user with no declared firstmate gets
@@ -814,8 +879,9 @@ transitive supply-chain surface in production.
 - Push subscriptions are validated before storage: the endpoint must be an
   `https:` URL and the keys must be a 65-byte uncompressed P-256 point and a
   16-byte authentication secret, both base64url.
-- In gateway mode, sessions and sign-in attempts are stored only as SHA-256
-  hashes. The database is created owner-only (`0600`) with `secure_delete`, so
+- In gateway mode, sessions, sign-in attempts and device link codes are
+  stored only as SHA-256 hashes, and the devices list names a device by a
+  prefix of that hash, never by its session id. The database is created owner-only (`0600`) with `secure_delete`, so
   a consumed sign-in's PKCE verifier does not linger in free pages. GitHub's
   error text, OAuth codes and tokens, cookies, and forwarded bodies are never
   logged. An upstream's `Set-Cookie` and any other response header but

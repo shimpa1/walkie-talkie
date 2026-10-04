@@ -52,6 +52,7 @@ test("gateway mode needs no shared token and resolves its settings", () => {
     dbPath: join(dir, "walkie-talkie.gateway.db"),
     legacyBearer: false,
     trustedProxyHops: 1,
+    accessRequests: true,
   });
 });
 

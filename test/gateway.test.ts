@@ -39,7 +39,13 @@ interface World {
 
 /** A gateway with an admin and a crew member, each owning one static tenant. */
 async function world(
-  options: { legacyBearer?: boolean; admins?: number[]; proxyTimeoutMs?: number; signInLimits?: { perClient: RateLimiter; global: RateLimiter } } = {},
+  options: {
+    legacyBearer?: boolean;
+    admins?: number[];
+    proxyTimeoutMs?: number;
+    signInLimits?: { perClient: RateLimiter; global: RateLimiter };
+    accessRequests?: boolean;
+  } = {},
 ): Promise<World & { close: () => Promise<void> }> {
   const github = await startFakeGithub();
   const adminUpstream = await startFakeUpstream("admin");
@@ -55,6 +61,7 @@ async function world(
     token: options.legacyBearer ? LEGACY_TOKEN : "",
     ...(options.proxyTimeoutMs !== undefined ? { proxyTimeoutMs: options.proxyTimeoutMs } : {}),
     ...(options.signInLimits !== undefined ? { signInLimits: options.signInLimits } : {}),
+    ...(options.accessRequests !== undefined ? { accessRequests: options.accessRequests } : {}),
   });
   return {
     github,
@@ -193,14 +200,14 @@ test("a GitHub login rename is picked up, but identity stays the numeric id", as
     // Someone who takes over the old login has a different id and gets nowhere.
     const squatter = await signIn(w.gateway, w.github, { id: 9999, login: "captain" });
     assert.equal(squatter.session, null);
-    assert.equal(squatter.location, "/?signin=not_invited");
+    assert.equal(squatter.location, "/?signin=pending", "at most, they wait for the admin like any stranger");
   } finally {
     await w.close();
   }
 });
 
-test("an account nobody declared is refused at the door and nothing is created for it", async () => {
-  const w = await world();
+test("in strict invite-only mode an account nobody declared or invited is refused and nothing is created for it", async () => {
+  const w = await world({ accessRequests: false });
   try {
     const result = await signIn(w.gateway, w.github, STRANGER);
     assert.equal(result.callback.status, 302);
@@ -380,7 +387,7 @@ test("only the firstmate API is proxied: other paths and methods stop at the gat
   try {
     const { session } = await signIn(w.gateway, w.github, ADMIN);
     assert.ok(session);
-    const notFound = ["/api/admin/users", "/api/sessions/w1:p1/extra", "/api/push/config/x", "/api/statusx"];
+    const notFound = ["/api/firstmate/x", "/api/sessions/w1:p1/extra", "/api/push/config/x", "/api/statusx"];
     for (const path of notFound) {
       const response = await fetch(`${w.gateway.url}${path}`, { headers: sessionHeaders(session) });
       assert.equal(response.status, 404, path);
@@ -393,7 +400,7 @@ test("only the firstmate API is proxied: other paths and methods stop at the gat
     assert.equal(w.adminUpstream.requests.length, 0);
 
     // A dot-segment path is normalized before the allowlist sees it.
-    const normalized = await fetch(`${w.gateway.url}/api/admin/../status`, { headers: sessionHeaders(session) });
+    const normalized = await fetch(`${w.gateway.url}/api/receipts/../status`, { headers: sessionHeaders(session) });
     assert.equal(normalized.status, 200);
     assert.equal(w.adminUpstream.requests[0]?.url, "/api/status");
 

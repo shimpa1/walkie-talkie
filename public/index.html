@@ -28,6 +28,7 @@
       <button class="tab is-active" data-view="status" type="button">Status</button>
       <button class="tab" data-view="conversations" type="button">Conversations</button>
       <button class="tab" data-view="settings" type="button">Settings</button>
+      <button id="admin-tab" class="tab" data-view="admin" type="button" hidden>Admin</button>
     </nav>
 
     <main>
@@ -41,6 +42,17 @@
         <div class="row">
           <a id="signin-github" class="button-link" href="/auth/github/start">Sign in with GitHub</a>
         </div>
+        <form id="link-form" class="link-form">
+          <label for="link-input">
+            Already signed in on another device? Open Settings there, tap
+            <strong>Link a device</strong>, and enter the code here.
+          </label>
+          <input id="link-input" name="code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="16" placeholder="ABCD-EFGH" />
+          <div class="row">
+            <button type="submit" class="ghost">Use link code</button>
+            <span id="link-status" class="hint" role="status"></span>
+          </div>
+        </form>
       </section>
 
       <section id="view-status" class="view is-active" aria-labelledby="status-heading">
@@ -99,6 +111,28 @@
         </div>
       </section>
 
+      <section id="view-admin" class="view" aria-labelledby="admin-heading">
+        <h2 id="admin-heading">Admin</h2>
+        <p class="hint">
+          Walkie-Talkie is invite-only. Invite a GitHub account, or approve someone
+          who signed in and asked for access. You never see anyone's firstmate here.
+        </p>
+        <form id="invite-form">
+          <label for="invite-login">Invite a GitHub account</label>
+          <input id="invite-login" name="login" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="github-login" />
+          <div class="row">
+            <button type="submit">Invite</button>
+            <span id="admin-status" class="hint" role="status"></span>
+          </div>
+        </form>
+        <div class="section-title">Waiting for approval</div>
+        <div id="requests-body" class="cards"></div>
+        <div class="section-title">Open invites</div>
+        <div id="invites-body" class="cards"></div>
+        <div class="section-title">Users</div>
+        <div id="users-body" class="cards"></div>
+      </section>
+
       <section id="view-settings" class="view" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
         <div id="account-panel" class="account-panel" hidden>
@@ -106,6 +140,16 @@
           <div class="row">
             <a id="account-signin" class="button-link" href="/auth/github/start" hidden>Sign in with GitHub</a>
             <button id="sign-out" class="ghost" type="button">Sign out</button>
+          </div>
+          <div id="devices-panel" class="devices-panel" hidden>
+            <h3>Devices</h3>
+            <p class="hint">Where you are signed in. Sign out a device you no longer use.</p>
+            <div id="devices-body" class="cards"></div>
+            <div class="row">
+              <button id="link-device" class="ghost" type="button">Link a device</button>
+              <button id="sign-out-others" class="ghost" type="button">Sign out other devices</button>
+            </div>
+            <p id="link-code" class="hint link-code" role="status"></p>
           </div>
         </div>
         <p id="token-hint" class="hint">

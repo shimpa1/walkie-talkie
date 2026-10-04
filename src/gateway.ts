@@ -3,11 +3,18 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearerToken, constantTimeEqual } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { clearCookie, LOGIN_COOKIE, parseCookies, serializeCookie, SESSION_COOKIE } from "./cookies.js";
+import { handleAccountRoute, isAccountPath, type AccountContext, type SessionCaller } from "./gateway-admin.js";
 import type { GatewayConfig, StaticTenant } from "./gateway-config.js";
 import { matchProxyRoute, proxyToTenant } from "./gateway-proxy.js";
-import { LOGIN_ATTEMPT_MS, randomToken, SESSION_ABSOLUTE_MS, type GatewayStore } from "./gateway-store.js";
+import {
+  LOGIN_ATTEMPT_MS,
+  randomToken,
+  SESSION_ABSOLUTE_MS,
+  type GatewayStore,
+  type UserRecord,
+} from "./gateway-store.js";
 import { newCodeVerifier, OAuthError, type GithubIdentity } from "./github-oauth.js";
-import { sendError, sendJson, serveStatic } from "./http-util.js";
+import { readBody, sendError, sendJson, serveStatic } from "./http-util.js";
 import { clientAddress, RateLimiter } from "./rate-limit.js";
 
 /**
@@ -18,8 +25,10 @@ import { clientAddress, RateLimiter } from "./rate-limit.js";
  * never runs firstmate scripts, never reads a firstmate home, and never stores
  * or logs what it forwards.
  *
- * Who may sign in is declared, not self-served: an admin, or the owner of a
- * declared tenant. Anyone else is refused at the door.
+ * Nobody signs themselves up. An account gets in when the operator declared it
+ * (an admin, or the owner of a declared tenant), when an admin invited its
+ * login, or when an admin approved the access request its first sign-in
+ * recorded.
  */
 
 /** The sign-in client the gateway needs; GithubOAuth implements it. */
@@ -37,6 +46,8 @@ export interface GatewayDeps {
   proxyTimeoutMs?: number;
   /** Per-client and global limits on the sign-in routes. */
   signInLimits?: { perClient: RateLimiter; global: RateLimiter };
+  /** Per-client and global limits on redeeming a device link code. */
+  linkLimits?: { perClient: RateLimiter; global: RateLimiter };
 }
 
 /** Who a request acts for. */
@@ -49,7 +60,7 @@ interface Principal {
 }
 
 /** Why a sign-in ended without a session; the app shows a message for each. */
-type SignInOutcome = "failed" | "expired" | "denied" | "not_invited" | "busy";
+type SignInOutcome = "failed" | "expired" | "denied" | "not_invited" | "pending" | "suspended" | "busy";
 
 export const SESSION_SCHEMA = "walkie-talkie-session.v1";
 
@@ -62,6 +73,19 @@ export function defaultSignInLimits(now: () => number = Date.now): { perClient: 
     global: new RateLimiter({ capacity: 120, refillPerMinute: 120, now }),
   };
 }
+
+/**
+ * Link codes carry about 40 bits and live five minutes; these limits make
+ * guessing one hopeless.
+ */
+export function defaultLinkLimits(now: () => number = Date.now): { perClient: RateLimiter; global: RateLimiter } {
+  return {
+    perClient: new RateLimiter({ capacity: 5, refillPerMinute: 5, now }),
+    global: new RateLimiter({ capacity: 30, refillPerMinute: 30, now }),
+  };
+}
+
+const MAX_LINK_BODY = 1024;
 
 /** A coarse device name for the session list; never the full User-Agent. */
 export function deviceLabel(userAgent: string | undefined): string {
@@ -99,11 +123,20 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
   const now = deps.now ?? Date.now;
   const log = deps.log ?? ((): void => {});
   const limits = deps.signInLimits ?? defaultSignInLimits(now);
+  const linkLimits = deps.linkLimits ?? defaultLinkLimits(now);
   const tenants = new Map<number, StaticTenant>(gw.staticTenants.map((tenant) => [tenant.githubId, tenant]));
   const declared = new Set<number>([...gw.admins, ...tenants.keys()]);
   const legacyAdmin = gw.admins[0];
 
   const isAdmin = (githubId: number): boolean => gw.admins.includes(githubId);
+  const account: AccountContext = {
+    store,
+    now,
+    isAdmin,
+    isDeclared: (githubId) => declared.has(githubId),
+    hasFirstmate: (githubId) => tenants.has(githubId),
+    log,
+  };
 
   /** Same-origin check for a cookie-authenticated write (CSRF defense). */
   const sameOrigin = (req: IncomingMessage): boolean => {
@@ -117,14 +150,30 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     return limits.perClient.allow(client) && limits.global.allow("*");
   };
 
-  const sessionPrincipal = (req: IncomingMessage): Principal | null => {
+  const sessionCaller = (req: IncomingMessage): SessionCaller | null => {
     const id = parseCookies(req.headers.cookie).get(SESSION_COOKIE);
     if (id === undefined || id === "") return null;
     const session = store.touchSession(id, now());
     if (session === null) return null;
     const user = store.userById(session.userId);
     if (user === null || user.state !== "active") return null;
+    return { user, sessionId: id };
+  };
+
+  const sessionPrincipal = (req: IncomingMessage): Principal | null => {
+    const caller = sessionCaller(req);
+    if (caller === null) return null;
+    const { user } = caller;
     return { githubId: user.githubId, userId: user.id, login: user.login, via: "session" };
+  };
+
+  /** Issue a session cookie for `user` on this device. */
+  const issueSession = (req: IncomingMessage, user: UserRecord, at: number, how: string): string => {
+    const label = deviceLabel(typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined);
+    const sessionId = store.createSession(user.id, label, at);
+    store.audit({ at, actor: user.id, action: how, subject: user.id, detail: { device: label } });
+    log(`${how}: user ${user.id}`);
+    return serializeCookie(SESSION_COOKIE, sessionId, SESSION_ABSOLUTE_MS / 1000);
   };
 
   const legacyPrincipal = (req: IncomingMessage): Principal | null => {
@@ -168,6 +217,14 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     if (pathname === "/auth/logout") {
       if (method !== "POST") return sendError(res, 405, "method not allowed");
       return signOut(req, res);
+    }
+    if (pathname === "/auth/link/code") {
+      if (method !== "POST") return sendError(res, 405, "method not allowed");
+      return mintLinkCode(req, res);
+    }
+    if (pathname === "/auth/link/redeem") {
+      if (method !== "POST") return sendError(res, 405, "method not allowed");
+      return redeemLinkCode(req, res);
     }
     if (pathname.startsWith("/auth/")) return sendError(res, 404, "not found");
 
@@ -235,23 +292,96 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     }
 
     const at = now();
-    let user = store.userByGithubId(identity.id);
-    if (user === null && declared.has(identity.id)) {
-      user = store.createUser(identity.id, identity.login, at);
-      store.audit({ at, actor: null, action: "user.created", subject: user.id, detail: { github_id: identity.id, reason: "declared" } });
-    }
-    if (user === null) {
-      store.audit({ at, actor: null, action: "signin.refused", subject: null, detail: { github_id: identity.id, reason: "not_invited" } });
-      log(`sign-in refused: github ${identity.id} is not invited`);
-      return signInRedirect(res, "not_invited", cleared);
-    }
+    const user = admit(identity, at);
+    if (typeof user === "string") return signInRedirect(res, user, cleared);
 
     store.recordLogin(user.id, identity.login, at);
-    const label = deviceLabel(typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined);
-    const sessionId = store.createSession(user.id, label, at);
-    store.audit({ at, actor: user.id, action: "signin", subject: user.id, detail: { device: label } });
-    log(`signed in: user ${user.id}`);
-    redirect(res, "/", [...cleared, serializeCookie(SESSION_COOKIE, sessionId, SESSION_ABSOLUTE_MS / 1000)]);
+    redirect(res, "/", [...cleared, issueSession(req, user, at, "signin")]);
+  }
+
+  /**
+   * Decide whether a GitHub account gets in, in order: an existing user (unless
+   * suspended); a declared account; an open invite for its login; otherwise
+   * its first sign-in becomes an access request (when enabled) and it waits.
+   */
+  function admit(identity: GithubIdentity, at: number): UserRecord | SignInOutcome {
+    const existing = store.userByGithubId(identity.id);
+    if (existing !== null) {
+      if (existing.state === "active") return existing;
+      store.audit({ at, actor: existing.id, action: "signin.refused", subject: existing.id, detail: { reason: existing.state } });
+      return "suspended";
+    }
+    if (declared.has(identity.id)) {
+      const user = store.createUser(identity.id, identity.login, at);
+      store.audit({ at, actor: null, action: "user.created", subject: user.id, detail: { github_id: identity.id, reason: "declared" } });
+      return user;
+    }
+    const invited = store.redeemInvite(identity.id, identity.login, at);
+    if (invited !== null) {
+      store.audit({
+        at,
+        actor: invited.invite.createdBy,
+        action: "invite.redeemed",
+        subject: invited.user.id,
+        detail: { github_id: identity.id, invite: invited.invite.id },
+      });
+      return invited.user;
+    }
+    if (gw.accessRequests) {
+      const outcome = store.recordAccessRequest(identity.id, identity.login, at);
+      if (outcome === "pending") {
+        store.audit({ at, actor: null, action: "access.requested", subject: null, detail: { github_id: identity.id } });
+        log(`access requested: github ${identity.id}`);
+        return "pending";
+      }
+      store.audit({ at, actor: null, action: "signin.refused", subject: null, detail: { github_id: identity.id, reason: outcome === "denied" ? "denied" : "requests_full" } });
+      log(`sign-in refused: github ${identity.id} (${outcome === "denied" ? "request denied" : "request queue full"})`);
+      return "not_invited";
+    }
+    store.audit({ at, actor: null, action: "signin.refused", subject: null, detail: { github_id: identity.id, reason: "not_invited" } });
+    log(`sign-in refused: github ${identity.id} is not invited`);
+    return "not_invited";
+  }
+
+  /** A signed-in user mints a one-time code to sign another device in as themselves. */
+  function mintLinkCode(req: IncomingMessage, res: ServerResponse): void {
+    if (!sameOrigin(req)) return sendError(res, 403, "cross-site request refused");
+    const caller = sessionCaller(req);
+    if (caller === null) return sendError(res, 401, "signed_out");
+    const at = now();
+    const { code, expiresAt } = store.createLinkCode(caller.user.id, at);
+    store.audit({ at, actor: caller.user.id, action: "device.link_code", subject: caller.user.id, detail: null });
+    sendJson(
+      res,
+      200,
+      JSON.stringify({ code: `${code.slice(0, 4)}-${code.slice(4)}`, expires_at: new Date(expiresAt).toISOString() }),
+    );
+  }
+
+  /** Another device spends a link code for its own session. */
+  async function redeemLinkCode(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Same-origin only: a cross-site post could otherwise sign a victim's
+    // browser into an attacker's account.
+    if (!sameOrigin(req)) return sendError(res, 403, "cross-site request refused");
+    const client = clientAddress(req, gw.trustedProxyHops);
+    if (!linkLimits.perClient.allow(client) || !linkLimits.global.allow("*")) {
+      return sendError(res, 429, "busy");
+    }
+    if (!String(req.headers["content-type"] ?? "").includes("application/json")) {
+      return sendError(res, 400, "request body must be application/json");
+    }
+    let code: unknown;
+    try {
+      code = (JSON.parse(await readBody(req, MAX_LINK_BODY)) as Record<string, unknown> | null)?.code;
+    } catch {
+      return sendError(res, 400, "invalid_code");
+    }
+    const at = now();
+    const userId = typeof code === "string" ? store.redeemLinkCode(code, at) : null;
+    const user = userId === null ? null : store.userById(userId);
+    if (user === null) return sendError(res, 400, "invalid_code");
+    res.setHeader("set-cookie", issueSession(req, user, at, "device.linked"));
+    sendJson(res, 200, JSON.stringify({ ok: true }));
   }
 
   function signOut(req: IncomingMessage, res: ServerResponse): void {
@@ -268,6 +398,18 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (isAccountPath(url.pathname)) {
+      // The gateway's own account and admin routes take a real GitHub session
+      // only; the retiring shared token never reaches them.
+      const caller = sessionCaller(req);
+      if (caller === null) return sendError(res, 401, "signed_out");
+      const method = req.method ?? "GET";
+      if (method !== "GET" && method !== "HEAD" && !sameOrigin(req)) {
+        return sendError(res, 403, "cross-site request refused");
+      }
+      return handleAccountRoute(account, req, res, url.pathname, caller);
+    }
+
     const principal = sessionPrincipal(req) ?? legacyPrincipal(req);
     if (principal === null) return sendError(res, 401, "signed_out");
 
