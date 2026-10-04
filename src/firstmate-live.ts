@@ -79,8 +79,11 @@ export interface FirstmateQueue {
 export interface FirstmateLiveState {
   schema: "walkie-talkie-firstmate.v1";
   observed_at: string;
-  /** busy: the primary agent is working; idle: running and waiting; not_running; unknown. */
-  activity: "busy" | "idle" | "not_running" | "unknown";
+  /**
+   * busy: the primary agent is working; idle: running and ready for input;
+   * blocked: herdr saw an approval or question prompt; not_running; unknown.
+   */
+  activity: "busy" | "idle" | "blocked" | "not_running" | "unknown";
   primary: PrimaryPane | null;
   can_receive: boolean | "unknown";
   watcher_beacon_age_seconds: number | null;
@@ -92,7 +95,9 @@ export function activityOf(primary: PrimaryPane | null | undefined): FirstmateLi
   if (primary === undefined) return "unknown";
   if (primary === null || primary.agent === null) return "not_running";
   if (primary.status === "working") return "busy";
-  return "idle";
+  if (primary.status === "blocked") return "blocked";
+  if (primary.status === "idle" || primary.status === "done") return "idle";
+  return "unknown";
 }
 
 export function queueOf(receipts: unknown): FirstmateQueue | null {

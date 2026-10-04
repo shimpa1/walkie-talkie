@@ -231,7 +231,9 @@ function ageSince(value) {
 const FIRSTMATE_ACTIVITY = {
   busy: { label: "working", kind: "warn", phrase: "firstmate is working and has not picked it up yet" },
   idle: { label: "idle", kind: "ok", phrase: "firstmate is idle and has not picked it up yet" },
+  blocked: { label: "blocked", kind: "bad", phrase: "firstmate is blocked waiting on a prompt" },
   not_running: { label: "not running", kind: "bad", phrase: "firstmate is not running" },
+  unknown: { label: "unknown", kind: "", phrase: "firstmate's state is unknown" },
 };
 
 function firstmateActivity() {

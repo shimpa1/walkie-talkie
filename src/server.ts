@@ -264,9 +264,14 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
       }
       // Firstmate's lock pid is invisible from a separate container; herdr and
       // the watcher beacon say whether it can receive (src/firstmate-live.ts).
-      const ready = JSON.parse(body) as { can_receive?: unknown };
+      // parseJsonOutput passes any JSON value through, so only a record can be
+      // corrected; anything else (for example the JSON `null`) is returned as is.
+      const ready = JSON.parse(body) as unknown;
+      const isRecord = ready !== null && typeof ready === "object" && !Array.isArray(ready);
       const corrected =
-        ready.can_receive === true ? ready : correctReadiness(ready, await readPrimary(deps.conversations));
+        !isRecord || (ready as Record<string, unknown>).can_receive === true
+          ? ready
+          : correctReadiness(ready, await readPrimary(deps.conversations));
       sendJson(res, 200, corrected === ready ? body : JSON.stringify(corrected));
       return;
     }

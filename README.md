@@ -17,9 +17,9 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
 - A minimal installable web app served by the same service at `/` with a status
   view, one unified **Conversations** surface, and a notification opt-in. The
   status view opens with a **firstmate** card - whether the primary is working,
-  idle, or not running, whether it is receiving notes, and how many notes are
-  queued and for how long - above the fleet's work, and refreshes itself while
-  open.
+  idle, blocked, or not running, whether it is receiving notes, and how many
+  notes are queued and for how long - above the fleet's work, and refreshes
+  itself while open.
 - A **Conversations** surface that is the single place to read and start a
   conversation. It lists **instruction threads** - a queued note, any follow-ups
   sent from it, firstmate's replies, and delivery state (a queued note says how
@@ -601,9 +601,12 @@ or environment.
 `GET /api/firstmate` is the one live-state view the status card and the queued
 conversations share: `{"schema": "walkie-talkie-firstmate.v1", "observed_at",
 "activity", "primary", "can_receive", "watcher_beacon_age_seconds", "queue"}`.
-`activity` is `busy` (herdr reports the primary pane `working`), `idle`,
-`not_running` (no primary pane, or no agent in it), or `unknown` (herdr
-unreadable); `primary` is `{"id", "agent", "status"}` or null; `can_receive` is
+`activity` is `busy` (herdr reports the primary pane `working`), `idle` (the
+agent is running and ready for input, herdr's `idle` or `done`), `blocked`
+(herdr recognized an approval or question prompt), `not_running` (no primary
+pane, or no agent in it), or `unknown` (herdr unreadable, or an agent present
+with a status herdr did not classify); `primary` is
+`{"id", "agent", "status"}` or null; `can_receive` is
 the corrected readiness above; `queue` is `{"queued", "oldest_queued_at"}` over
 the unacknowledged notes, or null when receipts cannot be read.
 

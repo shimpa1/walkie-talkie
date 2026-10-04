@@ -46,6 +46,7 @@ interface FakeElement {
   dataset: Record<string, string>;
   classList: { toggle: () => void; add: () => void; remove: () => void };
   setAttribute: () => void;
+  children: FakeElement[];
   appendChild: (child: unknown) => unknown;
   addEventListener: (type: string, handler: (event: unknown) => void) => void;
   dispatch: (type: string, event?: unknown) => void;
@@ -53,7 +54,7 @@ interface FakeElement {
 
 function makeElement(id: string): FakeElement {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
-  return {
+  const element: FakeElement = {
     id,
     className: "",
     textContent: "",
@@ -63,7 +64,13 @@ function makeElement(id: string): FakeElement {
     dataset: {},
     classList: { toggle: () => {}, add: () => {}, remove: () => {} },
     setAttribute: () => {},
-    appendChild: (child) => child,
+    children: [],
+    appendChild: (child) => {
+      if (child !== null && typeof child === "object" && "className" in child) {
+        element.children.push(child as FakeElement);
+      }
+      return child;
+    },
     addEventListener: (type, handler) => {
       const handlers = listeners.get(type) ?? [];
       handlers.push(handler);
@@ -73,6 +80,20 @@ function makeElement(id: string): FakeElement {
       for (const handler of listeners.get(type) ?? []) handler(event ?? {});
     },
   };
+  return element;
+}
+
+/** Every badge label under a container, so a test can scope which card it checks. */
+function badgeTexts(container: FakeElement): string[] {
+  const labels: string[] = [];
+  const walk = (node: FakeElement): void => {
+    if (typeof node.className === "string" && node.className.split(" ").includes("badge")) {
+      labels.push(node.textContent);
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(container);
+  return labels;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -649,7 +670,7 @@ test("a blocked pane with nothing in flight shows idle, not blocked", async () =
   const storage = new MemoryStorage();
   storage.setItem(TOKEN_KEY, "t");
   try {
-    const { created } = await bootApp(
+    const { created, getElement } = await bootApp(
       storage,
       (path, init) => nativeFetch(server.url + path, init),
       "?view=conversations",
@@ -658,11 +679,9 @@ test("a blocked pane with nothing in flight shows idle, not blocked", async () =
     await waitFor(() =>
       created.some((element) => element.className === "session-card" && element.dataset.id === "w1:p1"),
     );
-    const labels = created
-      .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
-      .map((element) => element.textContent);
+    const labels = badgeTexts(getElement("sessions-body"));
     assert.ok(labels.includes("idle"), "an idle fleet shows idle");
-    assert.ok(!labels.includes("blocked"), "herdr's raw pane status never drives the badge");
+    assert.ok(!labels.includes("blocked"), "herdr's raw pane status never drives the session badge");
   } finally {
     await server.close();
   }
@@ -1223,6 +1242,85 @@ test("the Status tab shows firstmate's own state: busy, receiving, and what is q
       .filter((element) => typeof element.className === "string" && element.className.split(" ").includes("badge"))
       .map((element) => element.textContent);
     assert.ok(badges.includes("working"), `firstmate's primary is working: ${badges.join(", ")}`);
+  } finally {
+    await server.close();
+  }
+});
+
+/** Serve one canned /api/firstmate live state and pass everything else through. */
+function firstmateLiveOverride(live: Record<string, unknown>): (path: string) => Response | null {
+  return (path) =>
+    path === "/api/firstmate"
+      ? new Response(JSON.stringify(live), { status: 200, headers: { "content-type": "application/json" } })
+      : null;
+}
+
+test("a blocked firstmate is shown blocked, and its queued note says it waits on a prompt", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const override = firstmateLiveOverride({
+    schema: "walkie-talkie-firstmate.v1",
+    observed_at: "2026-10-04T00:00:00Z",
+    activity: "blocked",
+    primary: { id: "w1:p1", agent: "opencode", status: "blocked" },
+    can_receive: true,
+    watcher_beacon_age_seconds: 1,
+    queue: { queued: 1, oldest_queued_at: "2026-09-28T11:40:00Z" },
+  });
+  try {
+    const { created, getElement } = await bootApp(
+      storage,
+      recordingFetch(server.url, [], override),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className === "sub" &&
+          element.textContent.includes("firstmate is blocked waiting on a prompt"),
+      ),
+    );
+    const badges = badgeTexts(getElement("firstmate-body"));
+    assert.ok(badges.includes("blocked"), `a blocked firstmate shows blocked: ${badges.join(", ")}`);
+    assert.ok(!badges.includes("idle"), "a blocked firstmate is never shown as idle");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an unrecognized firstmate activity is shown unknown, never idle", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const override = firstmateLiveOverride({
+    schema: "walkie-talkie-firstmate.v1",
+    observed_at: "2026-10-04T00:00:00Z",
+    activity: "unknown",
+    primary: { id: "w1:p1", agent: "opencode", status: "summoned" },
+    can_receive: true,
+    watcher_beacon_age_seconds: 1,
+    queue: { queued: 1, oldest_queued_at: "2026-09-28T11:40:00Z" },
+  });
+  try {
+    const { created, getElement } = await bootApp(
+      storage,
+      recordingFetch(server.url, [], override),
+      "?view=conversations",
+    );
+
+    await waitFor(() =>
+      created.some(
+        (element) =>
+          element.className === "sub" && element.textContent.includes("firstmate's state is unknown"),
+      ),
+    );
+    const badges = badgeTexts(getElement("firstmate-body"));
+    assert.ok(badges.includes("unknown"), `an unrecognized activity shows unknown: ${badges.join(", ")}`);
+    assert.ok(!badges.includes("idle"), "an unrecognized activity is never shown as idle");
   } finally {
     await server.close();
   }

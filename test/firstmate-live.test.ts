@@ -12,6 +12,7 @@ import {
   WATCHER_BEACON_GRACE_SECONDS,
   type PrimaryPane,
 } from "../src/firstmate-live.js";
+import type { FirstmateClient } from "../src/firstmate.js";
 import { FAKE_BIN, FIXTURES_DIR, getJson, startTestServer } from "./helpers.js";
 
 /**
@@ -84,7 +85,13 @@ test("activity comes from herdr's view of the primary pane", () => {
   assert.equal(activityOf(null), "not_running");
   assert.equal(activityOf({ ...RUNNING_PRIMARY, agent: null }), "not_running");
   assert.equal(activityOf({ ...RUNNING_PRIMARY, status: "working" }), "busy");
-  assert.equal(activityOf(RUNNING_PRIMARY), "idle");
+  assert.equal(activityOf({ ...RUNNING_PRIMARY, status: "idle" }), "idle");
+  // herdr reports `done` for a finished turn the captain has not seen yet; the
+  // agent is still ready for input, so it is idle, not not_running.
+  assert.equal(activityOf({ ...RUNNING_PRIMARY, status: "done" }), "idle");
+  assert.equal(activityOf({ ...RUNNING_PRIMARY, status: "blocked" }), "blocked");
+  // A status this service does not recognize must never collapse to idle.
+  assert.equal(activityOf({ ...RUNNING_PRIMARY, status: "summoned" }), "unknown");
 });
 
 test("the queue counts unacknowledged notes and their oldest time", () => {
@@ -151,6 +158,22 @@ test("GET /api/health keeps can_receive false when herdr sees no agent in the pr
   }
 });
 
+test("GET /api/health passes a `null` ready document through with 200", async () => {
+  // `fm-inbox.sh ready` can emit any single JSON value; a bare `null` is valid
+  // JSON that parseJsonOutput passes through, and it must not throw a 500.
+  const firstmate: FirstmateClient = {
+    run: () => Promise.resolve({ stdout: "null", stderr: "", code: 0 }),
+  };
+  const server = await startTestServer({ token: "t", firstmate, herdrBin: "/nonexistent/herdr" });
+  try {
+    const result = await getJson(server.url, "/api/health");
+    assert.equal(result.status, 200);
+    assert.equal(result.body, null);
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /api/firstmate reports busy, receiving, and the queued note from real reads", async () => {
   const binDir = crossContainerBin();
   const server = await startTestServer({ token: "t", binDir, herdrBin: join(binDir, "herdr") });
@@ -167,6 +190,22 @@ test("GET /api/firstmate reports busy, receiving, and the queued note from real 
     assert.equal(body.can_receive, true);
     assert.equal(body.watcher_beacon_age_seconds, 1);
     assert.deepEqual(body.queue, { queued: 1, oldest_queued_at: "2026-09-28T11:40:00Z" });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/firstmate reports blocked when herdr's primary agent is blocked", async () => {
+  const binDir = crossContainerBin((raw) => {
+    raw.result.panes[0]!.agent_status = "blocked";
+  });
+  const server = await startTestServer({ token: "t", binDir, herdrBin: join(binDir, "herdr") });
+  try {
+    const result = await getJson(server.url, "/api/firstmate", "t");
+    assert.equal(result.status, 200);
+    const body = result.body as Record<string, unknown>;
+    assert.equal(body.activity, "blocked");
+    assert.deepEqual(body.primary, { id: "w1:p1", agent: "opencode", status: "blocked" });
   } finally {
     await server.close();
   }
