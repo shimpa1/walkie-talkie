@@ -24,7 +24,9 @@ const state = {
   view: null,
   /**
    * Null when this is a standalone service guarded by the shared token. Behind
-   * the multi-user gateway: { signedIn, user, legacyBearer } from /auth/session.
+   * the multi-user gateway: { confirmed, signedIn, user, legacyBearer } from
+   * /auth/session; confirmed is false when the last known mode stands in for an
+   * answer the probe did not get.
    */
   gateway: null,
 };
@@ -113,7 +115,7 @@ function rememberedMode() {
  */
 async function probeMode() {
   const unknown = () =>
-    rememberedMode() === "gateway" ? { signedIn: true, user: null, legacyBearer: false } : null;
+    rememberedMode() === "gateway" ? { confirmed: false, signedIn: true, user: null, legacyBearer: false } : null;
   let response;
   try {
     response = await fetch("/auth/session", { headers: { accept: "application/json" } });
@@ -134,6 +136,7 @@ async function probeMode() {
   if (!payload || payload.mode !== "gateway") return unknown();
   rememberMode("gateway");
   return {
+    confirmed: true,
     signedIn: payload.signed_in === true,
     user: payload.user && typeof payload.user === "object" ? payload.user : null,
     legacyBearer: payload.legacy_bearer === true,
@@ -1627,7 +1630,7 @@ async function init() {
   const probed = await probeMode();
   if (probed) {
     state.gateway = probed;
-    if (probed.signedIn && state.token) {
+    if (probed.confirmed && probed.signedIn && state.token) {
       // Signed in with GitHub: the retiring shared token is no longer needed here.
       forgetToken(localStorage);
       state.token = "";
