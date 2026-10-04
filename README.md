@@ -23,7 +23,8 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
 - A **Conversations** surface that is the single place to read and start a
   conversation. It lists **instruction threads** - a queued note, any follow-ups
   sent from it, firstmate's replies, and delivery state (a queued note says how
-  long it has waited and whether firstmate is working or idle, from the same
+  long it has waited and whether firstmate is working, idle, blocked, or not
+  running, from the same
   live state as the status view, so a slow pickup reads differently from a
   stuck one) - alongside the fleet's
   **live sessions** (the primary firstmate session and each worker/scout).
