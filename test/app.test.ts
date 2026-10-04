@@ -1226,6 +1226,27 @@ test("the health banner survives a status read that answers after it", async () 
   }
 });
 
+test("a null health payload reads as reachable with unknown readiness, not an error", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const nullHealth = (path: string): Response | null =>
+    path === "/api/health"
+      ? new Response("null", { status: 200, headers: { "content-type": "application/json" } })
+      : null;
+  try {
+    const { getElement } = await bootApp(storage, recordingFetch(server.url, [], nullHealth));
+    const banner = getElement("connection-banner");
+    await waitFor(() => banner.textContent.includes("can receive"));
+    assert.equal(banner.textContent, "firstmate reachable — can receive: unknown");
+    assert.equal(banner.hidden, false, "a null health payload is shown, not hidden");
+    assert.ok(!banner.className.includes("bad"), `a null health payload is not an error banner: ${banner.className}`);
+  } finally {
+    await server.close();
+  }
+});
+
 test("the Status tab shows firstmate's own state: busy, receiving, and what is queued", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });

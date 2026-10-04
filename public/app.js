@@ -1261,8 +1261,9 @@ async function loadHealth() {
     const response = await fetch("/api/health");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    const canReceive = payload.can_receive === true ? "yes" : payload.can_receive === false ? "no" : "unknown";
-    setBanner(`firstmate reachable — can receive: ${canReceive}`, payload.can_receive === true ? "ok" : "warn", "health");
+    const ready = payload && typeof payload === "object" ? payload : null;
+    const canReceive = ready && ready.can_receive === true ? "yes" : ready && ready.can_receive === false ? "no" : "unknown";
+    setBanner(`firstmate reachable — can receive: ${canReceive}`, canReceive === "yes" ? "ok" : "warn", "health");
   } catch (error) {
     setBanner(`firstmate not reachable: ${error.message}`, "bad", "health");
   }
