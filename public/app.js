@@ -41,7 +41,7 @@ const conversationState = {
 };
 
 const CONVERSATION_LIST_INTERVAL_MS = 5000;
-const STATUS_INTERVAL_MS = 15000;
+const STATUS_INTERVAL_MS = 10000;
 const CONVERSATION_OUTPUT_INTERVAL_MS = 3000;
 const CONVERSATION_OUTPUT_LINES = 400;
 const CONVERSATION_HISTORY_LIMIT = 200;
@@ -292,8 +292,13 @@ async function loadFirstmate() {
   }
 }
 
+function pageHidden() {
+  return document.visibilityState === "hidden";
+}
+
 function startStatusPolling() {
   stopStatusPolling();
+  if (pageHidden()) return;
   state.statusTimer = setInterval(() => {
     void loadStatus();
     void loadFirstmate();
@@ -1123,6 +1128,7 @@ async function loadSessions() {
 
 function startConversationsPolling() {
   stopConversationsPolling();
+  if (pageHidden()) return;
   conversationState.listTimer = setInterval(() => {
     void loadSessions();
     void loadThreads();
@@ -1307,6 +1313,38 @@ function showView(name) {
   }
 }
 
+/**
+ * A Home Screen app is suspended in the background and resumed rather than
+ * relaunched, so nothing polls while the page is hidden and the open view reads
+ * fresh state the moment it is shown again instead of waiting for a tick.
+ */
+function handleVisibility() {
+  if (pageHidden()) {
+    stopStatusPolling();
+    stopConversationsPolling();
+    return;
+  }
+  if (state.view) showView(state.view);
+  void loadHealth();
+  checkForShellUpdate();
+}
+
+/** A resumed page never re-checks its service worker, so ask for a newer shell. */
+function checkForShellUpdate() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker
+    .getRegistration()
+    .then((registration) => registration && registration.update())
+    .catch(() => {});
+}
+
+/** A typed or dictated note, or one still sending, that a reload would drop. */
+function hasUnsentWork() {
+  if ($("note-text").value.trim()) return true;
+  if ($("send").disabled) return true;
+  return Boolean(state.voice && state.voice.isListening());
+}
+
 const VIEWS = ["status", "conversations", "settings"];
 const TOKEN_SAVE_DELAY_MS = 300;
 let tokenSaveTimer = null;
@@ -1416,9 +1454,20 @@ function init() {
     showView("status");
   }
   void loadHealth();
+  document.addEventListener("visibilitychange", handleVisibility);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) handleVisibility();
+  });
 }
 
 if ("serviceWorker" in navigator) {
+  // A newer worker taking over a page an older one served means a deploy
+  // landed while this page stayed open; a resumed Home Screen app would keep
+  // running the old shell, so reload into the new one unless a note would be lost.
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (hadController && !hasUnsentWork()) window.location.reload();
+  });
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });

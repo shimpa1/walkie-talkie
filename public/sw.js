@@ -1,4 +1,4 @@
-const CACHE = "walkie-talkie-shell-v7";
+const CACHE = "walkie-talkie-shell-v8";
 const SHELL = [
   "/",
   "/index.html",
@@ -12,7 +12,12 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()),
+    caches
+      .open(CACHE)
+      // Bypass the HTTP cache so a new worker never stores a shell file the
+      // browser kept from before the deploy.
+      .then((cache) => cache.addAll(SHELL.map((path) => new Request(path, { cache: "reload" }))))
+      .then(() => self.skipWaiting()),
   );
 });
 
@@ -32,19 +37,17 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
 
+  // Network first, revalidating past the HTTP cache, so every launch runs the
+  // deployed shell; the cached copy only answers when the network does not.
   event.respondWith(
-    caches.match(request).then((cached) => {
-      const network = fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    }),
+    fetch(request.url, { cache: "no-cache" })
+      .then((response) => {
+        if (!response.ok) return caches.match(request).then((cached) => cached || response);
+        const copy = response.clone();
+        caches.open(CACHE).then((cache) => cache.put(request, copy));
+        return response;
+      })
+      .catch(() => caches.match(request).then((cached) => cached || Response.error())),
   );
 });
 
