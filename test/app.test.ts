@@ -117,6 +117,7 @@ interface AppHarness {
   tokenInput: FakeElement;
   settingsStatus: FakeElement;
   created: FakeElement[];
+  statusPoll: () => void;
 }
 
 let bootCount = 0;
@@ -144,6 +145,12 @@ async function bootApp(
     return tab;
   });
   const views = ["status", "conversations", "settings"].map((view) => makeElement(`view-${view}`));
+  const intervals: Array<{ fn: () => void; delayMs: number }> = [];
+  const statusPoll = (): void => {
+    const entry = intervals.find((interval) => interval.delayMs === 15000);
+    assert.ok(entry, "the status view registers a poll interval");
+    entry.fn();
+  };
 
   const globals: Array<[string, unknown]> = [
     ["localStorage", storage],
@@ -168,8 +175,12 @@ async function bootApp(
     ["navigator", {}],
     ["fetch", fetchImpl],
     // The conversation view's polling is exercised through its Refresh button,
-    // so interval timers are inert here to keep the test deterministic.
-    ["setInterval", () => 0],
+    // so interval timers are captured but never fire on their own here to keep
+    // the test deterministic; a test drives one explicitly when it needs a tick.
+    ["setInterval", (fn: () => void, delayMs?: number) => {
+      intervals.push({ fn, delayMs: Number(delayMs) || 0 });
+      return intervals.length;
+    }],
     ["clearInterval", () => {}],
   ];
   for (const [name, value] of globals) {
@@ -183,6 +194,7 @@ async function bootApp(
     tokenInput: getElement("token-input"),
     settingsStatus: getElement("settings-status"),
     created,
+    statusPoll,
   };
 }
 
@@ -1242,6 +1254,31 @@ test("a null health payload reads as reachable with unknown readiness, not an er
     assert.equal(banner.textContent, "firstmate reachable — can receive: unknown");
     assert.equal(banner.hidden, false, "a null health payload is shown, not hidden");
     assert.ok(!banner.className.includes("bad"), `a null health payload is not an error banner: ${banner.className}`);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the status poll replaces a transient health failure banner once /api/health answers again", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  let healthCalls = 0;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/health") {
+      healthCalls += 1;
+      if (healthCalls === 1) throw new Error("boom");
+    }
+    return nativeFetch(server.url + path, init);
+  };
+  try {
+    const { getElement, statusPoll } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => banner.textContent.includes("not reachable"));
+    statusPoll();
+    await waitFor(() => banner.textContent === "firstmate reachable — can receive: yes");
+    assert.equal(banner.hidden, false);
   } finally {
     await server.close();
   }

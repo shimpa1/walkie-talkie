@@ -287,6 +287,7 @@ function startStatusPolling() {
   state.statusTimer = setInterval(() => {
     void loadStatus();
     void loadFirstmate();
+    void loadHealth();
   }, STATUS_INTERVAL_MS);
 }
 
