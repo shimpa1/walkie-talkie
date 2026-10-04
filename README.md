@@ -783,7 +783,7 @@ handling, and error handling are covered without a microphone.
 
 Runtime dependencies: **none**. The service uses only Node built-ins (`http`,
 `crypto`, `fs`, `path`, `child_process`, and `node:sqlite` for the read-only
-Conversations history), and the web app is plain HTML/CSS/JS with no framework
+Conversations history and the gateway's users and sessions), and the web app is plain HTML/CSS/JS with no framework
 or build step. Web Push encryption (RFC 8291) and VAPID signing (RFC 8292) are
 implemented directly on `node:crypto` rather than pulling in a push library.
 
