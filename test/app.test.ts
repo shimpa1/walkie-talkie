@@ -1601,3 +1601,188 @@ test("an unrecognized firstmate activity is shown unknown, never idle", async ()
     await server.close();
   }
 });
+
+interface GatewayDouble {
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>;
+  /** Every request the app made, with the Authorization header it carried. */
+  requests: Array<{ path: string; method: string; authorization: string | null }>;
+  signOut: () => void;
+}
+
+/**
+ * The multi-user gateway as the app sees it: /auth/session answers the probe,
+ * and /api/* reaches a real standalone server only while the session is live
+ * (or, with the legacy bridge on, for the shared token).
+ */
+function gatewayDouble(
+  server: { url: string },
+  session: { signedIn: boolean; login?: string; legacyBearer?: boolean; legacyToken?: string },
+): GatewayDouble {
+  const requests: GatewayDouble["requests"] = [];
+  let signedIn = session.signedIn;
+  const json = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(init?.headers);
+    requests.push({ path, method: init?.method ?? "GET", authorization: headers.get("authorization") });
+    if (path === "/auth/session") {
+      return json({
+        schema: "walkie-talkie-session.v1",
+        mode: "gateway",
+        signed_in: signedIn,
+        user: signedIn ? { login: session.login ?? "captain", admin: true, firstmate: "ready" } : null,
+        legacy_bearer: session.legacyBearer === true,
+      });
+    }
+    if (path === "/auth/logout") {
+      signedIn = false;
+      return json({ ok: true });
+    }
+    if (path.startsWith("/api/")) {
+      const legacy =
+        session.legacyBearer === true && headers.get("authorization") === `Bearer ${session.legacyToken ?? ""}`;
+      if (!signedIn && !legacy) return json({ error: "signed_out" }, 401);
+      // The gateway presents the tenant's own token upstream.
+      return nativeFetch(server.url + path, { ...init, headers: { authorization: "Bearer t" } });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  return { fetchImpl, requests, signOut: () => (signedIn = false) };
+}
+
+test("behind the gateway a signed-out visitor sees the sign-in screen with the outcome, and no tabs", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  const gateway = gatewayDouble(server, { signedIn: false });
+  try {
+    const { getElement } = await bootApp(storage, gateway.fetchImpl, "?signin=not_invited");
+    const status = getElement("signin-status");
+    await waitFor(() => status.textContent !== "");
+    assert.equal(status.textContent, "This GitHub account is not invited. Ask the admin to invite you.");
+    assert.equal(getElement("tabs").hidden, true);
+    assert.equal(storage.getItem("walkie-talkie.mode"), "gateway");
+  } finally {
+    await server.close();
+  }
+});
+
+test("signed in with GitHub, the app drops the retiring shared token and shows the account", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "old-shared-token");
+  const gateway = gatewayDouble(server, { signedIn: true, login: "captain" });
+  try {
+    const { getElement } = await bootApp(storage, gateway.fetchImpl, "?view=settings");
+    const line = getElement("account-line");
+    await waitFor(() => line.textContent.includes("@captain"));
+    assert.equal(line.textContent, "Signed in with GitHub as @captain.");
+    assert.equal(storage.getItem(TOKEN_KEY), null, "the shared token is forgotten");
+    assert.equal(getElement("settings-form").hidden, true, "no token form behind the gateway");
+    assert.equal(getElement("account-panel").hidden, false);
+    assert.equal(getElement("account-signin").hidden, true);
+
+    gateway.requests.length = 0;
+    getElement("refresh").dispatch("click");
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/status"));
+    for (const request of gateway.requests.filter((entry) => entry.path.startsWith("/api/"))) {
+      assert.equal(request.authorization, null, `${request.path} relies on the session cookie alone`);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test("a 401 behind the gateway returns the app to the sign-in screen", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  const gateway = gatewayDouble(server, { signedIn: true });
+  try {
+    const { getElement } = await bootApp(storage, gateway.fetchImpl);
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/status"));
+    gateway.signOut();
+    getElement("refresh").dispatch("click");
+    await waitFor(() => getElement("signin-status").textContent === "You are signed out.");
+    assert.equal(getElement("tabs").hidden, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Sign out ends the gateway session and shows the sign-in screen", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  const gateway = gatewayDouble(server, { signedIn: true });
+  try {
+    const { getElement } = await bootApp(storage, gateway.fetchImpl, "?view=settings");
+    await waitFor(() => getElement("account-line").textContent.startsWith("Signed in"));
+    getElement("sign-out").dispatch("click");
+    await waitFor(() => getElement("signin-status").textContent === "You are signed out.");
+    assert.ok(gateway.requests.some((request) => request.path === "/auth/logout" && request.method === "POST"));
+    assert.equal(getElement("tabs").hidden, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("with the legacy bridge on, an unsigned device keeps working on its token and is asked to sign in", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "shared");
+  const gateway = gatewayDouble(server, { signedIn: false, legacyBearer: true, legacyToken: "shared" });
+  try {
+    const { getElement } = await bootApp(storage, gateway.fetchImpl, "?view=settings");
+    const line = getElement("account-line");
+    await waitFor(() => line.textContent.includes("shared token"));
+    assert.equal(getElement("account-signin").hidden, false, "a Sign in with GitHub link is offered");
+    assert.equal(getElement("sign-out").hidden, true);
+    assert.equal(storage.getItem(TOKEN_KEY), "shared", "the token keeps working until GitHub sign-in");
+
+    getElement("refresh").dispatch("click");
+    await waitFor(() =>
+      gateway.requests.some((request) => request.path === "/api/status" && request.authorization === "Bearer shared"),
+    );
+    assert.equal(getElement("signin-status").textContent, "", "the sign-in screen is not forced");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a 503 from the probe on a device that remembered the gateway keeps it on the gateway", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem("walkie-talkie.mode", "gateway");
+  const gateway = gatewayDouble(server, { signedIn: true });
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> =>
+    path === "/auth/session" ? new Response("upstream unavailable", { status: 503 }) : gateway.fetchImpl(path, init);
+  try {
+    const { getElement } = await bootApp(storage, fetchImpl);
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/status"));
+    assert.equal(storage.getItem("walkie-talkie.mode"), "gateway", "the remembered mode is not overwritten");
+    assert.equal(getElement("tabs").hidden, false, "the app opens, not the token form");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a 503 from the probe keeps a stored shared token and keeps sending it", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem("walkie-talkie.mode", "gateway");
+  storage.setItem(TOKEN_KEY, "shared");
+  const gateway = gatewayDouble(server, { signedIn: false, legacyBearer: true, legacyToken: "shared" });
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> =>
+    path === "/auth/session" ? new Response("upstream unavailable", { status: 503 }) : gateway.fetchImpl(path, init);
+  try {
+    await bootApp(storage, fetchImpl);
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/status"));
+    assert.equal(storage.getItem(TOKEN_KEY), "shared", "an unanswered probe does not strip the token");
+    const api = gateway.requests.filter((request) => request.path.startsWith("/api/"));
+    assert.ok(api.length > 0);
+    for (const request of api) assert.equal(request.authorization, "Bearer shared", `${request.path} carries the token`);
+  } finally {
+    await server.close();
+  }
+});

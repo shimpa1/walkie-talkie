@@ -63,16 +63,20 @@ It is deliberately narrow. The service:
 - reads the fleet on a configurable interval and pushes an event notification
   exactly once per new event.
 
-It does **not** ship a native app, terminate TLS, support multiple users, steer
-or type into individual workers, carry notification actions, or perform any
-decision/approval/merge action.
+It does **not** ship a native app, terminate TLS, steer or type into individual
+workers, carry notification actions, or perform any decision/approval/merge
+action. By default it serves one firstmate to whoever holds its token; the
+opt-in [multi-user gateway](#multi-user-gateway) mode signs people in with
+GitHub instead and routes each of them to their own firstmate.
 
 ## Requirements
 
 - Node.js 22 or newer (developed on Node 22+; uses the built-in `http`,
   `crypto`, and `child_process` modules). The Conversations history uses the
   built-in `node:sqlite`, which is unflagged from Node 22.13; on an older
-  runtime the view falls back to the terminal read.
+  runtime the view falls back to the terminal read. The
+  [multi-user gateway](#multi-user-gateway) mode stores its users and sessions
+  with `node:sqlite` too, so it needs Node 22.13 or newer.
 - A firstmate home with its `bin/` scripts, including `fm-inbox.sh` and
   `fm-bearings-snapshot.sh`.
 - For the live-session side of Conversations only: a reachable `herdr` CLI and a
@@ -103,7 +107,8 @@ cp walkie-talkie.config.example.json walkie-talkie.config.json
 | firstmate `bin/` | `FM_BIN` | `fmBin` | `$FM_HOME/bin` |
 | bind address | `FM_WT_HOST` | `host` | `127.0.0.1` |
 | bind port | `FM_WT_PORT` | `port` | `8787` |
-| bearer token | `FM_WT_TOKEN` | `token` | *(required)* |
+| service mode | `FM_WT_MODE` | `mode` | `standalone` (or `gateway`, see [Multi-user gateway](#multi-user-gateway)) |
+| bearer token | `FM_WT_TOKEN` | `token` | *(required in standalone mode)* |
 | static web assets | `FM_WT_PUBLIC_DIR` | `publicDir` | `./public` |
 | allow a public bind | `FM_WT_ALLOW_PUBLIC_BIND` | `allowPublicBind` | `false` |
 | VAPID public key | `FM_WT_VAPID_PUBLIC_KEY` | `vapidPublicKey` | *(generated)* |
@@ -573,7 +578,91 @@ addition to the host-based usage above, not a replacement; see
 [`docs/deploy-kubernetes.md`](docs/deploy-kubernetes.md) for prerequisites,
 install/upgrade/uninstall, and the atus cluster example.
 
+## Multi-user gateway
+
+`FM_WT_MODE=gateway` turns the service into a front door for several people,
+each with their own firstmate. In this mode it:
+
+- signs people in with **GitHub** (an OAuth App, authorization code with
+  `state` and PKCE S256, no scopes requested). Identity is the GitHub numeric
+  id, so a renamed or re-registered login cannot take over an account; the
+  GitHub access token is used once to read the profile and then dropped;
+- lets in only accounts the operator **declared**: the admins
+  (`FM_WT_ADMINS`) and the owners of declared firstmates
+  (`FM_WT_STATIC_TENANTS`). Anyone else is refused at the door, and nothing is
+  created for them;
+- keeps a **session** in an HttpOnly, `Secure`, `SameSite=Lax` cookie named
+  `__Host-wt_session`. The server stores only its SHA-256 hash. A session ends
+  after 30 idle days and after 90 days in any case, and on sign-out;
+- forwards each signed-in user's firstmate API calls (`/api/health`,
+  `/api/status`, `/api/firstmate`, `/api/receipts`, `/api/sessions[/<id>]`,
+  `/api/note`, `/api/push/*`) **only to that user's own firstmate**, adding that
+  firstmate's bearer token. The upstream comes from the session alone; no
+  header, path or query parameter can choose it;
+- never runs firstmate scripts, never reads a firstmate home, and never stores
+  or logs what it forwards.
+
+Each declared firstmate is an ordinary standalone walkie-talkie service, which
+keeps its own bearer token. The gateway is the only caller that holds that
+token.
+
+| Setting | Environment variable | Config file key | Default |
+| --- | --- | --- | --- |
+| public origin users open (https; http only on localhost) | `FM_WT_PUBLIC_ORIGIN` | `publicOrigin` | *(required)* |
+| GitHub OAuth App client id | `FM_WT_GITHUB_CLIENT_ID` | `githubClientId` | *(required)* |
+| GitHub OAuth App client secret | `FM_WT_GITHUB_CLIENT_SECRET` | — (environment only) | *(required)* |
+| admin GitHub numeric ids, comma-separated | `FM_WT_ADMINS` | `admins` (array) | *(at least one)* |
+| declared firstmates, JSON array of `{githubId, upstream, tokenEnv}` | `FM_WT_STATIC_TENANTS` | `staticTenants` | `[]` |
+| users and sessions database (SQLite) | `FM_WT_GATEWAY_DB` | `gatewayDb` | `./walkie-talkie.gateway.db` |
+| accept the retiring shared token (`FM_WT_TOKEN`) as the first admin | `FM_WT_LEGACY_BEARER` | `legacyBearer` | `false` |
+| reverse-proxy hops whose `X-Forwarded-For` is trusted | `FM_WT_TRUSTED_PROXY_HOPS` | `trustedProxyHops` | `0` |
+
+Registering the GitHub OAuth App:
+
+- Set the **Authorization callback URL** to
+  `<FM_WT_PUBLIC_ORIGIN>/auth/github/callback`.
+- The client id is not secret.
+- Keep the client secret in your secret manager and pass it only through the
+  environment.
+
+A static tenant names its upstream as a bare origin, for example
+`http://firstmate.firstmate.svc.cluster.local:8787`. `tokenEnv` names the
+environment variable that holds that upstream's bearer token, so the token
+itself never sits in a config file. Find a GitHub numeric id with
+`gh api users/<login> --jq .id`.
+
+`FM_WT_LEGACY_BEARER=1` is a migration bridge for a phone that still holds the
+old shared token:
+
+- The gateway accepts `Authorization: Bearer <FM_WT_TOKEN>` as the first
+  declared admin, and each response carries `x-wt-legacy-auth: deprecated`.
+- Once that phone signs in with GitHub, the app forgets the token.
+- Turn the bridge off once every device has signed in.
+
+Gateway routes, besides the forwarded API and the web app:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/healthz` | the gateway's own liveness, open; no firstmate data |
+| `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate"} \| null, "legacy_bearer"}` |
+| `GET` | `/auth/github/start` | begins GitHub sign-in (rate-limited) |
+| `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|busy>` |
+| `POST` | `/auth/logout` | ends this session |
+
+Without a session, a forwarded API call answers `401 {"error": "signed_out"}`.
+A signed-in user with no declared firstmate gets
+`409 {"error": "firstmate_not_provisioned"}`. If that firstmate refuses the
+gateway's token, is down, or does not answer, the response is 502 or 504,
+never a 401. Any cookie-authenticated write must come from the app's own
+origin: the gateway checks `Origin`, or `Sec-Fetch-Site: same-origin`. The web
+app detects gateway mode from `/auth/session` and shows a **Sign in with GitHub**
+screen instead of the token form.
+
 ## Endpoints
+
+These are the standalone service's endpoints. In gateway mode the gateway
+forwards the `/api/*` ones listed in [Multi-user gateway](#multi-user-gateway),
+with the session cookie in place of the bearer token.
 
 Every endpoint except `/api/health` and `/api/push/config` requires
 `Authorization: Bearer <token>`.
@@ -694,7 +783,7 @@ handling, and error handling are covered without a microphone.
 
 Runtime dependencies: **none**. The service uses only Node built-ins (`http`,
 `crypto`, `fs`, `path`, `child_process`, and `node:sqlite` for the read-only
-Conversations history), and the web app is plain HTML/CSS/JS with no framework
+Conversations history and the gateway's users and sessions), and the web app is plain HTML/CSS/JS with no framework
 or build step. Web Push encryption (RFC 8291) and VAPID signing (RFC 8292) are
 implemented directly on `node:crypto` rather than pulling in a push library.
 
@@ -725,6 +814,13 @@ transitive supply-chain surface in production.
 - Push subscriptions are validated before storage: the endpoint must be an
   `https:` URL and the keys must be a 65-byte uncompressed P-256 point and a
   16-byte authentication secret, both base64url.
+- In gateway mode, sessions and sign-in attempts are stored only as SHA-256
+  hashes. The database is created owner-only (`0600`) with `secure_delete`, so
+  a consumed sign-in's PKCE verifier does not linger in free pages. GitHub's
+  error text, OAuth codes and tokens, cookies, and forwarded bodies are never
+  logged. An upstream's `Set-Cookie` and any other response header but
+  `content-type`/`content-length` are dropped, so a firstmate cannot set a
+  cookie on the gateway's origin.
 - The VAPID private key is written only to the gitignored, owner-only
   (`0600`) push state file. Notifications contain a fixed title and body, a
   deep link, and a tag - never a note body or record free text.

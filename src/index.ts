@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,8 +10,11 @@ import { createFleetStateProvider } from "./fleet-state.js";
 import { Firstmate } from "./firstmate.js";
 import { Herdr } from "./herdr.js";
 import { PushStore } from "./push-store.js";
+import { createGatewayHandler } from "./gateway.js";
+import { openGatewayStore } from "./gateway-store.js";
+import { GithubOAuth } from "./github-oauth.js";
 import { FirstmateEventSource, PushService } from "./push-service.js";
-import { describeBind, startServer } from "./server.js";
+import { describeBind, listenOn, startServer } from "./server.js";
 import {
   generateVapidKeys,
   HttpPushSender,
@@ -48,6 +52,44 @@ function resolveVapidKeys(
   return generated;
 }
 
+/** Expired sessions and abandoned sign-ins are swept this often. */
+const GATEWAY_PURGE_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Gateway mode: the multi-user front door. It runs no firstmate scripts and
+ * reads no firstmate home; it signs users in and forwards each one's API calls
+ * to that user's own firstmate.
+ */
+async function runGateway(config: AppConfig, log: (line: string) => void): Promise<void> {
+  const gateway = config.gateway;
+  if (gateway === null) throw new ConfigError("gateway mode is missing its configuration");
+  const store = await openGatewayStore(gateway.dbPath);
+  const oauth = new GithubOAuth({
+    clientId: gateway.githubClientId,
+    clientSecret: gateway.githubClientSecret,
+    redirectUri: `${gateway.publicOrigin}/auth/github/callback`,
+  });
+  const server = listenOn(createServer(createGatewayHandler({ config, store, oauth, log })), config, (port) => {
+    process.stdout.write(
+      `walkie-talkie gateway listening on ${describeBind(config, port)}; ` +
+        `${gateway.staticTenants.length} static tenant(s), ${gateway.admins.length} admin(s)\n`,
+    );
+  });
+  const purge = setInterval(() => store.purgeExpired(Date.now()), GATEWAY_PURGE_INTERVAL_MS);
+  purge.unref();
+
+  const shutdown = (signal: NodeJS.Signals): void => {
+    process.stderr.write(`walkie-talkie: ${signal}, shutting down\n`);
+    clearInterval(purge);
+    server.close(() => {
+      store.close();
+      process.exit(0);
+    });
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
 function main(): void {
   let config: AppConfig;
   try {
@@ -63,6 +105,14 @@ function main(): void {
   const log = (line: string): void => {
     process.stderr.write(`walkie-talkie: ${line}\n`);
   };
+
+  if (config.mode === "gateway") {
+    runGateway(config, log).catch((error: unknown) => {
+      process.stderr.write(`walkie-talkie: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    });
+    return;
+  }
 
   const firstmate = new Firstmate({
     binDir: config.fmBin,

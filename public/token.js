@@ -64,6 +64,11 @@ export function authHeaders(token, extra) {
   return headers;
 }
 
+/** Machine-readable gateway errors, shown as a sentence instead of the code. */
+const ERROR_MESSAGES = {
+  firstmate_not_provisioned: "Your firstmate is not set up yet; ask the admin.",
+};
+
 export class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -100,7 +105,8 @@ export function createApi(options) {
       throw new ApiError(UNAUTHORIZED_MESSAGE, 401);
     }
     if (!response.ok) {
-      const detail = body && body.error ? body.error : `HTTP ${response.status}`;
+      const code = body && body.error ? body.error : null;
+      const detail = code ? ERROR_MESSAGES[code] || code : `HTTP ${response.status}`;
       throw new ApiError(detail, response.status);
     }
     return body;

@@ -133,3 +133,11 @@ test("API reads are left to the browser", async () => {
   const worker = loadWorker(serve("{}"));
   assert.equal(await worker.get("/api/status"), undefined);
 });
+
+test("sign-in routes are left to the browser so the GitHub redirects are never cached", async () => {
+  const worker = loadWorker(serve("redirect"));
+  for (const path of ["/auth/github/start", "/auth/github/callback?code=c&state=s", "/auth/session"]) {
+    assert.equal(await worker.get(path), undefined, path);
+  }
+  assert.equal(worker.calls.length, 0);
+});
