@@ -281,13 +281,15 @@ export class Conversations {
 
   /**
    * The classified sessions without the fleet-state read: enough to find the
-   * primary pane and what herdr sees running in it.
+   * primary pane and what herdr sees running in it. Unlike `list`, a failed
+   * workspace or tab read rejects: without those labels the primary cannot be
+   * told apart from crewmates.
    */
   async panes(): Promise<ConversationSession[]> {
-    const panes = await this.herdr.listPanes();
-    const [workspaces, tabs] = await Promise.all([
-      this.herdr.listWorkspaces().catch(() => [] as HerdrWorkspace[]),
-      this.herdr.listTabs().catch(() => [] as HerdrTab[]),
+    const [panes, workspaces, tabs] = await Promise.all([
+      this.herdr.listPanes(),
+      this.herdr.listWorkspaces(),
+      this.herdr.listTabs(),
     ]);
     return buildSessions(panes, workspaces, tabs, null);
   }

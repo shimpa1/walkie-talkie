@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -206,6 +206,21 @@ test("GET /api/firstmate reports blocked when herdr's primary agent is blocked",
     const body = result.body as Record<string, unknown>;
     assert.equal(body.activity, "blocked");
     assert.deepEqual(body.primary, { id: "w1:p1", agent: "opencode", status: "blocked" });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/firstmate reads unknown, not not_running, when herdr's workspace list fails", async () => {
+  const binDir = crossContainerBin();
+  rmSync(join(binDir, "..", "herdr-workspaces.json"));
+  const server = await startTestServer({ token: "t", binDir, herdrBin: join(binDir, "herdr") });
+  try {
+    const result = await getJson(server.url, "/api/firstmate", "t");
+    assert.equal(result.status, 200);
+    const body = result.body as Record<string, unknown>;
+    assert.equal(body.activity, "unknown");
+    assert.equal(body.primary, null);
   } finally {
     await server.close();
   }

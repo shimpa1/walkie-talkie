@@ -16,6 +16,8 @@ const state = {
   status: null,
   /** Firstmate's own live state from /api/firstmate; Status and Conversations share it. */
   firstmate: null,
+  /** The last /api/firstmate read failed, so the card shows unknown, not loading. */
+  firstmateFailed: false,
   statusTimer: null,
   voice: null,
   view: null,
@@ -49,10 +51,12 @@ const $ = (id) => document.getElementById(id);
 /**
  * The connection banner is shared by the health check and the status read, so
  * each owner only ever clears its own message: a successful status read must
- * not erase the health line that answered first.
+ * not erase the health line that answered first. The status read only writes
+ * the banner on failure, and that error outranks the health line.
  */
 function setBanner(message, kind, owner) {
   const banner = $("connection-banner");
+  if (owner && banner.dataset.owner === "status" && owner !== "status") return;
   if (!message) {
     if (owner && banner.dataset.owner !== owner) return;
     banner.hidden = true;
@@ -247,7 +251,11 @@ function renderFirstmate() {
   box.textContent = "";
   const live = state.firstmate;
   if (!live) {
-    box.appendChild(el("div", "card empty", "Reading firstmate's state…"));
+    if (state.firstmateFailed) {
+      box.appendChild(card("firstmate", "Could not read firstmate's state", [["unknown", ""]]));
+    } else {
+      box.appendChild(el("div", "card empty", "Reading firstmate's state…"));
+    }
     return;
   }
   const activity = firstmateActivity() || { label: "unknown", kind: "" };
@@ -267,11 +275,13 @@ function renderFirstmate() {
 async function loadFirstmate() {
   try {
     state.firstmate = await api("/api/firstmate");
+    state.firstmateFailed = false;
   } catch (error) {
     if (error && error.status === 401) return;
     // Unknown is shown as unknown; the thread list keeps what is on screen
     // until its own next poll rather than redrawing on a failed read.
     state.firstmate = null;
+    state.firstmateFailed = true;
     renderFirstmate();
     return;
   }

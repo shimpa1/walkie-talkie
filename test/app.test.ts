@@ -1284,6 +1284,72 @@ test("the status poll replaces a transient health failure banner once /api/healt
   }
 });
 
+test("a health answer after a failed status read leaves the status error visible", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  let statusFailed: () => void = () => {};
+  const statusDone = new Promise<void>((resolve) => {
+    statusFailed = resolve;
+  });
+  let healthDelivered = 0;
+  const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
+    if (path === "/api/status") {
+      setTimeout(statusFailed, 0);
+      return new Response(JSON.stringify({ error: "snapshot failed" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (path === "/api/health") {
+      await statusDone;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await nativeFetch(server.url + path, init);
+      healthDelivered += 1;
+      return response;
+    }
+    return nativeFetch(server.url + path, init);
+  };
+  try {
+    const { getElement, statusPoll } = await bootApp(storage, fetchImpl);
+    const banner = getElement("connection-banner");
+    await waitFor(() => healthDelivered === 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.match(banner.textContent, /^Could not load fleet status/);
+    statusPoll();
+    await waitFor(() => healthDelivered === 2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.match(banner.textContent, /^Could not load fleet status/);
+    assert.ok(banner.className.includes("bad"), `the status error stays an error banner: ${banner.className}`);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a failed firstmate read shows a could-not-read card, not a loading one", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const failing = (path: string): Response | null =>
+    path === "/api/firstmate"
+      ? new Response(JSON.stringify({ error: "boom" }), { status: 500, headers: { "content-type": "application/json" } })
+      : null;
+  try {
+    const { created, getElement } = await bootApp(storage, recordingFetch(server.url, [], failing));
+    await waitFor(() => created.some((element) => element.textContent === "Could not read firstmate's state"));
+    const body = getElement("firstmate-body");
+    assert.ok(
+      !body.children.some((child) => child.textContent === "Reading firstmate's state…"),
+      "a failed read is not shown as loading",
+    );
+    assert.deepEqual(badgeTexts(body), ["unknown"]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("the Status tab shows firstmate's own state: busy, receiving, and what is queued", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
