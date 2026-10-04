@@ -1,5 +1,6 @@
 import { createVoiceInput, speechRecognitionCtor } from "./voice.js";
 import {
+  authHeaders,
   createApi,
   forgetToken,
   readToken,
@@ -21,6 +22,11 @@ const state = {
   statusTimer: null,
   voice: null,
   view: null,
+  /**
+   * Null when this is a standalone service guarded by the shared token. Behind
+   * the multi-user gateway: { signedIn, user, legacyBearer } from /auth/session.
+   */
+  gateway: null,
 };
 
 const conversationState = {
@@ -70,7 +76,126 @@ function setBanner(message, kind, owner) {
   banner.dataset.owner = owner || "";
 }
 
+/** Messages for the `?signin=` outcome the gateway redirects back with. */
+const SIGNIN_MESSAGES = {
+  failed: "Sign-in with GitHub failed. Try again.",
+  expired: "That sign-in expired or was started in another window. Try again.",
+  denied: "GitHub sign-in was cancelled.",
+  not_invited: "This GitHub account is not invited. Ask the admin to invite you.",
+  suspended: "This account is suspended. Ask the admin.",
+  busy: "Too many sign-in attempts right now. Wait a minute and try again.",
+  signed_out: "You are signed out.",
+};
+
+const MODE_KEY = "walkie-talkie.mode";
+
+function rememberMode(mode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    // A storage that refuses writes just re-probes next launch.
+  }
+}
+
+function rememberedMode() {
+  try {
+    return localStorage.getItem(MODE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask the service which mode it runs in. A standalone service has no
+ * /auth/session (404), so anything but a gateway answer means standalone. When
+ * the probe cannot reach the service at all, the last answer stands, so an
+ * offline launch behind the gateway does not fall back to the token form.
+ */
+async function probeMode() {
+  let response;
+  try {
+    response = await fetch("/auth/session", { headers: { accept: "application/json" } });
+  } catch {
+    return rememberedMode() === "gateway" ? { signedIn: true, user: null, legacyBearer: false } : null;
+  }
+  if (!response.ok) {
+    rememberMode("standalone");
+    return null;
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!payload || payload.mode !== "gateway") {
+    rememberMode("standalone");
+    return null;
+  }
+  rememberMode("gateway");
+  return {
+    signedIn: payload.signed_in === true,
+    user: payload.user && typeof payload.user === "object" ? payload.user : null,
+    legacyBearer: payload.legacy_bearer === true,
+  };
+}
+
+/** Whether API calls can be authorized: a token, or a gateway session. */
+function authReady() {
+  if (!state.gateway) return Boolean(state.token);
+  return state.gateway.signedIn || (state.gateway.legacyBearer && Boolean(state.token));
+}
+
+function showSignIn(outcome) {
+  $("signin-status").textContent = (outcome && SIGNIN_MESSAGES[outcome]) || "";
+  showView("signin");
+}
+
+function renderAccount() {
+  if (!state.gateway) return;
+  $("settings-form").hidden = true;
+  $("token-hint").hidden = true;
+  $("account-panel").hidden = false;
+  const user = state.gateway.user;
+  if (state.gateway.signedIn) {
+    $("account-line").textContent = user && user.login ? `Signed in with GitHub as @${user.login}.` : "Signed in with GitHub.";
+    $("account-signin").hidden = true;
+    $("sign-out").hidden = false;
+  } else {
+    $("account-line").textContent =
+      "This device still uses the shared token, which is being retired. Sign in with GitHub to keep access.";
+    $("account-signin").hidden = false;
+    $("sign-out").hidden = true;
+  }
+}
+
+async function signOut() {
+  try {
+    await fetch("/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  } catch {
+    // Signing out locally still matters; the server session expires on its own.
+  }
+  forgetToken(localStorage);
+  state.token = "";
+  if (state.gateway) {
+    state.gateway.signedIn = false;
+    state.gateway.user = null;
+  }
+  showSignIn("signed_out");
+}
+
 function handleUnauthorized(_response, token) {
+  if (state.gateway) {
+    // Behind the gateway a 401 means neither a session nor the retiring shared
+    // token was accepted: the token, if any, is no good any more.
+    state.gateway.signedIn = false;
+    if (token && token === state.token) {
+      state.token = "";
+      forgetToken(localStorage);
+    }
+    showSignIn("signed_out");
+    return;
+  }
   if (token !== state.token) return;
   if (resolveToken(localStorage, $("token-input").value) === token) {
     state.token = "";
@@ -1198,9 +1323,13 @@ async function refreshPushStatus() {
   }
 }
 
+function signInFirstMessage() {
+  return state.gateway ? "Sign in first." : "Save your bearer token first.";
+}
+
 async function enablePush() {
-  if (!state.token) {
-    setPushStatus("Save your bearer token first.", "bad");
+  if (!authReady()) {
+    setPushStatus(signInFirstMessage(), "bad");
     return;
   }
   if (!pushSupported()) {
@@ -1243,7 +1372,7 @@ async function disablePush() {
     }
     const endpoint = subscription.endpoint;
     await subscription.unsubscribe();
-    if (state.token) {
+    if (authReady()) {
       try {
         await api("/api/push/unsubscribe", {
           method: "POST",
@@ -1261,8 +1390,8 @@ async function disablePush() {
 }
 
 async function sendPushTest() {
-  if (!state.token) {
-    setPushStatus("Save your bearer token first.", "bad");
+  if (!authReady()) {
+    setPushStatus(signInFirstMessage(), "bad");
     return;
   }
   try {
@@ -1274,8 +1403,11 @@ async function sendPushTest() {
 }
 
 async function loadHealth() {
+  // Behind the gateway health is per user, so it needs the session (or the
+  // retiring token); standalone health is open and ignores the header.
+  if (state.gateway && !authReady()) return;
   try {
-    const response = await fetch("/api/health");
+    const response = await fetch("/api/health", { headers: authHeaders(state.token) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     const ready = payload && typeof payload === "object" ? payload : null;
@@ -1288,6 +1420,7 @@ async function loadHealth() {
 
 function showView(name) {
   state.view = name;
+  $("tabs").hidden = name === "signin";
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("is-active", tab.dataset.view === name);
   }
@@ -1301,7 +1434,10 @@ function showView(name) {
   } else {
     stopStatusPolling();
   }
-  if (name === "settings") void refreshPushStatus();
+  if (name === "settings") {
+    renderAccount();
+    void refreshPushStatus();
+  }
   if (name === "conversations") {
     void loadSessions();
     void loadThreads();
@@ -1324,7 +1460,7 @@ function handleVisibility() {
     stopConversationsPolling();
     return;
   }
-  if (state.view) showView(state.view);
+  if (state.view && state.view !== "signin") showView(state.view);
   void loadHealth();
   checkForShellUpdate();
 }
@@ -1392,7 +1528,19 @@ function saveToken() {
   return verifyToken();
 }
 
-function init() {
+/** Drop the one-shot `?signin=` outcome from the address bar once it is shown. */
+function clearSignInParam(params) {
+  if (!params.has("signin")) return;
+  params.delete("signin");
+  try {
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname || "/"}${query ? `?${query}` : ""}`);
+  } catch {
+    // Without history the outcome simply stays in the URL.
+  }
+}
+
+async function init() {
   $("fact-origin").textContent = window.location.origin;
   $("token-input").value = state.token;
 
@@ -1444,20 +1592,51 @@ function init() {
   $("push-enable").addEventListener("click", () => void enablePush());
   $("push-disable").addEventListener("click", () => void disablePush());
   $("push-test").addEventListener("click", () => void sendPushTest());
+  $("sign-out").addEventListener("click", () => void signOut());
 
-  const requested = new URLSearchParams(window.location.search).get("view");
-  if (requested && VIEWS.includes(requested)) {
-    showView(requested);
-  } else if (!state.token) {
-    showView("settings");
-  } else {
-    showView("status");
-  }
-  void loadHealth();
+  const params = new URLSearchParams(window.location.search);
+  const signin = params.get("signin");
+  clearSignInParam(params);
+  const requested = params.get("view");
+
+  const showInitialView = () => {
+    if (state.gateway && !authReady()) {
+      showSignIn(signin);
+    } else if (requested && VIEWS.includes(requested)) {
+      showView(requested);
+    } else if (!authReady()) {
+      showView("settings");
+    } else {
+      showView("status");
+    }
+    void loadHealth();
+  };
+
+  // Registered before the probe below is awaited, so a page hidden while the
+  // probe is in flight still stops polling.
   document.addEventListener("visibilitychange", handleVisibility);
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) handleVisibility();
   });
+
+  // A device known to sit behind the gateway waits for the probe so it never
+  // flashes the token form; anything else starts at once as standalone and
+  // switches over only if the probe finds a gateway.
+  const knownGateway = rememberedMode() === "gateway";
+  if (!knownGateway) showInitialView();
+  const probed = await probeMode();
+  if (probed) {
+    state.gateway = probed;
+    if (probed.signedIn && state.token) {
+      // Signed in with GitHub: the retiring shared token is no longer needed here.
+      forgetToken(localStorage);
+      state.token = "";
+      $("token-input").value = "";
+    }
+    if (knownGateway || !authReady() || state.view === "settings") showInitialView();
+  } else if (knownGateway) {
+    showInitialView();
+  }
 }
 
 if ("serviceWorker" in navigator) {
@@ -1473,4 +1652,4 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-init();
+void init();

@@ -1,6 +1,4 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve, sep } from "node:path";
 
 import type { AppConfig } from "./config.js";
 import { bindRefusal, isLoopbackHost } from "./config.js";
@@ -10,6 +8,7 @@ import { clampHistoryLimit, isValidHistoryCursor } from "./conversation-store.js
 import { FM_SCRIPTS, parseJsonOutput, type FirstmateClient } from "./firstmate.js";
 import { correctReadiness, readLiveState, readPrimary } from "./firstmate-live.js";
 import { HerdrError, isValidPaneId } from "./herdr.js";
+import { readBody, sendError, sendJson, serveStatic } from "./http-util.js";
 import { composeNoteText, parseNoteContext } from "./note-context.js";
 import type { PushApi } from "./push-service.js";
 import { withTimeout } from "./timeout.js";
@@ -40,43 +39,6 @@ export interface AppDeps {
  */
 export const DEFAULT_RECEIPTS_READ_TIMEOUT_MS = 3_000;
 
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".txt": "text/plain; charset=utf-8",
-};
-
-function send(res: ServerResponse, status: number, body: string, contentType: string): void {
-  res.writeHead(status, {
-    "content-type": contentType,
-    "content-length": Buffer.byteLength(body),
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-  });
-  res.end(body);
-}
-
-function sendJson(res: ServerResponse, status: number, body: string): void {
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body),
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-  });
-  res.end(body);
-}
-
-function sendError(res: ServerResponse, status: number, message: string): void {
-  sendJson(res, status, JSON.stringify({ error: message }));
-}
-
 /**
  * Map a herdr read failure to an HTTP status: an unknown pane is 404, an
  * unreachable herdr server is 503, and any other read failure is 502. A
@@ -89,24 +51,6 @@ function sendHerdrError(res: ServerResponse, error: unknown): void {
 }
 
 const SESSION_PATH = /^\/api\/sessions\/([^/]+)$/;
-
-function readBody(req: IncomingMessage, limit: number): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > limit) {
-        reject(new Error("request body too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolvePromise(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
 
 export const MAX_PUSH_BODY_BYTES = 8 * 1024;
 
@@ -193,46 +137,6 @@ function parseNoteBody(raw: string, contentType: string): NoteBody | { error: st
   }
 
   return { text: composed, requestId };
-}
-
-function safeStaticPath(publicDir: string, pathname: string): string | null {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return null;
-  }
-  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
-  const candidate = normalize(join(publicDir, relative));
-  const root = resolve(publicDir);
-  if (candidate !== root && !candidate.startsWith(root + sep)) return null;
-  return candidate;
-}
-
-async function serveStatic(deps: AppDeps, res: ServerResponse, pathname: string): Promise<void> {
-  const filePath = safeStaticPath(deps.config.publicDir, pathname);
-  if (filePath === null) {
-    sendError(res, 404, "not found");
-    return;
-  }
-  try {
-    const info = await stat(filePath);
-    if (!info.isFile()) {
-      sendError(res, 404, "not found");
-      return;
-    }
-    const body = await readFile(filePath);
-    const type = MIME_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream";
-    res.writeHead(200, {
-      "content-type": type,
-      "content-length": body.length,
-      "cache-control": pathname === "/" ? "no-store" : "public, max-age=300",
-      "x-content-type-options": "nosniff",
-    });
-    res.end(body);
-  } catch {
-    sendError(res, 404, "not found");
-  }
 }
 
 export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => void {
@@ -508,7 +412,7 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
       sendError(res, 405, "method not allowed");
       return;
     }
-    await serveStatic(deps, res, pathname);
+    await serveStatic(deps.config.publicDir, res, pathname);
   }
 }
 
@@ -522,14 +426,18 @@ export function createAppServer(deps: AppDeps): Server {
 }
 
 export function startServer(options: StartOptions): Server {
-  const refusal = bindRefusal(options.config);
+  return listenOn(createAppServer(options), options.config, options.onListen);
+}
+
+/** Bind a server to the configured host and port, refusing an unintended public bind. */
+export function listenOn(server: Server, config: AppConfig, onListen?: (port: number) => void): Server {
+  const refusal = bindRefusal(config);
   if (refusal !== null) throw new Error(refusal);
 
-  const server = createAppServer(options);
-  server.listen(options.config.port, options.config.host, () => {
+  server.listen(config.port, config.host, () => {
     const address = server.address();
-    const port = typeof address === "object" && address !== null ? address.port : options.config.port;
-    options.onListen?.(port);
+    const port = typeof address === "object" && address !== null ? address.port : config.port;
+    onListen?.(port);
   });
   return server;
 }

@@ -9,6 +9,8 @@ coverage/
 walkie-talkie.config.json
 walkie-talkie.push.json
 walkie-talkie.push.json.tmp
+walkie-talkie.gateway.db
+walkie-talkie.gateway.db-*
 
 *.log
 .DS_Store

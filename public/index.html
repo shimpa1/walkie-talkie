@@ -24,13 +24,25 @@
       <button id="refresh" class="ghost" type="button">Refresh</button>
     </header>
 
-    <nav class="tabs" aria-label="Sections">
+    <nav id="tabs" class="tabs" aria-label="Sections">
       <button class="tab is-active" data-view="status" type="button">Status</button>
       <button class="tab" data-view="conversations" type="button">Conversations</button>
       <button class="tab" data-view="settings" type="button">Settings</button>
     </nav>
 
     <main>
+      <section id="view-signin" class="view" aria-labelledby="signin-heading">
+        <h2 id="signin-heading">Sign in</h2>
+        <p class="hint">
+          Walkie-Talkie is invite-only. Sign in with the GitHub account the admin
+          invited; your firstmate is yours alone.
+        </p>
+        <p id="signin-status" class="hint" role="status"></p>
+        <div class="row">
+          <a id="signin-github" class="button-link" href="/auth/github/start">Sign in with GitHub</a>
+        </div>
+      </section>
+
       <section id="view-status" class="view is-active" aria-labelledby="status-heading">
         <div class="banner" id="connection-banner" hidden></div>
         <h2 id="status-heading" class="visually-hidden">Fleet status</h2>
@@ -89,7 +101,14 @@
 
       <section id="view-settings" class="view" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
-        <p class="hint">
+        <div id="account-panel" class="account-panel" hidden>
+          <p id="account-line" class="hint" role="status">Signed in with GitHub.</p>
+          <div class="row">
+            <a id="account-signin" class="button-link" href="/auth/github/start" hidden>Sign in with GitHub</a>
+            <button id="sign-out" class="ghost" type="button">Sign out</button>
+          </div>
+        </div>
+        <p id="token-hint" class="hint">
           The token is stored only in this browser on this device.
         </p>
         <form id="settings-form">

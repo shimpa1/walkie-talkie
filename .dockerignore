@@ -8,6 +8,9 @@ coverage
 .env.*
 !.env.example
 walkie-talkie.config.json
+walkie-talkie.push.json
+walkie-talkie.gateway.db
+walkie-talkie.gateway.db-*
 *.log
 .DS_Store
 .idea

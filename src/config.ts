@@ -2,7 +2,23 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
+import {
+  GatewayConfigError,
+  parseMode,
+  resolveGatewayConfig,
+  type GatewayConfig,
+  type GatewayFileConfig,
+  type ServiceMode,
+} from "./gateway-config.js";
+
 export interface AppConfig {
+  /**
+   * standalone: serve one firstmate behind the shared bearer token (the
+   * default). gateway: the multi-user front door (see gateway-config.ts).
+   */
+  mode: ServiceMode;
+  /** Gateway settings; null in standalone mode. */
+  gateway: GatewayConfig | null;
   fmHome: string;
   fmBin: string;
   host: string;
@@ -31,7 +47,8 @@ export interface AppConfig {
   opencodeDbPath: string;
 }
 
-interface FileConfig {
+interface FileConfig extends GatewayFileConfig {
+  mode?: unknown;
   fmHome?: unknown;
   fmBin?: unknown;
   host?: unknown;
@@ -153,8 +170,17 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     ? DEFAULT_PORT
     : parsePortFile(file.port));
 
+  let mode: ServiceMode;
+  try {
+    mode = parseMode(env.FM_WT_MODE?.trim() || asString(file.mode, "mode"));
+  } catch (error) {
+    throw asConfigError(error);
+  }
+
+  // The shared token guards every route in standalone mode. In gateway mode it
+  // is optional: only the legacy bearer bridge still accepts it from a browser.
   const token = env.FM_WT_TOKEN ?? asString(file.token, "token") ?? "";
-  if (token.trim().length === 0) {
+  if (mode === "standalone" && token.trim().length === 0) {
     throw new ConfigError(
       "FM_WT_TOKEN is required: set it in the environment or in the gitignored config file",
     );
@@ -217,7 +243,18 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     defaultOpencodeDbPath(fmHome);
   const opencodeDbPath = isAbsolute(opencodeDbRaw) ? opencodeDbRaw : resolve(cwd, opencodeDbRaw);
 
+  let gateway: GatewayConfig | null = null;
+  if (mode === "gateway") {
+    try {
+      gateway = resolveGatewayConfig(env, file, token, (path) => (isAbsolute(path) ? path : resolve(cwd, path)));
+    } catch (error) {
+      throw asConfigError(error);
+    }
+  }
+
   return {
+    mode,
+    gateway,
     fmHome,
     fmBin,
     host,
@@ -235,6 +272,10 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
     herdrBin,
     opencodeDbPath,
   };
+}
+
+function asConfigError(error: unknown): unknown {
+  return error instanceof GatewayConfigError ? new ConfigError(error.message) : error;
 }
 
 function parsePollSeconds(value: string | undefined): number | undefined {

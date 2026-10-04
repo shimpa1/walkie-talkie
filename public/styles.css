@@ -88,6 +88,10 @@ h1 {
   overflow-x: auto;
 }
 
+.tabs[hidden] {
+  display: none;
+}
+
 .tab {
   border: 1px solid var(--line);
   background: transparent;
@@ -255,6 +259,10 @@ form {
   padding: 14px;
 }
 
+form[hidden] {
+  display: none;
+}
+
 label {
   font-size: 13px;
   color: var(--muted);
@@ -295,6 +303,24 @@ button {
   background: linear-gradient(160deg, var(--accent), var(--accent-2));
   color: #04101f;
   cursor: pointer;
+}
+
+a.button-link {
+  display: inline-block;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-weight: 600;
+  text-decoration: none;
+  background: linear-gradient(160deg, var(--accent), var(--accent-2));
+  color: #04101f;
+}
+
+a.button-link[hidden] {
+  display: none;
+}
+
+.account-panel {
+  margin-bottom: 14px;
 }
 
 button:disabled {

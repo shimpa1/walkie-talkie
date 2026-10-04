@@ -1,4 +1,4 @@
-const CACHE = "walkie-talkie-shell-v8";
+const CACHE = "walkie-talkie-shell-v9";
 const SHELL = [
   "/",
   "/index.html",
@@ -36,6 +36,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
+  // Sign-in redirects to GitHub and back must reach the network untouched.
+  if (url.pathname.startsWith("/auth/")) return;
 
   // Network first, revalidating past the HTTP cache, so every launch runs the
   // deployed shell; the cached copy only answers when the network does not.

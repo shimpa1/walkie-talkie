@@ -51,6 +51,8 @@ export async function startTestServer(options: {
   const binDir = options.binDir ?? FAKE_BIN;
 
   const config: AppConfig = {
+    mode: "standalone",
+    gateway: null,
     fmHome: home,
     fmBin: binDir,
     host: "127.0.0.1",
