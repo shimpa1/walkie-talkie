@@ -84,6 +84,8 @@ const SIGNIN_MESSAGES = {
   expired: "That sign-in expired or was started in another window. Try again.",
   denied: "GitHub sign-in was cancelled.",
   not_invited: "This GitHub account is not invited. Ask the admin to invite you.",
+  pending: "Your request is waiting for the admin's approval. Sign in again once you hear back.",
+  suspended: "This account is suspended. Ask the admin.",
   busy: "Too many sign-in attempts right now. Wait a minute and try again.",
   signed_out: "You are signed out.",
 };
@@ -151,6 +153,9 @@ function authReady() {
 
 function showSignIn(outcome) {
   $("signin-status").textContent = (outcome && SIGNIN_MESSAGES[outcome]) || "";
+  // Nothing about the previous user stays on screen, on a shared device too.
+  $("home-label").textContent = "firstmate companion";
+  $("admin-tab").hidden = true;
   showView("signin");
 }
 
@@ -160,6 +165,8 @@ function renderAccount() {
   $("token-hint").hidden = true;
   $("account-panel").hidden = false;
   const user = state.gateway.user;
+  $("admin-tab").hidden = !(state.gateway.signedIn && user && user.admin === true);
+  $("devices-panel").hidden = !state.gateway.signedIn;
   if (state.gateway.signedIn) {
     $("account-line").textContent = user && user.login ? `Signed in with GitHub as @${user.login}.` : "Signed in with GitHub.";
     $("account-signin").hidden = true;
@@ -185,6 +192,248 @@ async function signOut() {
     state.gateway.user = null;
   }
   showSignIn("signed_out");
+}
+
+/** A JSON write to the gateway's own routes; same-origin, so the cookie rides along. */
+function jsonInit(method, body) {
+  return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) };
+}
+
+/** A small button for a card's action row; `confirmLabel` asks for a second tap first. */
+function actionButton(label, action, id, onClick, confirmLabel) {
+  const button = el("button", "ghost small", label);
+  button.type = "button";
+  button.dataset.action = action;
+  button.dataset.id = String(id);
+  button.addEventListener("click", () => {
+    if (confirmLabel && button.dataset.armed !== "1") {
+      button.dataset.armed = "1";
+      button.textContent = confirmLabel;
+      return;
+    }
+    button.disabled = true;
+    void onClick();
+  });
+  return button;
+}
+
+function withActions(node, buttons) {
+  const row = el("div", "actions");
+  for (const button of buttons) row.appendChild(button);
+  node.appendChild(row);
+  return node;
+}
+
+function setAdminStatus(message, kind) {
+  const status = $("admin-status");
+  status.textContent = message;
+  status.className = `hint ${kind || ""}`;
+}
+
+/** Run an admin action, then reload the admin view so it shows the result. */
+async function adminAction(path, init, done) {
+  try {
+    await api(path, init);
+    setAdminStatus(done, "ok");
+  } catch (error) {
+    setAdminStatus(error.message, "bad");
+  }
+  await loadAdmin();
+}
+
+function renderRequests(requests) {
+  const body = $("requests-body");
+  body.textContent = "";
+  if (!requests.length) {
+    body.appendChild(el("p", "hint", "No one is waiting."));
+    return;
+  }
+  for (const request of requests) {
+    const node = card(`@${request.login}`, `asked ${formatTimestamp(request.requested_at)}`);
+    body.appendChild(
+      withActions(node, [
+        actionButton("Approve", "approve", request.github_id, () =>
+          adminAction(`/api/admin/requests/${request.github_id}/approve`, jsonInit("POST"), `Approved @${request.login}.`),
+        ),
+        actionButton("Deny", "deny", request.github_id, () =>
+          adminAction(`/api/admin/requests/${request.github_id}/deny`, jsonInit("POST"), `Denied @${request.login}.`),
+        ),
+      ]),
+    );
+  }
+}
+
+function renderInvites(invites) {
+  const body = $("invites-body");
+  body.textContent = "";
+  if (!invites.length) {
+    body.appendChild(el("p", "hint", "No open invites."));
+    return;
+  }
+  for (const invite of invites) {
+    const node = card(`@${invite.login}`, `open until ${formatTimestamp(invite.expires_at)}`);
+    body.appendChild(
+      withActions(node, [
+        actionButton("Revoke", "revoke", invite.id, () =>
+          adminAction(`/api/admin/invites/${encodeURIComponent(invite.id)}`, { method: "DELETE" }, `Revoked the invite for @${invite.login}.`),
+        ),
+      ]),
+    );
+  }
+}
+
+function renderUsers(users) {
+  const body = $("users-body");
+  body.textContent = "";
+  for (const user of users) {
+    const badges = [];
+    if (user.admin) badges.push(["admin", "ok"]);
+    if (user.state === "suspended") badges.push(["suspended", "bad"]);
+    const firstmate = user.firstmate === "ready" ? "has a firstmate" : "no firstmate yet";
+    const node = card(`@${user.login}`, `${firstmate} · ${user.sessions} device(s)`, badges);
+    if (user.declared) {
+      node.appendChild(el("div", "sub", "Declared in the configuration."));
+      body.appendChild(node);
+      continue;
+    }
+    const id = encodeURIComponent(user.id);
+    const buttons = [
+      user.state === "suspended"
+        ? actionButton("Resume", "resume", user.id, () =>
+            adminAction(`/api/admin/users/${id}/resume`, jsonInit("POST"), `Resumed @${user.login}.`),
+          )
+        : actionButton("Suspend", "suspend", user.id, () =>
+            adminAction(`/api/admin/users/${id}/suspend`, jsonInit("POST"), `Suspended @${user.login}.`),
+          ),
+      actionButton(
+        "Remove",
+        "remove",
+        user.id,
+        () => adminAction(`/api/admin/users/${id}`, { method: "DELETE" }, `Removed @${user.login}.`),
+        "Tap again to remove",
+      ),
+    ];
+    body.appendChild(withActions(node, buttons));
+  }
+}
+
+async function loadAdmin() {
+  try {
+    const [requests, invites, users] = await Promise.all([
+      api("/api/admin/requests"),
+      api("/api/admin/invites"),
+      api("/api/admin/users"),
+    ]);
+    renderRequests(requests.requests || []);
+    renderInvites(invites.invites || []);
+    renderUsers(users.users || []);
+  } catch (error) {
+    setAdminStatus(`Could not load: ${error.message}`, "bad");
+  }
+}
+
+async function submitInvite(event) {
+  event.preventDefault();
+  const input = $("invite-login");
+  const login = input.value.trim().replace(/^@/, "");
+  if (!login) {
+    setAdminStatus("Enter a GitHub login.", "bad");
+    return;
+  }
+  try {
+    const result = await api("/api/admin/invites", jsonInit("POST", { login }));
+    input.value = "";
+    setAdminStatus(`Invited @${result.invite.login}: they can sign in with GitHub until ${formatTimestamp(result.invite.expires_at)}.`, "ok");
+  } catch (error) {
+    setAdminStatus(error.message, "bad");
+  }
+  await loadAdmin();
+}
+
+function renderDevices(devices) {
+  const body = $("devices-body");
+  body.textContent = "";
+  for (const device of devices) {
+    const node = card(device.label, `last used ${formatTimestamp(device.last_seen_at)}`, device.current ? [["this device", "ok"]] : []);
+    if (!device.current) {
+      withActions(node, [
+        actionButton("Sign out", "sign-out-device", device.id, async () => {
+          try {
+            await api(`/api/me/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+          } catch {
+            // The list below shows whether it went.
+          }
+          await loadDevices();
+        }),
+      ]);
+    }
+    body.appendChild(node);
+  }
+}
+
+async function loadDevices() {
+  if (!state.gateway || !state.gateway.signedIn) return;
+  try {
+    const result = await api("/api/me/devices");
+    renderDevices(result.devices || []);
+  } catch {
+    // A failed read leaves the list as it was.
+  }
+}
+
+async function signOutOtherDevices() {
+  try {
+    await api("/api/me/devices", { method: "DELETE" });
+  } catch {
+    // The list below shows what is left.
+  }
+  await loadDevices();
+}
+
+async function showLinkCode() {
+  const line = $("link-code");
+  try {
+    const response = await fetch("/auth/link/code", jsonInit("POST"));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    line.textContent = `On the other device choose "Use link code" and enter ${result.code}. It works once, within 5 minutes.`;
+  } catch (error) {
+    line.textContent = `Could not make a link code: ${error.message}`;
+  }
+}
+
+const LINK_ERRORS = {
+  429: "Too many tries. Wait a minute and try again.",
+  400: "That code is wrong or has expired. Make a new one on your signed-in device.",
+};
+
+async function redeemLinkCode(event) {
+  event.preventDefault();
+  const status = $("link-status");
+  const code = $("link-input").value.trim();
+  if (!code) {
+    status.textContent = "Enter the code from your signed-in device.";
+    return;
+  }
+  status.textContent = "Checking…";
+  let response;
+  try {
+    response = await fetch("/auth/link/redeem", jsonInit("POST", { code }));
+  } catch (error) {
+    status.textContent = `Could not reach the service: ${error.message}`;
+    return;
+  }
+  if (!response.ok) {
+    status.textContent = LINK_ERRORS[response.status] || `Could not use the code (HTTP ${response.status}).`;
+    return;
+  }
+  $("link-input").value = "";
+  status.textContent = "";
+  const probed = await probeMode();
+  if (probed) state.gateway = probed;
+  renderAccount();
+  showView("status");
+  void loadHealth();
 }
 
 function handleUnauthorized(_response, token) {
@@ -1439,8 +1688,10 @@ function showView(name) {
   }
   if (name === "settings") {
     renderAccount();
+    void loadDevices();
     void refreshPushStatus();
   }
+  if (name === "admin") void loadAdmin();
   if (name === "conversations") {
     void loadSessions();
     void loadThreads();
@@ -1484,7 +1735,7 @@ function hasUnsentWork() {
   return Boolean(state.voice && state.voice.isListening());
 }
 
-const VIEWS = ["status", "conversations", "settings"];
+const VIEWS = ["status", "conversations", "settings", "admin"];
 const TOKEN_SAVE_DELAY_MS = 300;
 let tokenSaveTimer = null;
 
@@ -1596,6 +1847,10 @@ async function init() {
   $("push-disable").addEventListener("click", () => void disablePush());
   $("push-test").addEventListener("click", () => void sendPushTest());
   $("sign-out").addEventListener("click", () => void signOut());
+  $("sign-out-others").addEventListener("click", () => void signOutOtherDevices());
+  $("link-device").addEventListener("click", () => void showLinkCode());
+  $("link-form").addEventListener("submit", (event) => void redeemLinkCode(event));
+  $("invite-form").addEventListener("submit", (event) => void submitInvite(event));
 
   const params = new URLSearchParams(window.location.search);
   const signin = params.get("signin");
@@ -1636,6 +1891,8 @@ async function init() {
       state.token = "";
       $("token-input").value = "";
     }
+    // Reveals the Admin tab for an admin and swaps the token form for the account.
+    renderAccount();
     if (knownGateway || !authReady() || state.view === "settings") showInitialView();
   } else if (knownGateway) {
     showInitialView();

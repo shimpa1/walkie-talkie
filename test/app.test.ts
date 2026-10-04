@@ -1604,9 +1604,20 @@ test("an unrecognized firstmate activity is shown unknown, never idle", async ()
 
 interface GatewayDouble {
   fetchImpl: (path: string, init?: RequestInit) => Promise<Response>;
-  /** Every request the app made, with the Authorization header it carried. */
-  requests: Array<{ path: string; method: string; authorization: string | null }>;
+  /** Every request the app made, with the Authorization header and body it carried. */
+  requests: Array<{ path: string; method: string; authorization: string | null; body: string | null }>;
   signOut: () => void;
+  signIn: () => void;
+}
+
+type GatewayRoutes = (
+  path: string,
+  init: RequestInit | undefined,
+  double: { signIn: () => void },
+) => Response | null;
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
 /**
@@ -1616,21 +1627,31 @@ interface GatewayDouble {
  */
 function gatewayDouble(
   server: { url: string },
-  session: { signedIn: boolean; login?: string; legacyBearer?: boolean; legacyToken?: string },
+  session: { signedIn: boolean; login?: string; admin?: boolean; legacyBearer?: boolean; legacyToken?: string },
+  routes?: GatewayRoutes,
 ): GatewayDouble {
   const requests: GatewayDouble["requests"] = [];
   let signedIn = session.signedIn;
-  const json = (body: unknown, status = 200): Response =>
-    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const json = jsonResponse;
+  const signIn = (): void => {
+    signedIn = true;
+  };
   const fetchImpl = async (path: string, init?: RequestInit): Promise<Response> => {
     const headers = new Headers(init?.headers);
-    requests.push({ path, method: init?.method ?? "GET", authorization: headers.get("authorization") });
+    requests.push({
+      path,
+      method: init?.method ?? "GET",
+      authorization: headers.get("authorization"),
+      body: typeof init?.body === "string" ? init.body : null,
+    });
+    const routed = routes?.(path, init, { signIn }) ?? null;
+    if (routed !== null) return routed;
     if (path === "/auth/session") {
       return json({
         schema: "walkie-talkie-session.v1",
         mode: "gateway",
         signed_in: signedIn,
-        user: signedIn ? { login: session.login ?? "captain", admin: true, firstmate: "ready" } : null,
+        user: signedIn ? { login: session.login ?? "captain", admin: session.admin ?? true, firstmate: "ready" } : null,
         legacy_bearer: session.legacyBearer === true,
       });
     }
@@ -1647,7 +1668,14 @@ function gatewayDouble(
     }
     return new Response("not found", { status: 404 });
   };
-  return { fetchImpl, requests, signOut: () => (signedIn = false) };
+  return {
+    fetchImpl,
+    requests,
+    signOut: () => {
+      signedIn = false;
+    },
+    signIn,
+  };
 }
 
 test("behind the gateway a signed-out visitor sees the sign-in screen with the outcome, and no tabs", async () => {
@@ -1782,6 +1810,211 @@ test("a 503 from the probe keeps a stored shared token and keeps sending it", as
     const api = gateway.requests.filter((request) => request.path.startsWith("/api/"));
     assert.ok(api.length > 0);
     for (const request of api) assert.equal(request.authorization, "Bearer shared", `${request.path} carries the token`);
+  } finally {
+    await server.close();
+  }
+});
+
+/** The latest rendered action button for `action` (on the item `id`), as a card re-render replaces it. */
+function actionButton(created: FakeElement[], action: string, id?: string): FakeElement | undefined {
+  return created.findLast(
+    (element) => element.dataset.action === action && (id === undefined || element.dataset.id === id),
+  );
+}
+
+/** The admin API as the Admin view reads it: one request, one invite, two users. */
+function adminRoutes(): GatewayRoutes {
+  return (path, init) => {
+    const method = init?.method ?? "GET";
+    if (!path.startsWith("/api/admin/")) return null;
+    if (method !== "GET") return jsonResponse({ ok: true });
+    if (path === "/api/admin/requests") {
+      return jsonResponse({ requests: [{ github_id: 3003, login: "stranger", requested_at: "2026-10-04T10:00:00Z" }] });
+    }
+    if (path === "/api/admin/invites") {
+      return jsonResponse({
+        invites: [{ id: "inv_abc", login: "newcomer", created_at: "2026-10-04T09:00:00Z", expires_at: "2026-10-18T09:00:00Z" }],
+      });
+    }
+    if (path === "/api/admin/users") {
+      return jsonResponse({
+        users: [
+          { id: "u_captain", login: "captain", github_id: 1001, state: "active", admin: true, declared: true, firstmate: "ready", sessions: 1 },
+          { id: "u_new", login: "Newcomer", github_id: 5005, state: "active", admin: false, declared: false, firstmate: "none", sessions: 2 },
+        ],
+      });
+    }
+    return jsonResponse({ error: "not found" }, 404);
+  };
+}
+
+test("only an admin is shown the Admin tab", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  try {
+    const admin = gatewayDouble(server, { signedIn: true, admin: true });
+    const asAdmin = await bootApp(new MemoryStorage(), admin.fetchImpl, "?view=settings");
+    await waitFor(() => asAdmin.getElement("account-line").textContent.startsWith("Signed in"));
+    assert.equal(asAdmin.getElement("admin-tab").hidden, false);
+
+    const crew = gatewayDouble(server, { signedIn: true, admin: false, login: "crew-member" });
+    const asCrew = await bootApp(new MemoryStorage(), crew.fetchImpl, "?view=settings");
+    await waitFor(() => asCrew.getElement("account-line").textContent.includes("@crew-member"));
+    assert.equal(asCrew.getElement("admin-tab").hidden, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Admin view approves a request, revokes an invite, and removes a user only on a second tap", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const gateway = gatewayDouble(server, { signedIn: true }, adminRoutes());
+  const writes = (): Array<string> =>
+    gateway.requests.filter((request) => request.method !== "GET").map((request) => `${request.method} ${request.path}`);
+  try {
+    const { created } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=admin");
+    await waitFor(() => actionButton(created, "approve", "3003") !== undefined);
+
+    assert.equal(actionButton(created, "suspend", "u_captain"), undefined, "a declared account has no actions");
+    assert.equal(actionButton(created, "remove", "u_captain"), undefined);
+
+    actionButton(created, "approve", "3003")?.dispatch("click");
+    await waitFor(() => writes().includes("POST /api/admin/requests/3003/approve"));
+
+    actionButton(created, "revoke", "inv_abc")?.dispatch("click");
+    await waitFor(() => writes().includes("DELETE /api/admin/invites/inv_abc"));
+
+    await waitFor(() => actionButton(created, "remove", "u_new") !== undefined);
+    const remove = actionButton(created, "remove", "u_new");
+    assert.ok(remove);
+    remove.dispatch("click");
+    assert.equal(remove.textContent, "Tap again to remove");
+    assert.ok(!writes().includes("DELETE /api/admin/users/u_new"), "one tap removes nothing");
+    remove.dispatch("click");
+    await waitFor(() => writes().includes("DELETE /api/admin/users/u_new"));
+
+    actionButton(created, "suspend", "u_new")?.dispatch("click");
+    await waitFor(() => writes().includes("POST /api/admin/users/u_new/suspend"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("inviting from the Admin view sends the GitHub login without its @", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const routes: GatewayRoutes = (path, init) => {
+    if (path === "/api/admin/invites" && init?.method === "POST") {
+      return jsonResponse({ invite: { id: "inv_new", login: "someone", expires_at: "2026-10-18T09:00:00Z" } }, 201);
+    }
+    return adminRoutes()(path, init, { signIn: () => {} });
+  };
+  const gateway = gatewayDouble(server, { signedIn: true }, routes);
+  try {
+    const { getElement, created } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=admin");
+    await waitFor(() => actionButton(created, "approve") !== undefined);
+    getElement("invite-login").value = "@someone";
+    getElement("invite-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("admin-status").textContent.startsWith("Invited @someone"));
+    const post = gateway.requests.find((request) => request.path === "/api/admin/invites" && request.method === "POST");
+    assert.deepEqual(JSON.parse(post?.body ?? "null"), { login: "someone" });
+    assert.equal(getElement("invite-login").value, "");
+  } finally {
+    await server.close();
+  }
+});
+
+test("Settings lists this user's devices, makes a link code, and signs out the other devices", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const routes: GatewayRoutes = (path, init) => {
+    const method = init?.method ?? "GET";
+    if (path === "/api/me/devices" && method === "GET") {
+      return jsonResponse({
+        devices: [
+          { id: "aaaaaaaaaaaaaaaa", label: "iPhone", created_at: "2026-10-04T09:00:00Z", last_seen_at: "2026-10-04T10:00:00Z", current: true },
+          { id: "bbbbbbbbbbbbbbbb", label: "Mac", created_at: "2026-10-01T09:00:00Z", last_seen_at: "2026-10-02T10:00:00Z", current: false },
+        ],
+      });
+    }
+    if (path.startsWith("/api/me/devices")) return jsonResponse({ removed: 1 });
+    if (path === "/auth/link/code") return jsonResponse({ code: "ABCD-EFGH", expires_at: "2026-10-04T10:05:00Z" });
+    return null;
+  };
+  const gateway = gatewayDouble(server, { signedIn: true }, routes);
+  try {
+    const { getElement, created } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=settings");
+    await waitFor(() => actionButton(created, "sign-out-device", "bbbbbbbbbbbbbbbb") !== undefined);
+    assert.equal(getElement("devices-panel").hidden, false);
+    assert.equal(actionButton(created, "sign-out-device", "aaaaaaaaaaaaaaaa"), undefined, "this device is signed out with Sign out");
+    assert.ok(badgeTexts(getElement("devices-body")).includes("this device"));
+
+    actionButton(created, "sign-out-device", "bbbbbbbbbbbbbbbb")?.dispatch("click");
+    await waitFor(() => gateway.requests.some((r) => r.method === "DELETE" && r.path === "/api/me/devices/bbbbbbbbbbbbbbbb"));
+
+    getElement("link-device").dispatch("click");
+    await waitFor(() => getElement("link-code").textContent.includes("ABCD-EFGH"));
+    assert.ok(gateway.requests.some((r) => r.method === "POST" && r.path === "/auth/link/code"));
+
+    getElement("sign-out-others").dispatch("click");
+    await waitFor(() => gateway.requests.some((r) => r.method === "DELETE" && r.path === "/api/me/devices"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("a link code typed on the sign-in screen signs this device in", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const routes: GatewayRoutes = (path, init, double) => {
+    if (path !== "/auth/link/redeem") return null;
+    const code = (JSON.parse(String(init?.body ?? "{}")) as { code?: string }).code;
+    if (code !== "ABCD-EFGH") return jsonResponse({ error: "invalid_code" }, 400);
+    double.signIn();
+    return jsonResponse({ ok: true });
+  };
+  const gateway = gatewayDouble(server, { signedIn: false }, routes);
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl);
+    await waitFor(() => getElement("tabs").hidden === true);
+
+    getElement("link-input").value = "WRONG-CODE";
+    getElement("link-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("link-status").textContent.startsWith("That code is wrong"));
+    assert.equal(getElement("tabs").hidden, true);
+
+    getElement("link-input").value = "ABCD-EFGH";
+    getElement("link-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("tabs").hidden === false);
+    await waitFor(() => gateway.requests.some((r) => r.path === "/api/status"));
+    assert.equal(getElement("link-input").value, "");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an access request waiting for approval says so on the sign-in screen", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const gateway = gatewayDouble(server, { signedIn: false });
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?signin=pending");
+    await waitFor(() => getElement("signin-status").textContent !== "");
+    assert.equal(
+      getElement("signin-status").textContent,
+      "Your request is waiting for the admin's approval. Sign in again once you hear back.",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("signing out clears the previous user's header and Admin tab", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const gateway = gatewayDouble(server, { signedIn: true });
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=settings");
+    await waitFor(() => getElement("admin-tab").hidden === false);
+    getElement("home-label").textContent = "home: firstmate-of-alice";
+    getElement("sign-out").dispatch("click");
+    await waitFor(() => getElement("signin-status").textContent === "You are signed out.");
+    assert.equal(getElement("home-label").textContent, "firstmate companion");
+    assert.equal(getElement("admin-tab").hidden, true);
   } finally {
     await server.close();
   }

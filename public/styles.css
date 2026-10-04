@@ -323,6 +323,27 @@ a.button-link[hidden] {
   margin-bottom: 14px;
 }
 
+.devices-panel {
+  margin-top: 14px;
+}
+
+.link-form {
+  margin-top: 18px;
+}
+
+.link-code {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.card .actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+
 button:disabled {
   opacity: 0.55;
   cursor: default;

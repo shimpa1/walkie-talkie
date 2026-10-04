@@ -42,6 +42,12 @@ export interface GatewayConfig {
   legacyBearer: boolean;
   /** Reverse-proxy hops in front of the service whose X-Forwarded-For is trusted. */
   trustedProxyHops: number;
+  /**
+   * An uninvited GitHub sign-in becomes a capped access request the admin can
+   * approve or deny. False is strict invite-only: it is refused and nothing
+   * is recorded.
+   */
+  accessRequests: boolean;
 }
 
 export const DEFAULT_GATEWAY_DB = "walkie-talkie.gateway.db";
@@ -190,6 +196,7 @@ export interface GatewayFileConfig {
   gatewayDb?: unknown;
   legacyBearer?: unknown;
   trustedProxyHops?: unknown;
+  accessRequests?: unknown;
 }
 
 /**
@@ -240,5 +247,7 @@ export function resolveGatewayConfig(
     dbPath: resolvePath(dbRaw),
     legacyBearer,
     trustedProxyHops: parseHops(pick(env.FM_WT_TRUSTED_PROXY_HOPS, file.trustedProxyHops)),
+    accessRequests:
+      parseBool(pick(env.FM_WT_ACCESS_REQUESTS, file.accessRequests), "FM_WT_ACCESS_REQUESTS") ?? true,
   };
 }
