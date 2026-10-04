@@ -129,6 +129,23 @@ async function bootApp(
   windowExtras: Record<string, unknown> = {},
 ): Promise<AppHarness> {
   bootCount += 1;
+  const boot = bootCount;
+  // Every booted app reads `document` from globalThis, so an earlier test's
+  // app whose response lands late would render into this test's document
+  // (its cards land in `created` with that app's own click handlers). Once a
+  // newer app boots, an older app's responses never settle.
+  const live = <T>(value: T): Promise<T> =>
+    boot === bootCount ? Promise.resolve(value) : new Promise<T>(() => {});
+  const isolatedFetch = async (path: string, init?: RequestInit): Promise<Response> => {
+    const response = await fetchImpl(path, init);
+    const text = await live(await response.text());
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: () => live(text),
+      json: () => live(text).then((raw) => JSON.parse(raw) as unknown),
+    } as Response;
+  };
   const elements = new Map<string, FakeElement>();
   const created: FakeElement[] = [];
   const getElement = (id: string): FakeElement => {
@@ -173,7 +190,7 @@ async function bootApp(
     ],
     ["window", { location: { origin: "http://localhost", search }, ...windowExtras }],
     ["navigator", {}],
-    ["fetch", fetchImpl],
+    ["fetch", isolatedFetch],
     // The conversation view's polling is exercised through its Refresh button,
     // so interval timers are captured but never fire on their own here to keep
     // the test deterministic; a test drives one explicitly when it needs a tick.
