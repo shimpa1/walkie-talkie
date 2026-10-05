@@ -9,10 +9,12 @@ import type { ValidateSpec } from "./catalog.js";
  * request is https, bounded by a timeout, and never follows a redirect.
  *
  * 2xx is valid, 401/403 is invalid, and anything else (another status, a
- * redirect, a network error, a timeout) is unverified. A provider's response
- * body is read only on success, only to learn which models the key can use,
- * and is never logged or returned: some providers echo part of the key in
- * their error text.
+ * redirect, a network error, a timeout) is unverified. A provider whose catalog
+ * entry declares `invalidReason` also signals a bad key with a 400 carrying that
+ * reason code (Google answers API_KEY_INVALID that way). A provider's response
+ * body is read only to learn which models a valid key can use or to look for
+ * that reason code, and is never logged or returned: some providers echo part
+ * of the key in their error text.
  */
 
 export type KeyCheck =
@@ -63,8 +65,7 @@ async function readCapped(response: Response): Promise<string | null> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Model ids from an OpenAI-style `data[].id` or a Google-style `models[].name` listing. */
-export function listedModels(body: string | null): string[] | null {
+function parseObject(body: string | null): Record<string, unknown> | null {
   if (body === null) return null;
   let parsed: unknown;
   try {
@@ -72,8 +73,19 @@ export function listedModels(body: string | null): string[] | null {
   } catch {
     return null;
   }
-  if (parsed === null || typeof parsed !== "object") return null;
-  const record = parsed as Record<string, unknown>;
+  return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+}
+
+/**
+ * Model ids from an OpenAI-style `data[].id` or a Google-style `models[].name`
+ * listing. Null when there is no listing, or when it is one page of several
+ * (Anthropic's `has_more`, Google's `nextPageToken`): a partial list must not
+ * narrow the models a key can use.
+ */
+export function listedModels(body: string | null): string[] | null {
+  const record = parseObject(body);
+  if (record === null) return null;
+  if (record.has_more === true || (typeof record.nextPageToken === "string" && record.nextPageToken !== "")) return null;
   const ids: string[] = [];
   if (Array.isArray(record.data)) {
     for (const entry of record.data) {
@@ -101,6 +113,22 @@ export function confirmedModels(models: string[], listed: string[] | null): stri
   return models.filter(
     (model) => set.has(model) || listed.some((id) => id.startsWith(`${model}-`) && /^\d{8}$/.test(id.slice(model.length + 1))),
   );
+}
+
+/** Whether a Google-style error body (`error.details[].reason`) carries the given reason code. */
+export function carriesReason(body: string | null, reason: string): boolean {
+  const error = parseObject(body)?.error;
+  const details = error !== null && typeof error === "object" ? (error as Record<string, unknown>).details : undefined;
+  if (!Array.isArray(details)) return false;
+  return details.some((detail) => (detail as Record<string, unknown> | null)?.reason === reason);
+}
+
+async function readQuietly(response: Response): Promise<string | null> {
+  try {
+    return await readCapped(response);
+  } catch {
+    return null;
+  }
 }
 
 export class KeyChecker {
@@ -135,13 +163,10 @@ export class KeyChecker {
       return { status: "unverified" };
     }
     if (response.status >= 200 && response.status < 300) {
-      let body: string | null = null;
-      try {
-        body = await readCapped(response);
-      } catch {
-        body = null;
-      }
-      return { status: "valid", listed: listedModels(body) };
+      return { status: "valid", listed: listedModels(await readQuietly(response)) };
+    }
+    if (response.status === 400 && spec.invalidReason !== null) {
+      return carriesReason(await readQuietly(response), spec.invalidReason) ? { status: "invalid" } : { status: "unverified" };
     }
     try {
       await response.body?.cancel();

@@ -20,6 +20,8 @@ export interface ValidateSpec {
   auth: KeyAuth;
   /** Extra non-secret request headers, e.g. anthropic-version. */
   headers: Record<string, string>;
+  /** A reason code that, in a 400's `error.details[].reason`, also marks the key invalid; null for none. */
+  invalidReason: string | null;
 }
 
 export interface CatalogProvider {
@@ -69,6 +71,7 @@ const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,127}$/;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
 const HEADER_NAME = /^[A-Za-z0-9-]{1,64}$/;
 const HEADER_VALUE = /^[\x20-\x7e]{0,256}$/;
+const REASON_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const DISPLAY_NAME = /^[^\x00-\x1f\x7f]{1,64}$/;
 /** Headers a catalog may not set: the key's own headers and anything routing-related. */
 const RESERVED_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "host", "cookie", "content-length", "transfer-encoding", "connection"]);
@@ -109,7 +112,14 @@ function parseValidate(value: unknown, where: string, options: CatalogOptions): 
       headers[name.toLowerCase()] = headerValue;
     }
   }
-  return { url: url.toString(), auth: auth as KeyAuth, headers };
+  let invalidReason: string | null = null;
+  if (value.invalidReason !== undefined && value.invalidReason !== null) {
+    if (typeof value.invalidReason !== "string" || !REASON_CODE.test(value.invalidReason)) {
+      throw new CatalogError(`${where}.validate.invalidReason must be an upper-case reason code`);
+    }
+    invalidReason = value.invalidReason;
+  }
+  return { url: url.toString(), auth: auth as KeyAuth, headers, invalidReason };
 }
 
 function parseEnvName(value: unknown, what: string): string {

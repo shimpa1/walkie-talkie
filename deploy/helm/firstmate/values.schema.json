@@ -404,7 +404,8 @@
       "properties": {
         "url": { "type": "string", "pattern": "^https://" },
         "auth": { "type": "string", "enum": ["bearer", "x-api-key", "x-goog-api-key"] },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } }
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "invalidReason": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" }
       }
     }
   }

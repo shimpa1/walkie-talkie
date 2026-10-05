@@ -721,7 +721,7 @@ Each provider has an `id`, a display `name`, the `keyEnv` its key travels under
       "id": "anthropic",
       "name": "Anthropic",
       "keyEnv": "ANTHROPIC_API_KEY",
-      "validate": { "url": "https://api.anthropic.com/v1/models", "auth": "x-api-key", "headers": { "anthropic-version": "2023-06-01" } },
+      "validate": { "url": "https://api.anthropic.com/v1/models?limit=1000", "auth": "x-api-key", "headers": { "anthropic-version": "2023-06-01" } },
       "models": ["claude-opus-5-5", "claude-sonnet-5-5"]
     }
   ],
@@ -737,8 +737,12 @@ Keys are **write-only**:
   make the gateway call any other host. It must be `https`, redirects are never
   followed, and the check times out after 10 seconds. `2xx` stores the key;
   `401`/`403` answers `422 {"error": "key_rejected"}`; anything else answers
-  `502 {"error": "provider_unreachable"}` and stores nothing. A provider's
-  response text is never passed on or logged, because some echo the key.
+  `502 {"error": "provider_unreachable"}` and stores nothing. A provider whose
+  `validate` block sets `invalidReason` (Google: `API_KEY_INVALID`) also has a
+  `400` carrying that reason in `error.details[].reason` answer `key_rejected`;
+  any other `400` stays `provider_unreachable`. A provider's response text is
+  only inspected for that reason code or a model list, and never passed on or
+  logged, because some echo the key.
 - **Encrypted at rest.** AES-256-GCM with a random 96-bit nonce per write. The
   additional authenticated data binds each value to its owner, its name and
   its key id, so a row copied to another user or slot fails to decrypt.
@@ -747,7 +751,8 @@ Keys are **write-only**:
   Replacing a key is another `PUT`; removing it is `DELETE`.
 - **Model check.** Where the provider lists models for the key, the gateway
   records which catalog models the key can use, and a model choice the key
-  cannot use answers `422 {"error": "model_unavailable"}`.
+  cannot use answers `422 {"error": "model_unavailable"}`. A listing that is
+  one page of several (`has_more`, `nextPageToken`) restricts nothing.
 
 Key checks are rate-limited per user. Removing a user deletes their keys and
 choice.

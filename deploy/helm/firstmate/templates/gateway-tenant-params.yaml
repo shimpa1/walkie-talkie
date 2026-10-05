@@ -84,6 +84,11 @@
 {{- fail (printf "%s.validate.headers: %s is not an allowed header" $v.where $name) -}}
 {{- end -}}
 {{- end -}}
+{{- if hasKey $spec "invalidReason" -}}
+{{- if not (regexMatch "^[A-Z][A-Z0-9_]{0,63}$" (toString $spec.invalidReason)) -}}
+{{- fail (printf "%s.validate.invalidReason must be an upper-case reason code" $v.where) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 # What the gateway offers users who set up their own firstmate (tenants.*).
 # The catalog's validation URLs are the only hosts a user's key is sent to.

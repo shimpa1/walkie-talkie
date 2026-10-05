@@ -81,8 +81,29 @@ async function startFakeProviders(elsewhere: string): Promise<FakeProviders> {
       return;
     }
     if (path === "/google/v1beta/models") {
+      if (presented !== CANARY) {
+        // Google answers a bad key with a 400 that names the reason.
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: { code: 400, message: `API key not valid: ${presented}`, details: [{ reason: "API_KEY_INVALID", domain: "googleapis.com" }] },
+          }),
+        );
+        return;
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ models: [{ name: "models/gemini-pro" }] }));
+      return;
+    }
+    if (path === "/google-busy/v1beta/models") {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: 400, message: presented, details: [{ reason: "API_KEY_SERVICE_BLOCKED" }] } }));
+      return;
+    }
+    if (path === "/paged/models") {
+      // One page of several: "n" is on a later page.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m" }], has_more: true }));
       return;
     }
     if (path === "/openrouter/api/v1/key") {
@@ -148,9 +169,16 @@ function testCatalog(providers: string): Catalog {
         {
           id: "google",
           keyEnv: "GOOGLE_GENERATIVE_AI_API_KEY",
-          validate: { url: `${providers}/google/v1beta/models`, auth: "x-goog-api-key" },
+          validate: { url: `${providers}/google/v1beta/models`, auth: "x-goog-api-key", invalidReason: "API_KEY_INVALID" },
           models: ["gemini-pro", "gemini-flash"],
         },
+        {
+          id: "google-busy",
+          keyEnv: "GOOGLE_BUSY_API_KEY",
+          validate: { url: `${providers}/google-busy/v1beta/models`, auth: "x-goog-api-key", invalidReason: "API_KEY_INVALID" },
+          models: ["m"],
+        },
+        { id: "paged", keyEnv: "PAGED_API_KEY", validate: { url: `${providers}/paged/models`, auth: "bearer" }, models: ["m", "n"] },
         {
           id: "openrouter",
           keyEnv: "OPENROUTER_API_KEY",
@@ -338,6 +366,36 @@ test("a rejected key (401 or 403) is not stored and the provider's text never co
   }
 });
 
+test("a Google 400 naming API_KEY_INVALID rejects the key; any other 400 leaves it unverified; neither is stored", async () => {
+  const w = await world();
+  try {
+    const rejected = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/GOOGLE_GENERATIVE_AI_API_KEY", { value: `${CANARY}-wrong` });
+    assert.equal(rejected.status, 422);
+    assert.deepEqual(await json(rejected), { error: "key_rejected" });
+    const other = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/GOOGLE_BUSY_API_KEY", { value: CANARY });
+    assert.equal(other.status, 502);
+    assert.deepEqual(await json(other), { error: "provider_unreachable" });
+    assert.deepEqual(w.bodies.filter((body) => body.includes(CANARY)), []);
+    assert.deepEqual((await json(await w.call(w.sessions.alice, "GET", "/api/me/credentials"))).credentials, []);
+    const valid = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/GOOGLE_GENERATIVE_AI_API_KEY", { value: CANARY });
+    assert.equal(valid.status, 200);
+  } finally {
+    await w.close();
+  }
+});
+
+test("a paginated model listing does not restrict the model choice", async () => {
+  const w = await world();
+  try {
+    const saved = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/PAGED_API_KEY", { value: CANARY });
+    assert.equal(saved.status, 200);
+    const chosen = await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", { provider: "paged", model: "n" });
+    assert.equal(chosen.status, 200);
+  } finally {
+    await w.close();
+  }
+});
+
 test("a provider error, a timeout and a redirect leave the key unverified and unstored; a redirect is never followed", async () => {
   const w = await world();
   try {
@@ -373,7 +431,7 @@ test("only catalog hosts are ever called: a key cannot be sent anywhere a user n
 
     // The checker itself refuses an origin the catalog does not declare.
     const checker = new KeyChecker({ allowedOrigins: new Set([new URL(w.providers.url).origin]) });
-    const outcome = await checker.check({ url: `${w.attacker.url}/models`, auth: "bearer", headers: {} }, CANARY);
+    const outcome = await checker.check({ url: `${w.attacker.url}/models`, auth: "bearer", headers: {}, invalidReason: null }, CANARY);
     assert.deepEqual(outcome, { status: "unverified" });
     assert.deepEqual(w.attacker.requests, []);
   } finally {
@@ -635,6 +693,7 @@ test("the catalog parser accepts the launch shape and refuses unsafe or ambiguou
     [withProvider({ validate: { url: "https://api.openai.com/", auth: "basic" } }), /auth must be/],
     [withProvider({ validate: { url: "https://api.openai.com/", auth: "bearer", headers: { Authorization: "x" } } }), /not an allowed header/],
     [withProvider({ validate: { url: "https://api.openai.com/", auth: "bearer", headers: { Host: "evil" } } }), /not an allowed header/],
+    [withProvider({ validate: { url: "https://api.openai.com/", auth: "bearer", invalidReason: "bad reason" } }), /invalidReason/],
     [{ ...GOOD, github: { keyEnv: ["OPENAI_API_KEY"], validate: { url: "https://api.github.com/user", auth: "bearer" } } }, /used twice/],
   ];
   for (const [value, message] of bad) {
@@ -653,6 +712,10 @@ test("provider listings are read in both shapes and dated snapshots confirm an a
   assert.equal(listedModels("not json"), null);
   assert.equal(listedModels(JSON.stringify({ data: { label: "x" } })), null);
   assert.equal(listedModels(null), null);
+  assert.equal(listedModels(JSON.stringify({ data: [{ id: "a" }], has_more: true })), null);
+  assert.deepEqual(listedModels(JSON.stringify({ data: [{ id: "a" }], has_more: false })), ["a"]);
+  assert.equal(listedModels(JSON.stringify({ models: [{ name: "models/a" }], nextPageToken: "next" })), null);
+  assert.deepEqual(listedModels(JSON.stringify({ models: [{ name: "models/a" }], nextPageToken: "" })), ["a"]);
   assert.deepEqual(confirmedModels(["m", "n", "o"], ["m", "n-20260101", "o-preview"]), ["m", "n"]);
   assert.equal(confirmedModels(["m"], null), null);
 });

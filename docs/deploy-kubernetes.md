@@ -670,6 +670,14 @@ tenants:
           url: https://api.deepseek.com/models
           auth: bearer            # or x-api-key / x-goog-api-key
         models: [deepseek-flash, deepseek-chat]
+      - id: google
+        name: Google
+        keyEnv: GOOGLE_GENERATIVE_AI_API_KEY
+        validate:
+          url: https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000
+          auth: x-goog-api-key
+          invalidReason: API_KEY_INVALID   # a 400 with this reason is a bad key
+        models: [gemini-2.5-pro, gemini-2.5-flash]
     github:                       # optional per-user GitHub token
       keyEnv: [GH_TOKEN, GITHUB_TOKEN]
       validate: { url: https://api.github.com/user, auth: bearer }
@@ -677,6 +685,14 @@ tenants:
 
 - The `validate.url` hosts are the **only** hosts the gateway sends a user's
   key to. They must be `https`, and redirects are never followed.
+- A `2xx` answer stores the key and `401`/`403` rejects it; anything else
+  leaves it unverified and stores nothing. A provider that signals a bad key
+  with a `400` instead (Google) sets `validate.invalidReason` to the reason code
+  its error carries in `error.details[].reason`; only a `400` with that reason
+  rejects the key, and any other `400` stays unverified.
+- Ask for the whole model list in the URL where the provider pages it
+  (Anthropic `?limit=1000`, Google `?pageSize=1000`). A listing that says more
+  pages follow restricts nothing.
 - The catalog never holds a key. Users bring their own; it is checked with the
   provider, encrypted with the vault keyring and stored in the gateway's store.
 - The render fails on a duplicate provider id or key name, a non-https

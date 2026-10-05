@@ -655,6 +655,10 @@ test("gateway on: the launch catalog renders into the tenant-params ConfigMap th
     ],
   );
   assert.deepEqual(catalog.github?.keyEnv, ["GH_TOKEN", "GITHUB_TOKEN"]);
+  assert.deepEqual(
+    catalog.providers.filter((provider) => provider.validate.invalidReason !== null).map((provider) => [provider.id, provider.validate.invalidReason]),
+    [["google", "API_KEY_INVALID"]],
+  );
   // The only hosts a user's key is ever sent to.
   assert.deepEqual([...validationOrigins(catalog)].sort(), [
     "https://api.anthropic.com",
@@ -742,6 +746,14 @@ for (const [label, mutate, message] of [
       };
     },
     /not an allowed header/,
+  ],
+  [
+    "a malformed invalid-key reason code",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, validate: { ...(first?.validate as object), invalidReason: "not a code" } }, ...rest] };
+    },
+    /invalidReason/,
   ],
   [
     "a provider without models",
