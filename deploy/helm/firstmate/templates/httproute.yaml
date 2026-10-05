@@ -32,8 +32,13 @@ spec:
       backendRefs:
         - group: ""
           kind: Service
+          {{- if .Values.gateway.enabled }}
+          name: {{ include "firstmate.gateway.fullname" . }}
+          port: {{ .Values.gateway.service.port }}
+          {{- else }}
           name: {{ include "firstmate.fullname" . }}
           port: {{ .Values.service.port }}
+          {{- end }}
           weight: 1
 {{- end }}
 {{- if and .Values.httpRoute.enabled .Values.httpRoute.redirect.enabled }}

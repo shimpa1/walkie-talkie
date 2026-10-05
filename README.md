@@ -577,6 +577,9 @@ the Helm chart in [`deploy/helm/firstmate`](deploy/helm/firstmate). This is an
 addition to the host-based usage above, not a replacement; see
 [`docs/deploy-kubernetes.md`](docs/deploy-kubernetes.md) for prerequisites,
 install/upgrade/uninstall, and the atus cluster example.
+The chart can also run the [multi-user gateway](#multi-user-gateway) in front
+of that firstmate (`gateway.enabled`); the same guide covers its GitHub OAuth
+App, secrets, cutover and rollback.
 
 ## Multi-user gateway
 

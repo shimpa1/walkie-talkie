@@ -18,8 +18,19 @@ firstmate and walkie-talkie are installed.
        {{- range .Values.httpRoute.hostnames }}
        https://{{ . }}
        {{- end }}
+{{- if .Values.gateway.enabled }}
+
+     The multi-user gateway {{ include "firstmate.gateway.fullname" . }} serves these
+     hosts: sign in with GitHub. Its OAuth App callback must be
+     {{ include "firstmate.gateway.publicOrigin" . }}/auth/github/callback.
+{{- if .Values.gateway.legacyBearer.enabled }}
+     The legacy bridge is on: a phone that still holds the walkie-talkie
+     bearer token keeps working as the first admin until it signs in.
+{{- end }}
+{{- else }}
 
      Enter the walkie-talkie bearer token once under Settings.
+{{- end }}
 {{- if not .Values.credentials.existingSecret }}
 {{- $secretName := include "firstmate.secretName" . }}
 {{- $tokenKey := .Values.credentials.keys.walkieTalkieToken }}

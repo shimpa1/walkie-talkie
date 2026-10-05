@@ -1,0 +1,24 @@
+{{- if and .Values.gateway.enabled .Values.gateway.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "firstmate.gateway.fullname" . }}-data
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+  annotations:
+    # Users, sessions and invites outlive turning the gateway off (the rollback
+    # path) and an uninstall; delete the claim by hand to drop them.
+    helm.sh/resource-policy: keep
+    {{- with .Values.gateway.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.gateway.persistence.accessModes | nindent 4 }}
+  {{- if .Values.gateway.persistence.storageClass }}
+  storageClassName: {{ .Values.gateway.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.gateway.persistence.size | quote }}
+{{- end }}
