@@ -53,6 +53,8 @@ test("gateway mode needs no shared token and resolves its settings", () => {
     legacyBearer: false,
     trustedProxyHops: 1,
     accessRequests: true,
+    catalog: null,
+    vault: null,
   });
 });
 
@@ -155,4 +157,47 @@ test("an unknown mode and out-of-range proxy hops are configuration errors", () 
     () => resolveConfig({ env: { ...GATEWAY_ENV, FM_WT_TRUSTED_PROXY_HOPS: "9" }, cwd: emptyDir() }),
     /FM_WT_TRUSTED_PROXY_HOPS/,
   );
+});
+
+test("a catalog turns setup on and needs the vault keyring from the environment", () => {
+  const dir = emptyDir();
+  const catalogPath = join(dir, "catalog.json");
+  writeFileSync(
+    catalogPath,
+    JSON.stringify({
+      harnesses: [{ name: "opencode" }],
+      providers: [
+        { id: "deepseek", keyEnv: "DEEPSEEK_API_KEY", validate: { url: "https://api.deepseek.com/models", auth: "bearer" }, models: ["deepseek-chat"] },
+      ],
+    }),
+  );
+  const key = Buffer.alloc(32, 7).toString("base64");
+
+  assert.throws(
+    () => resolveConfig({ env: { ...GATEWAY_ENV, FM_WT_CATALOG: catalogPath }, cwd: dir }),
+    /FM_WT_CATALOG needs FM_WT_VAULT_KEYS/,
+  );
+
+  const config = resolveConfig({
+    env: { ...GATEWAY_ENV, FM_WT_CATALOG: "catalog.json", FM_WT_VAULT_KEYS: `k1:${key},k2:${key}`, FM_WT_VAULT_ACTIVE_KEY: "k2" },
+    cwd: dir,
+  });
+  assert.deepEqual(config.gateway?.catalog?.providers.map((provider) => provider.id), ["deepseek"]);
+  assert.equal(config.gateway?.vault?.activeKid, "k2");
+  assert.deepEqual(config.gateway?.vault?.keyIds(), ["k1", "k2"]);
+
+  // The keyring is environment-only: the config file cannot supply it.
+  writeFileSync(join(dir, "walkie-talkie.config.json"), JSON.stringify({ vaultKeys: `k1:${key}`, catalog: "catalog.json" }));
+  assert.throws(() => resolveConfig({ env: GATEWAY_ENV, cwd: dir }), /FM_WT_VAULT_KEYS/);
+
+  for (const [env, message] of [
+    [{ FM_WT_VAULT_KEYS: `k1:${key}`, FM_WT_VAULT_ACTIVE_KEY: "k9" }, /active vault key k9 is not in the keyring/],
+    [{ FM_WT_VAULT_KEYS: "k1:c2hvcnQ=" }, /must be 32 bytes/],
+    [{ FM_WT_VAULT_KEYS: `k1:${key}`, FM_WT_CATALOG: join(dir, "missing.json") }, /cannot read the catalog/],
+  ] as const) {
+    assert.throws(
+      () => resolveConfig({ env: { ...GATEWAY_ENV, ...env }, cwd: emptyDir() }),
+      (error: unknown) => error instanceof ConfigError && message.test(error.message) && !error.message.includes(key),
+    );
+  }
 });

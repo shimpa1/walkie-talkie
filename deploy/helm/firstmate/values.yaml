@@ -538,3 +538,85 @@ gateway:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+
+# ---------------------------------------------------------------------------
+# Per-user firstmates (gateway mode)
+# ---------------------------------------------------------------------------
+# What the gateway offers users who set up their own firstmate. Rendered only
+# with the gateway enabled, as JSON into the ConfigMap <release>-tenant-params,
+# which the gateway mounts and validates at start-up.
+tenants:
+  # The provider and model menu. The admin decides what is offered; each user
+  # picks a provider and model from it and brings their own key. A key is sent
+  # only to its provider's `validate.url` (https, no redirects followed), so
+  # these URLs are the only hosts the gateway ever calls with a user's key.
+  #   harnesses  harnesses users may run; opencode is the one the runtime image ships
+  #   providers[].id        provider id, as opencode/models.dev names it
+  #   providers[].name      display name
+  #   providers[].keyEnv    env var the key is delivered under; also the key's name in the app
+  #   providers[].validate  {url, auth: bearer|x-api-key|x-goog-api-key, headers}: one GET
+  #                         that answers 2xx for a working key and 401/403 for a bad one
+  #   providers[].models    model ids on offer, pinned here; check them against each
+  #                         provider's own model list when you change them
+  #   github                the optional per-user GitHub token (a fine-grained PAT), delivered
+  #                         under every name in keyEnv; omit to not offer it
+  catalog:
+    harnesses:
+      - name: opencode
+    providers:
+      - id: anthropic
+        name: Anthropic
+        keyEnv: ANTHROPIC_API_KEY
+        validate:
+          url: https://api.anthropic.com/v1/models
+          auth: x-api-key
+          headers:
+            anthropic-version: "2023-06-01"
+        models:
+          - claude-opus-5-5
+          - claude-sonnet-5-5
+          - claude-haiku-4-5
+      - id: openai
+        name: OpenAI
+        keyEnv: OPENAI_API_KEY
+        validate:
+          url: https://api.openai.com/v1/models
+          auth: bearer
+        models:
+          - gpt-5
+          - gpt-5-mini
+      - id: openrouter
+        name: OpenRouter
+        keyEnv: OPENROUTER_API_KEY
+        validate:
+          url: https://openrouter.ai/api/v1/key
+          auth: bearer
+        models:
+          - qwen/qwen3.8-27b
+          - deepseek/deepseek-chat
+      - id: google
+        name: Google
+        keyEnv: GOOGLE_GENERATIVE_AI_API_KEY
+        validate:
+          url: https://generativelanguage.googleapis.com/v1beta/models
+          auth: x-goog-api-key
+        models:
+          - gemini-2.5-pro
+          - gemini-2.5-flash
+      - id: deepseek
+        name: DeepSeek
+        keyEnv: DEEPSEEK_API_KEY
+        validate:
+          url: https://api.deepseek.com/models
+          auth: bearer
+        models:
+          - deepseek-flash
+          - deepseek-chat
+          - deepseek-reasoner
+    github:
+      keyEnv:
+        - GH_TOKEN
+        - GITHUB_TOKEN
+      validate:
+        url: https://api.github.com/user
+        auth: bearer

@@ -15,6 +15,7 @@ import { openGatewayStore } from "./gateway-store.js";
 import { GithubOAuth } from "./github-oauth.js";
 import { FirstmateEventSource, PushService } from "./push-service.js";
 import { describeBind, listenOn, startServer } from "./server.js";
+import { runVaultCommand } from "./vault-cli.js";
 import {
   generateVapidKeys,
   HttpPushSender,
@@ -177,4 +178,20 @@ function main(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main();
+const [command, ...commandArgs] = process.argv.slice(2);
+if (command === "vault") {
+  runVaultCommand(commandArgs, {
+    env: process.env,
+    cwd: process.cwd(),
+    out: (line) => process.stdout.write(`${line}\n`),
+    err: (line) => process.stderr.write(`walkie-talkie: ${line}\n`),
+  }).then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      process.stderr.write(`walkie-talkie: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    },
+  );
+} else {
+  main();
+}

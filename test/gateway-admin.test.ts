@@ -147,7 +147,7 @@ test("an invited user with no firstmate yet is signed in but told so", async () 
     const { session } = await signIn(w.gateway, w.github, NEWCOMER);
     assert.ok(session);
     const info = await json(await fetch(`${w.gateway.url}/auth/session`, { headers: sessionHeaders(session) }));
-    assert.deepEqual(info.user, { login: "Newcomer", admin: false, firstmate: "none" });
+    assert.deepEqual(info.user, { login: "Newcomer", admin: false, firstmate: "none", setup: false });
     const api = await fetch(`${w.gateway.url}/api/status`, { headers: sessionHeaders(session) });
     assert.equal(api.status, 409);
     assert.equal(w.upstream.requests.length, 0);
@@ -519,6 +519,6 @@ test("a phase 1 database upgrades in place and keeps its users and sessions", ()
   assert.equal(after.listInvites(now).length, 1);
   after.close();
   const version = new sqlite.DatabaseSync(path);
-  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 2 });
+  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 3 });
   version.close();
 });

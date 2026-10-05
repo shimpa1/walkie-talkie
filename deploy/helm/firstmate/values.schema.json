@@ -334,6 +334,78 @@
         "enabled": { "type": "boolean" },
         "gatewayNamespace": { "type": "string" }
       }
+    },
+    "tenants": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "catalog": {
+          "type": "object",
+          "description": "The provider and model menu users set up their firstmate from. Keys are never values here.",
+          "additionalProperties": false,
+          "required": ["harnesses", "providers"],
+          "properties": {
+            "harnesses": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": { "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" } }
+              }
+            },
+            "providers": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "keyEnv", "validate", "models"],
+                "properties": {
+                  "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+                  "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "keyEnv": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" },
+                  "validate": { "$ref": "#/definitions/keyValidation" },
+                  "models": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$" }
+                  }
+                }
+              }
+            },
+            "github": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "required": ["keyEnv", "validate"],
+              "properties": {
+                "keyEnv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,127}$" }
+                },
+                "validate": { "$ref": "#/definitions/keyValidation" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "keyValidation": {
+      "type": "object",
+      "description": "One GET that answers 2xx for a working key and 401/403 for a bad one. The only host the key is sent to.",
+      "additionalProperties": false,
+      "required": ["url", "auth"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://" },
+        "auth": { "type": "string", "enum": ["bearer", "x-api-key", "x-goog-api-key"] },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
     }
   }
 }

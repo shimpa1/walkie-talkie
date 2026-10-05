@@ -206,3 +206,10 @@ secretKeyRef references.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The tenant-params ConfigMap the gateway mounts: <release>-tenant-params.
+*/}}
+{{- define "firstmate.tenantParamsName" -}}
+{{- printf "%s-tenant-params" (include "firstmate.fullname" . | trunc 49 | trimSuffix "-") -}}
+{{- end -}}
