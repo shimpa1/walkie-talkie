@@ -430,6 +430,8 @@ function renderSetupSummary() {
     line.textContent = `Ready: your firstmate will run ${choice.harness} on ${choice.provider}/${choice.model}. It starts once the admin turns on per-user firstmates.`;
   } else if (choice && !view.setup.key_saved) {
     line.textContent = `You chose ${choice.provider}/${choice.model}; add that provider's key to finish.`;
+  } else if (choice && !view.setup.model_available) {
+    line.textContent = `Your saved ${choice.provider} key cannot use ${choice.model}; choose another model.`;
   } else {
     line.textContent = "Pick a provider, save its key, then choose a model.";
   }

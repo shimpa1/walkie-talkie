@@ -113,6 +113,11 @@ async function readJson(req: IncomingMessage, res: ServerResponse, limit: number
   return parsed as Record<string, unknown>;
 }
 
+/** Whether a key can use every wanted model: true when its provider listed none for it. */
+function keyCanUse(keyModels: string[] | null, wanted: Array<string | null>): boolean {
+  return keyModels === null || wanted.every((model) => model === null || keyModels.includes(model));
+}
+
 /** The user's setup as the app shows it: their choice, and what is still missing. */
 function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string, unknown> {
   const { user } = caller;
@@ -123,13 +128,15 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
   const provider = choice === null ? null : providerById(ctx.catalog, choice.provider);
   const key = provider === null ? null : ctx.store.credential(user.id, provider.keyEnv);
   const offered = provider !== null && choice !== null && provider.models.includes(choice.model);
+  const available = offered && key !== null && keyCanUse(key.models, [choice.model, choice.routineModel]);
   return {
     managed: true,
     choice: choiceView(choice),
     setup: {
       model_chosen: offered,
       key_saved: key !== null,
-      ready: offered && key !== null,
+      model_available: available,
+      ready: available,
     },
     // Provisioning a firstmate is not available yet: the choice is kept for it.
     state: "none",
@@ -273,11 +280,7 @@ function chooseModel(ctx: SetupContext, res: ServerResponse, caller: SessionCall
   // listed the models for that key when it was checked (where it lists any).
   const key = ctx.store.credential(me.id, provider.keyEnv);
   if (key === null) return sendError(res, 409, "key_required");
-  if (key.models !== null) {
-    for (const wanted of routineModel === null ? [model] : [model, routineModel]) {
-      if (!key.models.includes(wanted)) return sendError(res, 422, "model_unavailable");
-    }
-  }
+  if (!keyCanUse(key.models, [model, routineModel])) return sendError(res, 422, "model_unavailable");
 
   const at = ctx.now();
   ctx.store.setModelChoice(me.id, { harness, provider: provider.id, model, routineModel }, at);

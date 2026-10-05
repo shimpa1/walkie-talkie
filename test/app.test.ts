@@ -2043,7 +2043,7 @@ function setupRoutes(): { routes: GatewayRoutes; saved: { credentials: Array<Rec
     return {
       managed: true,
       choice: saved.choice,
-      setup: { model_chosen: saved.choice !== null, key_saved: key, ready: saved.choice !== null && key },
+      setup: { model_chosen: saved.choice !== null, key_saved: key, model_available: saved.choice !== null && key, ready: saved.choice !== null && key },
       state: "none",
     };
   };

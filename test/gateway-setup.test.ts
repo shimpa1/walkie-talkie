@@ -71,6 +71,11 @@ async function startFakeProviders(elsewhere: string): Promise<FakeProviders> {
     const echo = JSON.stringify({ error: { message: `Incorrect API key provided: ${presented}` } });
     if (path === "/anthropic/v1/models") {
       // Valid only for the canary, with the anthropic-version header.
+      if (presented === `${CANARY}-haiku-only`) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "claude-haiku-4-5" }] }));
+        return;
+      }
       if (presented !== CANARY || req.headers["anthropic-version"] !== "2023-06-01") {
         res.writeHead(401, { "content-type": "application/json" });
         res.end(echo);
@@ -523,7 +528,7 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     assert.deepEqual(empty, {
       managed: true,
       choice: null,
-      setup: { model_chosen: false, key_saved: false, ready: false },
+      setup: { model_chosen: false, key_saved: false, model_available: false, ready: false },
       state: "none",
     });
 
@@ -547,7 +552,7 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     const chosen = await choose({ provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" });
     assert.equal(chosen.status, 200);
     const view = await json(chosen);
-    assert.deepEqual(view.setup, { model_chosen: true, key_saved: true, ready: true });
+    assert.deepEqual(view.setup, { model_chosen: true, key_saved: true, model_available: true, ready: true });
     const choice = view.choice as Record<string, unknown>;
     assert.equal(choice.harness, "opencode");
     assert.equal(choice.model, "claude-opus-5-5");
@@ -561,10 +566,40 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/OPENROUTER_API_KEY")).status, 200);
     assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/OPENROUTER_API_KEY")).status, 404);
     const after = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
-    assert.deepEqual(after.setup, { model_chosen: true, key_saved: false, ready: false });
+    assert.deepEqual(after.setup, { model_chosen: true, key_saved: false, model_available: false, ready: false });
 
     const actions = (await readAudit(w.gateway.config.gateway?.dbPath ?? "")).map((entry) => entry.action);
     for (const action of ["credential.saved", "credential.deleted", "firstmate.choice"]) assert.ok(actions.includes(action), action);
+  } finally {
+    await w.close();
+  }
+});
+
+test("replacing a key with one that cannot use the chosen model makes setup not ready", async () => {
+  const w = await world();
+  try {
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: CANARY })).status, 200);
+    const chosen = await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", { provider: "anthropic", model: "claude-opus-5-5" });
+    assert.equal(((await json(chosen)).setup as Record<string, unknown>).ready, true);
+
+    const replaced = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: `${CANARY}-haiku-only` });
+    assert.equal(replaced.status, 200);
+    const view = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
+    assert.deepEqual(view.setup, { model_chosen: true, key_saved: true, model_available: false, ready: false });
+
+    // The routine model counts too.
+    assert.equal(
+      (await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", { provider: "anthropic", model: "claude-haiku-4-5" })).status,
+      200,
+    );
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: CANARY })).status, 200);
+    assert.equal(
+      (await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", { provider: "anthropic", model: "claude-haiku-4-5", routine_model: "claude-opus-5-5" })).status,
+      200,
+    );
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: `${CANARY}-haiku-only` })).status, 200);
+    const routine = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
+    assert.equal((routine.setup as Record<string, unknown>).ready, false);
   } finally {
     await w.close();
   }
