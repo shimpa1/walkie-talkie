@@ -156,6 +156,7 @@ function showSignIn(outcome) {
   // Nothing about the previous user stays on screen, on a shared device too.
   $("home-label").textContent = "firstmate companion";
   $("admin-tab").hidden = true;
+  $("setup-tab").hidden = true;
   showView("signin");
 }
 
@@ -166,6 +167,7 @@ function renderAccount() {
   $("account-panel").hidden = false;
   const user = state.gateway.user;
   $("admin-tab").hidden = !(state.gateway.signedIn && user && user.admin === true);
+  $("setup-tab").hidden = !setupOffered();
   $("devices-panel").hidden = !state.gateway.signedIn;
   if (state.gateway.signedIn) {
     $("account-line").textContent = user && user.login ? `Signed in with GitHub as @${user.login}.` : "Signed in with GitHub.";
@@ -348,6 +350,189 @@ async function submitInvite(event) {
     setAdminStatus(error.message, "bad");
   }
   await loadAdmin();
+}
+
+// ---- setup: provider, key and model for the user's own firstmate ----------
+
+/** What the Setup view last read: the catalog, the user's key metadata and choice. */
+const setupState = { catalog: null, credentials: [], firstmate: null };
+
+/** Whether this signed-in user sets up their own firstmate (not a declared one). */
+function setupOffered() {
+  const user = state.gateway && state.gateway.user;
+  return Boolean(state.gateway && state.gateway.signedIn && user && user.setup === true);
+}
+
+/** A signed-in user whose firstmate is not set up yet starts on the Setup view. */
+function needsSetup() {
+  return setupOffered() && state.gateway.user.firstmate !== "ready";
+}
+
+function setSetupStatus(message, kind) {
+  const status = $("setup-status");
+  status.textContent = message;
+  status.className = `hint ${kind || ""}`;
+}
+
+/** Replace a select's options with `entries` ([value, label]); keep `selected` when offered. */
+function fillSelect(select, entries, selected, emptyLabel) {
+  select.textContent = "";
+  const values = [];
+  if (emptyLabel !== undefined) {
+    const option = el("option", "", emptyLabel);
+    option.value = "";
+    select.appendChild(option);
+    values.push("");
+  }
+  for (const [value, label] of entries) {
+    const option = el("option", "", label);
+    option.value = value;
+    select.appendChild(option);
+    values.push(value);
+  }
+  select.value = values.includes(selected) ? selected : values[0] || "";
+}
+
+function setupProvider() {
+  const catalog = setupState.catalog;
+  if (!catalog) return null;
+  return catalog.providers.find((provider) => provider.id === $("setup-provider").value) || null;
+}
+
+function savedCredential(name) {
+  return setupState.credentials.find((credential) => credential.name === name) || null;
+}
+
+function renderSetupProvider() {
+  const provider = setupProvider();
+  if (!provider) return;
+  const key = savedCredential(provider.key_name);
+  $("setup-key-line").textContent = key
+    ? `Your ${provider.name} key is saved (checked ${formatTimestamp(key.validated_at)}). Save a new one to replace it.`
+    : `Add your ${provider.name} API key. It is checked with ${provider.name} before it is saved.`;
+  $("setup-key-remove").hidden = !key;
+  const choice = setupState.firstmate && setupState.firstmate.choice;
+  const mine = choice && choice.provider === provider.id ? choice : null;
+  const models = provider.models.map((model) => [model, model]);
+  fillSelect($("setup-model"), models, mine ? mine.model : provider.models[0]);
+  fillSelect($("setup-routine"), models, mine && mine.routine_model ? mine.routine_model : "", "None");
+}
+
+function renderSetupSummary() {
+  const view = setupState.firstmate;
+  const line = $("setup-summary");
+  if (!view || !view.setup) {
+    line.textContent = "";
+    return;
+  }
+  const choice = view.choice;
+  if (view.setup.ready && choice) {
+    line.textContent = `Ready: your firstmate will run ${choice.harness} on ${choice.provider}/${choice.model}. It starts once the admin turns on per-user firstmates.`;
+  } else if (choice && !view.setup.model_chosen) {
+    line.textContent = `${choice.provider}/${choice.model} is no longer offered; choose another model.`;
+  } else if (choice && !view.setup.routine_chosen) {
+    line.textContent = `Your routine model ${choice.provider}/${choice.routine_model} is no longer offered; choose another.`;
+  } else if (choice && !view.setup.key_saved) {
+    line.textContent = `You chose ${choice.provider}/${choice.model}; add that provider's key to finish.`;
+  } else if (choice && !view.setup.model_available) {
+    line.textContent = `Your saved ${choice.provider} key cannot use ${choice.model}; choose another model.`;
+  } else if (choice && !view.setup.routine_available) {
+    line.textContent = `Your saved ${choice.provider} key cannot use your routine model ${choice.routine_model}; choose another.`;
+  } else {
+    line.textContent = "Pick a provider, save its key, then choose a model.";
+  }
+}
+
+function renderSetup() {
+  const catalog = setupState.catalog;
+  if (!catalog) return;
+  const choice = setupState.firstmate && setupState.firstmate.choice;
+  const current = $("setup-provider").value || (choice ? choice.provider : "");
+  fillSelect(
+    $("setup-provider"),
+    catalog.providers.map((provider) => [provider.id, provider.name]),
+    current,
+  );
+  renderSetupProvider();
+  const github = catalog.github;
+  $("setup-github-form").hidden = !github;
+  if (github) $("setup-github-remove").hidden = !savedCredential(github.key_name);
+  renderSetupSummary();
+}
+
+async function loadSetup() {
+  if (!setupOffered()) return;
+  try {
+    const [catalog, credentials, firstmate] = await Promise.all([
+      api("/api/catalog"),
+      api("/api/me/credentials"),
+      api("/api/me/firstmate"),
+    ]);
+    setupState.catalog = catalog.catalog;
+    setupState.credentials = credentials.credentials || [];
+    setupState.firstmate = firstmate;
+    renderSetup();
+  } catch (error) {
+    setSetupStatus(`Could not load: ${error.message}`, "bad");
+  }
+}
+
+/** Send a key for checking and storage. The field is cleared whatever happens. */
+async function saveSetupKey(input, name, label) {
+  const value = input.value.trim();
+  input.value = "";
+  if (!value) {
+    setSetupStatus(`Paste your ${label} first.`, "bad");
+    return;
+  }
+  setSetupStatus(`Checking your ${label}…`, "");
+  try {
+    await api(`/api/me/credentials/${encodeURIComponent(name)}`, jsonInit("PUT", { value }));
+    setSetupStatus(`Saved: your ${label} works and is stored encrypted.`, "ok");
+  } catch (error) {
+    setSetupStatus(error.message, "bad");
+  }
+  await loadSetup();
+}
+
+async function removeSetupKey(name, label) {
+  try {
+    await api(`/api/me/credentials/${encodeURIComponent(name)}`, { method: "DELETE" });
+    setSetupStatus(`Removed your ${label}.`, "ok");
+  } catch (error) {
+    setSetupStatus(error.message, "bad");
+  }
+  await loadSetup();
+}
+
+async function submitSetupKey(event) {
+  event.preventDefault();
+  const provider = setupProvider();
+  if (!provider) return;
+  await saveSetupKey($("setup-key"), provider.key_name, `${provider.name} key`);
+}
+
+async function submitSetupGithub(event) {
+  event.preventDefault();
+  const github = setupState.catalog && setupState.catalog.github;
+  if (!github) return;
+  await saveSetupKey($("setup-github"), github.key_name, "GitHub token");
+}
+
+async function submitSetupModel(event) {
+  event.preventDefault();
+  const provider = setupProvider();
+  if (!provider) return;
+  const body = { provider: provider.id, model: $("setup-model").value };
+  const routine = $("setup-routine").value;
+  if (routine) body.routine_model = routine;
+  try {
+    setupState.firstmate = await api("/api/me/firstmate", jsonInit("PUT", body));
+    setSetupStatus(`Saved: ${provider.name} ${body.model}.`, "ok");
+    renderSetupSummary();
+  } catch (error) {
+    setSetupStatus(error.message, "bad");
+  }
 }
 
 function renderDevices(devices) {
@@ -1692,6 +1877,7 @@ function showView(name) {
     void refreshPushStatus();
   }
   if (name === "admin") void loadAdmin();
+  if (name === "setup") void loadSetup();
   if (name === "conversations") {
     void loadSessions();
     void loadThreads();
@@ -1735,7 +1921,7 @@ function hasUnsentWork() {
   return Boolean(state.voice && state.voice.isListening());
 }
 
-const VIEWS = ["status", "conversations", "settings", "admin"];
+const VIEWS = ["status", "conversations", "setup", "settings", "admin"];
 const TOKEN_SAVE_DELAY_MS = 300;
 let tokenSaveTimer = null;
 
@@ -1851,6 +2037,18 @@ async function init() {
   $("link-device").addEventListener("click", () => void showLinkCode());
   $("link-form").addEventListener("submit", (event) => void redeemLinkCode(event));
   $("invite-form").addEventListener("submit", (event) => void submitInvite(event));
+  $("setup-provider").addEventListener("change", renderSetupProvider);
+  $("setup-key-form").addEventListener("submit", (event) => void submitSetupKey(event));
+  $("setup-model-form").addEventListener("submit", (event) => void submitSetupModel(event));
+  $("setup-github-form").addEventListener("submit", (event) => void submitSetupGithub(event));
+  $("setup-key-remove").addEventListener("click", () => {
+    const provider = setupProvider();
+    if (provider) void removeSetupKey(provider.key_name, `${provider.name} key`);
+  });
+  $("setup-github-remove").addEventListener("click", () => {
+    const github = setupState.catalog && setupState.catalog.github;
+    if (github) void removeSetupKey(github.key_name, "GitHub token");
+  });
 
   const params = new URLSearchParams(window.location.search);
   const signin = params.get("signin");
@@ -1862,6 +2060,8 @@ async function init() {
       showSignIn(signin);
     } else if (requested && VIEWS.includes(requested)) {
       showView(requested);
+    } else if (needsSetup()) {
+      showView("setup");
     } else if (!authReady()) {
       showView("settings");
     } else {
@@ -1893,7 +2093,7 @@ async function init() {
     }
     // Reveals the Admin tab for an admin and swaps the token form for the account.
     renderAccount();
-    if (knownGateway || !authReady() || state.view === "settings") showInitialView();
+    if (knownGateway || !authReady() || state.view === "settings" || needsSetup()) showInitialView();
   } else if (knownGateway) {
     showInitialView();
   }

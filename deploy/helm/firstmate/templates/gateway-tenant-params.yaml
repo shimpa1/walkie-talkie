@@ -1,0 +1,104 @@
+{{- if .Values.gateway.enabled -}}
+{{- /* ------------------------------------------------------------------ */ -}}
+{{- /* Validate tenants.catalog before rendering, so a bad menu fails the   */ -}}
+{{- /* render instead of a gateway that refuses to start. The gateway      */ -}}
+{{- /* re-checks every rule here (src/catalog.ts) when it loads the file.  */ -}}
+{{- $catalog := required "gateway.enabled requires tenants.catalog" .Values.tenants.catalog -}}
+{{- $harnesses := dict -}}
+{{- range $h := (default (list) $catalog.harnesses) -}}
+{{- $name := required "tenants.catalog.harnesses[].name is required" $h.name -}}
+{{- if hasKey $harnesses $name -}}
+{{- fail (printf "tenants.catalog.harnesses: %q is listed twice" $name) -}}
+{{- end -}}
+{{- $_ := set $harnesses $name true -}}
+{{- end -}}
+{{- if eq (len $harnesses) 0 -}}
+{{- fail "tenants.catalog.harnesses must list at least one harness" -}}
+{{- end -}}
+{{- $auths := list "bearer" "x-api-key" "x-goog-api-key" -}}
+{{- $reserved := list "authorization" "x-api-key" "x-goog-api-key" "host" "cookie" "content-length" "transfer-encoding" "connection" -}}
+{{- $ids := dict -}}
+{{- $envs := dict -}}
+{{- $validates := list -}}
+{{- range $p := (default (list) $catalog.providers) -}}
+{{- $id := required "tenants.catalog.providers[].id is required" $p.id -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,31}$" $id) -}}
+{{- fail (printf "tenants.catalog.providers: id %q must be a lowercase provider id" $id) -}}
+{{- end -}}
+{{- if hasKey $ids $id -}}
+{{- fail (printf "tenants.catalog.providers: %q is declared twice" $id) -}}
+{{- end -}}
+{{- $_ := set $ids $id true -}}
+{{- range $k := list "apiKey" "key" "value" "token" -}}
+{{- if hasKey $p $k -}}
+{{- fail (printf "tenants.catalog.providers[%s].%s: the catalog never holds a key; users bring their own" $id $k) -}}
+{{- end -}}
+{{- end -}}
+{{- $env := required (printf "tenants.catalog.providers[%s].keyEnv is required" $id) $p.keyEnv -}}
+{{- if not (regexMatch "^[A-Z_][A-Z0-9_]{0,127}$" $env) -}}
+{{- fail (printf "tenants.catalog.providers[%s].keyEnv %q must be an environment variable name" $id $env) -}}
+{{- end -}}
+{{- if hasKey $envs $env -}}
+{{- fail (printf "tenants.catalog.providers[%s].keyEnv %q is used twice" $id $env) -}}
+{{- end -}}
+{{- $_ := set $envs $env true -}}
+{{- if eq (len (default (list) $p.models)) 0 -}}
+{{- fail (printf "tenants.catalog.providers[%s].models must list at least one model" $id) -}}
+{{- end -}}
+{{- if ne (len (default (list) $p.models)) (len (uniq $p.models)) -}}
+{{- fail (printf "tenants.catalog.providers[%s].models lists a model twice" $id) -}}
+{{- end -}}
+{{- $validates = append $validates (dict "where" (printf "tenants.catalog.providers[%s]" $id) "validate" $p.validate) -}}
+{{- end -}}
+{{- if eq (len $ids) 0 -}}
+{{- fail "tenants.catalog.providers must list at least one provider" -}}
+{{- end -}}
+{{- with $catalog.github -}}
+{{- $ghEnv := .keyEnv -}}
+{{- if kindIs "string" $ghEnv -}}{{- $ghEnv = list $ghEnv -}}{{- end -}}
+{{- if eq (len (default (list) $ghEnv)) 0 -}}
+{{- fail "tenants.catalog.github.keyEnv must name at least one environment variable" -}}
+{{- end -}}
+{{- range $env := $ghEnv -}}
+{{- if not (regexMatch "^[A-Z_][A-Z0-9_]{0,127}$" $env) -}}
+{{- fail (printf "tenants.catalog.github.keyEnv %q must be an environment variable name" $env) -}}
+{{- end -}}
+{{- if hasKey $envs $env -}}
+{{- fail (printf "tenants.catalog.github.keyEnv %q is used twice" $env) -}}
+{{- end -}}
+{{- $_ := set $envs $env true -}}
+{{- end -}}
+{{- $validates = append $validates (dict "where" "tenants.catalog.github" "validate" .validate) -}}
+{{- end -}}
+{{- range $v := $validates -}}
+{{- $spec := required (printf "%s.validate is required" $v.where) $v.validate -}}
+{{- $url := required (printf "%s.validate.url is required" $v.where) $spec.url -}}
+{{- if not (regexMatch "^https://[^/@#?]+(/[^#@]*)?$" $url) -}}
+{{- fail (printf "%s.validate.url must be an https URL with no credentials or fragment, got %q" $v.where $url) -}}
+{{- end -}}
+{{- if not (has $spec.auth $auths) -}}
+{{- fail (printf "%s.validate.auth must be one of %s" $v.where (join ", " $auths)) -}}
+{{- end -}}
+{{- range $name, $_ := (default (dict) $spec.headers) -}}
+{{- if has (lower $name) $reserved -}}
+{{- fail (printf "%s.validate.headers: %s is not an allowed header" $v.where $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $spec "invalidReason" -}}
+{{- if not (regexMatch "^[A-Z][A-Z0-9_]{0,63}$" (toString $spec.invalidReason)) -}}
+{{- fail (printf "%s.validate.invalidReason must be an upper-case reason code" $v.where) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+# What the gateway offers users who set up their own firstmate (tenants.*).
+# The catalog's validation URLs are the only hosts a user's key is sent to.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "firstmate.tenantParamsName" . }}
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+data:
+  catalog.json: |-
+{{ $catalog | toPrettyJson | indent 4 }}
+{{- end }}

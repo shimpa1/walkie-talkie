@@ -269,6 +269,7 @@ label {
 }
 
 textarea,
+select,
 input[type="password"],
 input[type="text"] {
   width: 100%;
@@ -282,6 +283,7 @@ input[type="text"] {
 }
 
 textarea:focus,
+select:focus,
 input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -379,6 +381,31 @@ button.mic.is-listening {
 
 .receipt code {
   overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.setup-step {
+  margin-top: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.setup-step[hidden] {
+  display: none;
+}
+
+.setup-step h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.setup-summary {
+  margin-top: 14px;
+  font-size: 15px;
   color: var(--text);
 }
 

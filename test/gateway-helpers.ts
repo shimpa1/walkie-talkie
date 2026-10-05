@@ -4,13 +4,16 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { Catalog } from "../src/catalog.js";
 import type { AppConfig } from "../src/config.js";
 import { LOGIN_COOKIE, SESSION_COOKIE } from "../src/cookies.js";
 import type { GatewayConfig, StaticTenant } from "../src/gateway-config.js";
 import { createGatewayHandler, defaultSignInLimits } from "../src/gateway.js";
 import { GatewayStore, type AuditEntry } from "../src/gateway-store.js";
 import { GithubOAuth, type GithubIdentity } from "../src/github-oauth.js";
+import type { KeyChecker } from "../src/key-check.js";
 import type { RateLimiter } from "../src/rate-limit.js";
+import type { Vault } from "../src/vault.js";
 import { PUBLIC_DIR } from "./helpers.js";
 
 export const ORIGIN = "https://walkie.example";
@@ -231,6 +234,10 @@ export interface GatewayOptions {
   signInLimits?: { perClient: RateLimiter; global: RateLimiter };
   linkLimits?: { perClient: RateLimiter; global: RateLimiter };
   proxyTimeoutMs?: number;
+  catalog?: Catalog | null;
+  vault?: Vault | null;
+  keyChecker?: KeyChecker;
+  keyCheckLimits?: { perUser: RateLimiter; global: RateLimiter };
 }
 
 export async function startGateway(options: GatewayOptions): Promise<GatewayHarness> {
@@ -247,6 +254,8 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
     legacyBearer: options.legacyBearer ?? false,
     trustedProxyHops: options.trustedProxyHops ?? 0,
     accessRequests: options.accessRequests ?? true,
+    catalog: options.catalog ?? null,
+    vault: options.vault ?? null,
   };
   const config: AppConfig = {
     mode: "gateway",
@@ -292,6 +301,8 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
       signInLimits: options.signInLimits ?? defaultSignInLimits(now),
       ...(options.linkLimits !== undefined ? { linkLimits: options.linkLimits } : {}),
       ...(options.proxyTimeoutMs !== undefined ? { proxyTimeoutMs: options.proxyTimeoutMs } : {}),
+      ...(options.keyChecker !== undefined ? { keyChecker: options.keyChecker } : {}),
+      ...(options.keyCheckLimits !== undefined ? { keyCheckLimits: options.keyCheckLimits } : {}),
     }),
   );
   const url = await listen(server);

@@ -47,7 +47,7 @@ export interface AppConfig {
   opencodeDbPath: string;
 }
 
-interface FileConfig extends GatewayFileConfig {
+export interface FileConfig extends GatewayFileConfig {
   mode?: unknown;
   fmHome?: unknown;
   fmBin?: unknown;
@@ -106,7 +106,7 @@ function asBoolean(value: unknown, key: string): boolean | undefined {
   throw new ConfigError(`config key ${key} must be a boolean`);
 }
 
-function readConfigFile(path: string): FileConfig {
+export function readConfigFile(path: string): FileConfig {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
@@ -136,6 +136,12 @@ function parsePort(value: string | undefined): number | undefined {
   return port;
 }
 
+/** The gitignored JSON config file: FM_WT_CONFIG, else walkie-talkie.config.json in cwd. */
+export function configFilePath(env: NodeJS.ProcessEnv, cwd: string): string {
+  const setting = env.FM_WT_CONFIG?.trim();
+  return setting ? resolve(cwd, setting) : resolve(cwd, DEFAULT_CONFIG_FILE);
+}
+
 export interface ResolveOptions {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
@@ -150,10 +156,7 @@ export function resolveConfig(options: ResolveOptions = {}): AppConfig {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
 
-  const configFileSetting = env.FM_WT_CONFIG?.trim();
-  const configFile = configFileSetting
-    ? resolve(cwd, configFileSetting)
-    : resolve(cwd, DEFAULT_CONFIG_FILE);
+  const configFile = configFilePath(env, cwd);
   const file = readConfigFile(configFile);
 
   const fmHomeRaw =

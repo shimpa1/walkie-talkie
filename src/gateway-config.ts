@@ -1,12 +1,16 @@
+import { CatalogError, loadCatalog, type Catalog } from "./catalog.js";
+import { Vault, VaultError } from "./vault.js";
+
 /**
  * Configuration for the multi-user gateway mode.
  *
  * In gateway mode the service is the public front door: it signs people in
  * with GitHub, keeps their sessions, and forwards each signed-in user's API
  * calls to that user's own firstmate. Non-secret settings may come from the
- * gitignored config file or the environment; the two secrets (the GitHub OAuth
- * client secret and each static tenant's bearer token) are read from the
- * environment only, so a secret never has to be written into a file.
+ * gitignored config file or the environment; the secrets (the GitHub OAuth
+ * client secret, each static tenant's bearer token and the vault keyring) are
+ * read from the environment only, so a secret never has to be written into a
+ * file.
  */
 
 export type ServiceMode = "standalone" | "gateway";
@@ -48,10 +52,18 @@ export interface GatewayConfig {
    * is recorded.
    */
   accessRequests: boolean;
+  /**
+   * The provider and model catalog users set up their firstmate from, or null
+   * when none is configured (then the setup routes are off).
+   */
+  catalog: Catalog | null;
+  /** The credential vault, or null without a keyring. Required with a catalog. */
+  vault: Vault | null;
 }
 
 export const DEFAULT_GATEWAY_DB = "walkie-talkie.gateway.db";
 export const MAX_TRUSTED_PROXY_HOPS = 5;
+export const DEFAULT_VAULT_ACTIVE_KEY = "k1";
 
 export class GatewayConfigError extends Error {
   override name = "GatewayConfigError";
@@ -197,6 +209,37 @@ export interface GatewayFileConfig {
   legacyBearer?: unknown;
   trustedProxyHops?: unknown;
   accessRequests?: unknown;
+  catalog?: unknown;
+  vaultActiveKey?: unknown;
+}
+
+/**
+ * The credential vault from FM_WT_VAULT_KEYS (environment only: it is the key
+ * material) and the active key id, which is not secret. Null without a keyring.
+ */
+export function resolveVault(env: NodeJS.ProcessEnv, file: GatewayFileConfig): Vault | null {
+  const keyring = env.FM_WT_VAULT_KEYS?.trim() ?? "";
+  if (keyring === "") return null;
+  const active = pick(env.FM_WT_VAULT_ACTIVE_KEY, file.vaultActiveKey) ?? DEFAULT_VAULT_ACTIVE_KEY;
+  if (typeof active !== "string") throw new GatewayConfigError("vaultActiveKey must be a key id");
+  try {
+    return Vault.fromSettings(keyring, active);
+  } catch (error) {
+    throw new GatewayConfigError(`FM_WT_VAULT_KEYS: ${error instanceof VaultError ? error.message : "invalid"}`);
+  }
+}
+
+/** The gateway store path, as the gateway and the `vault` CLI both resolve it. */
+export function resolveGatewayDbPath(
+  env: NodeJS.ProcessEnv,
+  file: GatewayFileConfig,
+  resolvePath: (path: string) => string,
+): string {
+  const dbRaw = pick(env.FM_WT_GATEWAY_DB, file.gatewayDb) ?? DEFAULT_GATEWAY_DB;
+  if (typeof dbRaw !== "string" || dbRaw === "") {
+    throw new GatewayConfigError("gatewayDb must be a path");
+  }
+  return resolvePath(dbRaw);
 }
 
 /**
@@ -228,14 +271,26 @@ export function resolveGatewayConfig(
   const admins = parseAdmins(pick(env.FM_WT_ADMINS, file.admins));
   const staticTenants = parseStaticTenants(pick(env.FM_WT_STATIC_TENANTS, file.staticTenants), env);
 
-  const dbRaw = pick(env.FM_WT_GATEWAY_DB, file.gatewayDb) ?? DEFAULT_GATEWAY_DB;
-  if (typeof dbRaw !== "string" || dbRaw === "") {
-    throw new GatewayConfigError("gatewayDb must be a path");
-  }
+  const dbPath = resolveGatewayDbPath(env, file, resolvePath);
 
   const legacyBearer = parseBool(pick(env.FM_WT_LEGACY_BEARER, file.legacyBearer), "FM_WT_LEGACY_BEARER") ?? false;
   if (legacyBearer && token.trim().length === 0) {
     throw new GatewayConfigError("FM_WT_LEGACY_BEARER needs FM_WT_TOKEN, the shared token it keeps accepting");
+  }
+
+  const vault = resolveVault(env, file);
+  const catalogRaw = pick(env.FM_WT_CATALOG, file.catalog);
+  let catalog: Catalog | null = null;
+  if (catalogRaw !== undefined && catalogRaw !== null && catalogRaw !== "") {
+    if (typeof catalogRaw !== "string") throw new GatewayConfigError("FM_WT_CATALOG must be the path of the catalog JSON");
+    try {
+      catalog = loadCatalog(resolvePath(catalogRaw));
+    } catch (error) {
+      throw new GatewayConfigError(error instanceof CatalogError ? error.message : String(error));
+    }
+    if (vault === null) {
+      throw new GatewayConfigError("FM_WT_CATALOG needs FM_WT_VAULT_KEYS: users' keys are only ever stored encrypted");
+    }
   }
 
   return {
@@ -244,10 +299,12 @@ export function resolveGatewayConfig(
     githubClientSecret: clientSecret,
     admins,
     staticTenants,
-    dbPath: resolvePath(dbRaw),
+    dbPath,
     legacyBearer,
     trustedProxyHops: parseHops(pick(env.FM_WT_TRUSTED_PROXY_HOPS, file.trustedProxyHops)),
     accessRequests:
       parseBool(pick(env.FM_WT_ACCESS_REQUESTS, file.accessRequests), "FM_WT_ACCESS_REQUESTS") ?? true,
+    catalog,
+    vault,
   };
 }

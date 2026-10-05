@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { parseCatalog, validationOrigins } from "../src/catalog.js";
 import { REPO_ROOT } from "./helpers.js";
 
 const CHART = join(REPO_ROOT, "deploy", "helm", "firstmate");
@@ -425,6 +426,7 @@ test("gateway on: the workload, its claim and two Services render", { skip: skip
     inventory(rendered.stdout),
     [
       ...PRE_GATEWAY_INVENTORY,
+      "ConfigMap/firstmate-tenant-params",
       "Deployment/firstmate-gateway",
       "NetworkPolicy/firstmate",
       "NetworkPolicy/firstmate-gateway",
@@ -620,3 +622,165 @@ test("a static tenant without a token reference fails the render", { skip: skipH
   assert.notEqual(rendered.status, 0);
   assert.match(rendered.stderr, /tokenSecretRef/);
 });
+
+// ---------------------------------------------------------------------------
+// Tenant catalog (gateway mode)
+// ---------------------------------------------------------------------------
+
+/** The launch catalog from values.yaml, as a values document to vary. */
+function launchCatalog(): Record<string, unknown> {
+  const rendered = render([...GATEWAY_ON]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const raw = blockScalar(rendered.stdout, "catalog.json");
+  assert.ok(raw, "catalog.json is rendered");
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+test("gateway on: the launch catalog renders into the tenant-params ConfigMap the gateway mounts", { skip: skipHelm }, () => {
+  const rendered = render(GATEWAY_ON);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const raw = blockScalar(rendered.stdout, "catalog.json");
+  assert.ok(raw);
+  // The gateway's own parser accepts exactly what the chart renders.
+  const catalog = parseCatalog(JSON.parse(raw));
+  assert.deepEqual(catalog.harnesses, ["opencode"]);
+  assert.deepEqual(
+    catalog.providers.map((provider) => [provider.id, provider.keyEnv]),
+    [
+      ["anthropic", "ANTHROPIC_API_KEY"],
+      ["openai", "OPENAI_API_KEY"],
+      ["openrouter", "OPENROUTER_API_KEY"],
+      ["google", "GOOGLE_GENERATIVE_AI_API_KEY"],
+      ["deepseek", "DEEPSEEK_API_KEY"],
+    ],
+  );
+  assert.deepEqual(catalog.github?.keyEnv, ["GH_TOKEN", "GITHUB_TOKEN"]);
+  assert.deepEqual(
+    catalog.providers.filter((provider) => provider.validate.invalidReason !== null).map((provider) => [provider.id, provider.validate.invalidReason]),
+    [["google", "API_KEY_INVALID"]],
+  );
+  // The only hosts a user's key is ever sent to.
+  assert.deepEqual([...validationOrigins(catalog)].sort(), [
+    "https://api.anthropic.com",
+    "https://api.deepseek.com",
+    "https://api.github.com",
+    "https://api.openai.com",
+    "https://generativelanguage.googleapis.com",
+    "https://openrouter.ai",
+  ]);
+
+  const deployment = findDoc(rendered.stdout, "Deployment", "firstmate-gateway");
+  assert.ok(deployment);
+  assert.match(deployment, /name: FM_WT_CATALOG\n\s+value: "\/etc\/walkie-talkie\/tenant-params\/catalog\.json"/);
+  assert.match(deployment, /name: tenant-params\n\s+configMap:\n\s+name: firstmate-tenant-params/);
+  assert.match(deployment, /name: tenant-params\n\s+mountPath: \/etc\/walkie-talkie\/tenant-params\n\s+readOnly: true/);
+  assert.match(deployment, /checksum\/tenant-params: [0-9a-f]{64}/);
+  // The active vault key id comes from values; only the keyring is secret.
+  assert.match(deployment, /name: FM_WT_VAULT_ACTIVE_KEY\n\s+value: "k1"/);
+});
+
+test("gateway off: the catalog renders nothing", { skip: skipHelm }, () => {
+  const rendered = render(["-f", VALUES_ATUS, ...FIXED_TOKEN]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.doesNotMatch(rendered.stdout, /tenant-params|catalog\.json/);
+});
+
+test("a catalog change rolls the gateway", { skip: skipHelm }, () => {
+  const catalog = launchCatalog();
+  const providers = catalog.providers as Array<Record<string, unknown>>;
+  const narrowed = { ...catalog, providers: providers.filter((provider) => provider.id === "anthropic") };
+  const before = findDoc(render(GATEWAY_ON).stdout, "Deployment", "firstmate-gateway");
+  const after = findDoc(render([...GATEWAY_ON, "-f", valuesFile({ tenants: { catalog: narrowed } })]).stdout, "Deployment", "firstmate-gateway");
+  const checksum = (doc: string | null): string | undefined => /checksum\/tenant-params: (\S+)/.exec(doc ?? "")?.[1];
+  assert.ok(checksum(before));
+  assert.notEqual(checksum(before), checksum(after));
+});
+
+for (const [label, mutate, message] of [
+  ["no providers", (c: Record<string, unknown>) => ({ ...c, providers: [] }), /at least one provider/],
+  ["no harnesses", (c: Record<string, unknown>) => ({ ...c, harnesses: [] }), /at least one harness/],
+  [
+    "a duplicate provider id",
+    (c: Record<string, unknown>) => {
+      const providers = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [...providers, { ...providers[0], keyEnv: "OTHER_API_KEY" }] };
+    },
+    /declared twice/,
+  ],
+  [
+    "a key name used twice",
+    (c: Record<string, unknown>) => {
+      const providers = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [...providers, { ...providers[0], id: "other" }] };
+    },
+    /used twice/,
+  ],
+  [
+    "a GitHub key name that collides with a provider's",
+    (c: Record<string, unknown>) => ({ ...c, github: { ...(c.github as object), keyEnv: ["OPENAI_API_KEY"] } }),
+    /used twice/,
+  ],
+  [
+    "a plain-http validation URL",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, validate: { url: "http://api.anthropic.com/v1/models", auth: "x-api-key" } }, ...rest] };
+    },
+    /https/,
+  ],
+  [
+    "an unknown key header",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, validate: { url: "https://api.anthropic.com/v1/models", auth: "basic" } }, ...rest] };
+    },
+    /auth must be one of/,
+  ],
+  [
+    "a reserved validation header",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return {
+        ...c,
+        providers: [{ ...first, validate: { url: "https://api.anthropic.com/v1/models", auth: "bearer", headers: { Host: "evil.example" } } }, ...rest],
+      };
+    },
+    /not an allowed header/,
+  ],
+  [
+    "a malformed invalid-key reason code",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, validate: { ...(first?.validate as object), invalidReason: "not a code" } }, ...rest] };
+    },
+    /invalidReason/,
+  ],
+  [
+    "a provider without models",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, models: [] }, ...rest] };
+    },
+    /at least one model/,
+  ],
+  [
+    "a key written into the catalog",
+    (c: Record<string, unknown>) => {
+      const [first, ...rest] = c.providers as Array<Record<string, unknown>>;
+      return { ...c, providers: [{ ...first, apiKey: "sk-literal" }, ...rest] };
+    },
+    /never holds a key/,
+  ],
+] as const) {
+  test(`a bad catalog fails the render: ${label}`, { skip: skipHelm }, () => {
+    const file = valuesFile({ tenants: { catalog: mutate(launchCatalog()) } });
+    const rendered = render([...GATEWAY_ON, "-f", file]);
+    assert.notEqual(rendered.status, 0, `${label} rendered`);
+    if (skipSchemaFlag) {
+      // The template refuses it too, for renders that skip the schema.
+      const unchecked = render([...GATEWAY_ON, "-f", file, "--skip-schema-validation"]);
+      assert.notEqual(unchecked.status, 0, `${label} rendered without the schema`);
+      assert.match(unchecked.stderr, message);
+    }
+  });
+}

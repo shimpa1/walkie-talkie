@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { constantTimeEqual } from "./auth.js";
+import { wipe, type SealedValue, type Vault } from "./vault.js";
 
 /**
  * The gateway's durable state: users, login sessions, in-flight GitHub login
@@ -15,8 +16,10 @@ import { constantTimeEqual } from "./auth.js";
  * the database yields no live session. The file is created owner-only (0600);
  * SQLite gives its WAL and shared-memory files the same mode.
  *
- * The store never holds a GitHub access token, a cookie value, or any firstmate
- * conversation content.
+ * Users' provider keys and GitHub tokens are held only sealed by the vault
+ * (AES-256-GCM, see vault.ts); the store never sees them in the clear. It never
+ * holds a sign-in access token, a cookie value, or any firstmate conversation
+ * content.
  */
 
 type SqliteDatabase = import("node:sqlite").DatabaseSync;
@@ -88,6 +91,37 @@ export interface AuditEntry {
   detail: Record<string, string | number | boolean> | null;
 }
 
+/** A stored credential as its owner sees it: metadata only, never the value. */
+export interface CredentialRecord {
+  name: string;
+  provider: string;
+  addedAt: number;
+  validatedAt: number;
+  /**
+   * Catalog models the provider listed for this key when it was validated, or
+   * null when the provider lists none.
+   */
+  models: string[] | null;
+}
+
+/** A user's choice of what their firstmate runs on. */
+export interface ModelChoice {
+  harness: string;
+  provider: string;
+  model: string;
+  /** An optional cheaper model from the same provider for routine work. */
+  routineModel: string | null;
+  updatedAt: number;
+}
+
+/** What `vault rotate` did. */
+export interface RotationResult {
+  /** Rows re-sealed under the active key. */
+  rotated: number;
+  /** Rows already under the active key, left as they were. */
+  current: number;
+}
+
 export const SESSION_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_ABSOLUTE_MS = 90 * 24 * 60 * 60 * 1000;
 export const LOGIN_ATTEMPT_MS = 10 * 60 * 1000;
@@ -107,7 +141,7 @@ export const LINK_CODE_LENGTH = 8;
 /** A device's public handle: a prefix of its session hash, which reveals nothing usable. */
 const DEVICE_HANDLE_LENGTH = 16;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -169,6 +203,27 @@ const MIGRATIONS: Record<number, string> = {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL
+    );
+  `,
+  3: `
+    CREATE TABLE credentials (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      kid TEXT NOT NULL,
+      sealed BLOB NOT NULL,
+      added_at INTEGER NOT NULL,
+      validated_at INTEGER NOT NULL,
+      models TEXT,
+      PRIMARY KEY (user_id, name)
+    );
+    CREATE TABLE model_choices (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      harness TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      routine_model TEXT,
+      updated_at INTEGER NOT NULL
     );
   `,
 };
@@ -345,7 +400,7 @@ export class GatewayStore {
     });
   }
 
-  /** Remove a user; their sessions and link codes go with them. */
+  /** Remove a user; their sessions, link codes, credentials and model choice go with them. */
   deleteUser(userId: string): boolean {
     const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(userId);
     return asNumber(result.changes) > 0;
@@ -614,6 +669,115 @@ export class GatewayStore {
     });
   }
 
+  // ---- credentials (sealed) -------------------------------------------------
+
+  /** Store (or replace) a sealed credential that was just validated. */
+  putCredential(
+    userId: string,
+    name: string,
+    provider: string,
+    sealed: SealedValue,
+    models: string[] | null,
+    now: number,
+  ): CredentialRecord {
+    this.db
+      .prepare(
+        "INSERT INTO credentials (user_id, name, provider, kid, sealed, added_at, validated_at, models) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id, name) DO UPDATE SET " +
+          "provider = excluded.provider, kid = excluded.kid, sealed = excluded.sealed, " +
+          "added_at = excluded.added_at, validated_at = excluded.validated_at, models = excluded.models",
+      )
+      .run(userId, name, provider, sealed.kid, sealed.blob, now, now, models === null ? null : JSON.stringify(models));
+    return { name, provider, addedAt: now, validatedAt: now, models };
+  }
+
+  /** A user's credentials, metadata only: the sealed value is never read here. */
+  listCredentials(userId: string): CredentialRecord[] {
+    const rows = this.db
+      .prepare("SELECT name, provider, added_at, validated_at, models FROM credentials WHERE user_id = ? ORDER BY name")
+      .all(userId) as Array<Record<string, unknown>>;
+    return rows.map(toCredential);
+  }
+
+  credential(userId: string, name: string): CredentialRecord | null {
+    const row = this.db
+      .prepare("SELECT name, provider, added_at, validated_at, models FROM credentials WHERE user_id = ? AND name = ?")
+      .get(userId, name) as Record<string, unknown> | undefined;
+    return row === undefined ? null : toCredential(row);
+  }
+
+  deleteCredential(userId: string, name: string): boolean {
+    const result = this.db.prepare("DELETE FROM credentials WHERE user_id = ? AND name = ?").run(userId, name);
+    return asNumber(result.changes) > 0;
+  }
+
+  /**
+   * Re-seal every credential under the vault's active key, in one transaction:
+   * either every row moves or none does. A row that will not open (its key id
+   * left the keyring, or it was tampered with) aborts the whole rotation, and
+   * the error names only the row's owner id and slot.
+   */
+  rotateCredentials(vault: Vault): RotationResult {
+    return this.transaction(() => {
+      const rows = this.db
+        .prepare("SELECT user_id, name, kid, sealed FROM credentials ORDER BY user_id, name")
+        .all() as Array<Record<string, unknown>>;
+      let rotated = 0;
+      let current = 0;
+      const update = this.db.prepare("UPDATE credentials SET kid = ?, sealed = ? WHERE user_id = ? AND name = ?");
+      for (const row of rows) {
+        const userId = String(row.user_id);
+        const name = String(row.name);
+        const kid = String(row.kid);
+        if (kid === vault.activeKid) {
+          current += 1;
+          continue;
+        }
+        let plaintext: Buffer | null = null;
+        try {
+          plaintext = vault.open(userId, name, { kid, blob: row.sealed as Uint8Array });
+          const sealed = vault.seal(userId, name, plaintext);
+          update.run(sealed.kid, sealed.blob, userId, name);
+          rotated += 1;
+        } catch (error) {
+          throw new Error(
+            `cannot rotate the credential ${name} of user ${userId}: ${error instanceof Error ? error.message : "error"}`,
+          );
+        } finally {
+          wipe(plaintext);
+        }
+      }
+      return { rotated, current };
+    });
+  }
+
+  // ---- model choice ----------------------------------------------------------
+
+  modelChoice(userId: string): ModelChoice | null {
+    const row = this.db.prepare("SELECT * FROM model_choices WHERE user_id = ?").get(userId) as
+      | Record<string, unknown>
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      harness: String(row.harness),
+      provider: String(row.provider),
+      model: String(row.model),
+      routineModel: row.routine_model === null ? null : String(row.routine_model),
+      updatedAt: asNumber(row.updated_at),
+    };
+  }
+
+  setModelChoice(userId: string, choice: Omit<ModelChoice, "updatedAt">, now: number): ModelChoice {
+    this.db
+      .prepare(
+        "INSERT INTO model_choices (user_id, harness, provider, model, routine_model, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT (user_id) DO UPDATE SET harness = excluded.harness, provider = excluded.provider, " +
+          "model = excluded.model, routine_model = excluded.routine_model, updated_at = excluded.updated_at",
+      )
+      .run(userId, choice.harness, choice.provider, choice.model, choice.routineModel, now);
+    return { ...choice, updatedAt: now };
+  }
+
   // ---- login attempts ----------------------------------------------------
 
   /**
@@ -685,6 +849,21 @@ export class GatewayStore {
       detail: row.detail === null ? null : (JSON.parse(String(row.detail)) as AuditEntry["detail"]),
     }));
   }
+}
+
+function toCredential(row: Record<string, unknown>): CredentialRecord {
+  let models: string[] | null = null;
+  if (typeof row.models === "string") {
+    const parsed = JSON.parse(row.models) as unknown;
+    models = Array.isArray(parsed) ? parsed.map(String) : null;
+  }
+  return {
+    name: String(row.name),
+    provider: String(row.provider),
+    addedAt: asNumber(row.added_at),
+    validatedAt: asNumber(row.validated_at),
+    models,
+  };
 }
 
 function toInvite(row: Record<string, unknown>): InviteRecord {

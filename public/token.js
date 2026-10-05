@@ -66,7 +66,18 @@ export function authHeaders(token, extra) {
 
 /** Machine-readable gateway errors, shown as a sentence instead of the code. */
 const ERROR_MESSAGES = {
-  firstmate_not_provisioned: "Your firstmate is not set up yet; ask the admin.",
+  firstmate_not_provisioned: "Your firstmate is not running yet.",
+  key_rejected: "The provider rejected this key. Check it and try again.",
+  provider_unreachable: "Could not reach the provider to check the key; try again.",
+  invalid_key_format: "That does not look like a key: 8 to 512 characters, no spaces.",
+  key_required: "Save this provider's key first.",
+  model_unavailable: "Your key cannot use that model; pick another.",
+  unknown_credential: "That key is not on offer.",
+  unknown_provider: "That provider is not on offer.",
+  unknown_model: "That model is not on offer.",
+  managed_by_config: "Your firstmate is set up by the admin in the configuration.",
+  no_credential: "There is no saved key to remove.",
+  busy: "Too many tries. Wait a minute and try again.",
 };
 
 export class ApiError extends Error {

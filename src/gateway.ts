@@ -1,11 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { bearerToken, constantTimeEqual } from "./auth.js";
+import { validationOrigins } from "./catalog.js";
 import type { AppConfig } from "./config.js";
 import { clearCookie, LOGIN_COOKIE, parseCookies, serializeCookie, SESSION_COOKIE } from "./cookies.js";
 import { handleAccountRoute, isAccountPath, type AccountContext, type SessionCaller } from "./gateway-admin.js";
 import type { GatewayConfig, StaticTenant } from "./gateway-config.js";
 import { matchProxyRoute, proxyToTenant } from "./gateway-proxy.js";
+import { handleSetupRoute, isSetupPath, type SetupContext } from "./gateway-setup.js";
 import {
   LOGIN_ATTEMPT_MS,
   randomToken,
@@ -15,6 +17,7 @@ import {
 } from "./gateway-store.js";
 import { newCodeVerifier, OAuthError, type GithubIdentity } from "./github-oauth.js";
 import { readBody, sendError, sendJson, serveStatic } from "./http-util.js";
+import { KeyChecker } from "./key-check.js";
 import { clientAddress, RateLimiter } from "./rate-limit.js";
 
 /**
@@ -48,6 +51,10 @@ export interface GatewayDeps {
   signInLimits?: { perClient: RateLimiter; global: RateLimiter };
   /** Per-client and global limits on redeeming a device link code. */
   linkLimits?: { perClient: RateLimiter; global: RateLimiter };
+  /** Per-user and global limits on checking a key with its provider. */
+  keyCheckLimits?: { perUser: RateLimiter; global: RateLimiter };
+  /** Overrides the key checker; tests bound its timeout. */
+  keyChecker?: KeyChecker;
 }
 
 /** Who a request acts for. */
@@ -82,6 +89,14 @@ export function defaultLinkLimits(now: () => number = Date.now): { perClient: Ra
   return {
     perClient: new RateLimiter({ capacity: 5, refillPerMinute: 5, now }),
     global: new RateLimiter({ capacity: 30, refillPerMinute: 30, now }),
+  };
+}
+
+/** Each key check is an outbound call to a provider, so it is bounded per user and overall. */
+export function defaultKeyCheckLimits(now: () => number = Date.now): { perUser: RateLimiter; global: RateLimiter } {
+  return {
+    perUser: new RateLimiter({ capacity: 10, refillPerMinute: 10, now }),
+    global: new RateLimiter({ capacity: 60, refillPerMinute: 60, now }),
   };
 }
 
@@ -137,6 +152,21 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     hasFirstmate: (githubId) => tenants.has(githubId),
     log,
   };
+  // Setup (catalog, keys, model choice) is on when a catalog is configured;
+  // configuration refuses a catalog without a vault.
+  const setup: SetupContext | null =
+    gw.catalog === null || gw.vault === null
+      ? null
+      : {
+          store,
+          catalog: gw.catalog,
+          vault: gw.vault,
+          checker: deps.keyChecker ?? new KeyChecker({ allowedOrigins: validationOrigins(gw.catalog) }),
+          now,
+          hasStaticTenant: (githubId) => tenants.has(githubId),
+          checkLimits: deps.keyCheckLimits ?? defaultKeyCheckLimits(now),
+          log,
+        };
 
   /** Same-origin check for a cookie-authenticated write (CSRF defense). */
   const sameOrigin = (req: IncomingMessage): boolean => {
@@ -244,6 +274,8 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
             login: principal.login,
             admin: isAdmin(principal.githubId),
             firstmate: tenants.has(principal.githubId) ? "ready" : "none",
+            // Whether this user sets up their own firstmate (provider, key, model).
+            setup: setup !== null && !tenants.has(principal.githubId),
           };
     sendJson(
       res,
@@ -398,6 +430,17 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (isSetupPath(url.pathname)) {
+      // Like the account routes: a real GitHub session only, never the shared token.
+      const caller = sessionCaller(req);
+      if (caller === null) return sendError(res, 401, "signed_out");
+      if (setup === null) return sendError(res, 404, "not found");
+      const method = req.method ?? "GET";
+      if (method !== "GET" && method !== "HEAD" && !sameOrigin(req)) {
+        return sendError(res, 403, "cross-site request refused");
+      }
+      return handleSetupRoute(setup, req, res, url.pathname, caller);
+    }
     if (isAccountPath(url.pathname)) {
       // The gateway's own account and admin routes take a real GitHub session
       // only; the retiring shared token never reaches them.

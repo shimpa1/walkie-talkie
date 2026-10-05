@@ -1627,7 +1627,15 @@ function jsonResponse(body: unknown, status = 200): Response {
  */
 function gatewayDouble(
   server: { url: string },
-  session: { signedIn: boolean; login?: string; admin?: boolean; legacyBearer?: boolean; legacyToken?: string },
+  session: {
+    signedIn: boolean;
+    login?: string;
+    admin?: boolean;
+    legacyBearer?: boolean;
+    legacyToken?: string;
+    firstmate?: string;
+    setup?: boolean;
+  },
   routes?: GatewayRoutes,
 ): GatewayDouble {
   const requests: GatewayDouble["requests"] = [];
@@ -1651,7 +1659,14 @@ function gatewayDouble(
         schema: "walkie-talkie-session.v1",
         mode: "gateway",
         signed_in: signedIn,
-        user: signedIn ? { login: session.login ?? "captain", admin: session.admin ?? true, firstmate: "ready" } : null,
+        user: signedIn
+          ? {
+              login: session.login ?? "captain",
+              admin: session.admin ?? true,
+              firstmate: session.firstmate ?? "ready",
+              setup: session.setup ?? false,
+            }
+          : null,
         legacy_bearer: session.legacyBearer === true,
       });
     }
@@ -2015,6 +2030,158 @@ test("signing out clears the previous user's header and Admin tab", async () => 
     await waitFor(() => getElement("signin-status").textContent === "You are signed out.");
     assert.equal(getElement("home-label").textContent, "firstmate companion");
     assert.equal(getElement("admin-tab").hidden, true);
+  } finally {
+    await server.close();
+  }
+});
+
+/** The setup API as the Setup view uses it, keeping what the app saved. */
+interface SavedSetup {
+  credentials: Array<Record<string, unknown>>;
+  choice: Record<string, unknown> | null;
+  /** When set, GET /api/me/firstmate answers these setup flags instead of deriving them. */
+  setup?: Record<string, boolean>;
+}
+
+function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
+  const saved: SavedSetup = { credentials: [], choice: null };
+  const view = (): Record<string, unknown> => {
+    const key = saved.credentials.some((credential) => credential.provider === saved.choice?.provider);
+    const chosen = saved.choice !== null;
+    return {
+      managed: true,
+      choice: saved.choice,
+      setup: saved.setup ?? {
+        model_chosen: chosen,
+        routine_chosen: chosen,
+        key_saved: key,
+        model_available: chosen && key,
+        routine_available: chosen && key,
+        ready: chosen && key,
+      },
+      state: "none",
+    };
+  };
+  const routes: GatewayRoutes = (path, init) => {
+    const method = init?.method ?? "GET";
+    if (path === "/api/catalog") {
+      return jsonResponse({
+        catalog: {
+          harnesses: ["opencode"],
+          providers: [
+            { id: "anthropic", name: "Anthropic", key_name: "ANTHROPIC_API_KEY", models: ["claude-opus-5-5", "claude-haiku-4-5"] },
+            { id: "deepseek", name: "DeepSeek", key_name: "DEEPSEEK_API_KEY", models: ["deepseek-chat"] },
+          ],
+          github: { key_name: "GH_TOKEN" },
+        },
+      });
+    }
+    if (path === "/api/me/credentials") return jsonResponse({ credentials: saved.credentials });
+    if (path.startsWith("/api/me/credentials/")) {
+      const name = decodeURIComponent(path.slice("/api/me/credentials/".length));
+      const value = (JSON.parse(String(init?.body ?? "{}")) as { value?: string }).value ?? "";
+      if (method === "PUT" && value.endsWith("-bad")) return jsonResponse({ error: "key_rejected" }, 422);
+      if (method === "PUT") {
+        const provider = name === "GH_TOKEN" ? "github" : name === "DEEPSEEK_API_KEY" ? "deepseek" : "anthropic";
+        const credential = { name, provider, added_at: "2026-10-05T10:00:00Z", validated_at: "2026-10-05T10:00:00Z", status: "valid" };
+        saved.credentials = [...saved.credentials.filter((entry) => entry.name !== name), credential];
+        return jsonResponse({ credential, models: null });
+      }
+      saved.credentials = saved.credentials.filter((entry) => entry.name !== name);
+      return jsonResponse({ deleted: true });
+    }
+    if (path === "/api/me/firstmate") {
+      if (method === "PUT") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        saved.choice = { harness: "opencode", provider: body.provider, model: body.model, routine_model: body.routine_model ?? null };
+      }
+      return jsonResponse(view());
+    }
+    return null;
+  };
+  return { routes, saved };
+}
+
+test("a user without a firstmate starts on Setup: the key is sent once, cleared, and never shown", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const { routes, saved } = setupRoutes();
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
+  const key = "sk-ant-canary-app-0123456789";
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl);
+    await waitFor(() => getElement("setup-provider").value === "anthropic");
+    assert.equal(getElement("setup-tab").hidden, false);
+    assert.equal(getElement("setup-model").value, "claude-opus-5-5");
+    assert.equal(getElement("setup-github-form").hidden, false);
+    assert.match(getElement("setup-summary").textContent, /Pick a provider/);
+
+    // A rejected key: the field is cleared and the reason is a sentence.
+    getElement("setup-key").value = "sk-ant-wrong-bad";
+    getElement("setup-key-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-status").textContent.includes("rejected"));
+    assert.equal(getElement("setup-key").value, "");
+    assert.equal(saved.credentials.length, 0);
+
+    getElement("setup-key").value = key;
+    getElement("setup-key-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-status").textContent.startsWith("Saved"));
+    assert.equal(getElement("setup-key").value, "", "the key leaves the field once sent");
+    await waitFor(() => getElement("setup-key-line").textContent.includes("is saved"));
+    assert.equal(getElement("setup-key-remove").hidden, false);
+
+    getElement("setup-model").value = "claude-opus-5-5";
+    getElement("setup-routine").value = "claude-haiku-4-5";
+    getElement("setup-model-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-summary").textContent.startsWith("Ready"));
+    assert.deepEqual(saved.choice, { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" });
+
+    const keyWrites = gateway.requests.filter((request) => request.method === "PUT" && request.path === "/api/me/credentials/ANTHROPIC_API_KEY");
+    assert.deepEqual(keyWrites.map((request) => JSON.parse(request.body ?? "{}")), [{ value: "sk-ant-wrong-bad" }, { value: key }]);
+    // The key went out only in those writes, and no element shows it.
+    const elsewhere = gateway.requests.filter((request) => !keyWrites.includes(request) && (request.body ?? "").includes(key));
+    assert.deepEqual(elsewhere, []);
+    for (const id of ["setup-status", "setup-key-line", "setup-summary", "setup-key"]) {
+      assert.equal(getElement(id).textContent.includes(key) || getElement(id).value.includes(key), false, id);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Setup summary names what is unusable: the model, the routine model, or one that left the catalog", async () => {
+  const choice = { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" };
+  const flags = { model_chosen: true, routine_chosen: true, key_saved: true, model_available: true, routine_available: true, ready: false };
+  const cases: Array<[Record<string, boolean>, RegExp]> = [
+    [{ ...flags, model_chosen: false, model_available: false }, /^anthropic\/claude-opus-5-5 is no longer offered/],
+    [{ ...flags, routine_chosen: false, routine_available: false }, /^Your routine model anthropic\/claude-haiku-4-5 is no longer offered/],
+    [{ ...flags, model_available: false }, /key cannot use claude-opus-5-5;/],
+    [{ ...flags, routine_available: false }, /key cannot use your routine model claude-haiku-4-5;/],
+    [{ ...flags, ready: true }, /^Ready/],
+  ];
+  for (const [setup, expected] of cases) {
+    const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+    const { routes, saved } = setupRoutes();
+    saved.choice = choice;
+    saved.setup = setup;
+    const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
+    try {
+      const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl);
+      await waitFor(() => getElement("setup-summary").textContent !== "");
+      assert.match(getElement("setup-summary").textContent, expected);
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("a user with a declared firstmate is not offered Setup", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const gateway = gatewayDouble(server, { signedIn: true, admin: true, setup: false });
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=settings");
+    await waitFor(() => getElement("account-line").textContent.startsWith("Signed in"));
+    assert.equal(getElement("setup-tab").hidden, true);
+    assert.equal(gateway.requests.some((request) => request.path === "/api/catalog"), false);
   } finally {
     await server.close();
   }

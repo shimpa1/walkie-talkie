@@ -39,6 +39,7 @@
 {{- $legacyName := default (include "firstmate.secretName" .) $gw.legacyBearer.tokenSecretRef.name -}}
 {{- $legacyKey := default .Values.credentials.keys.walkieTalkieToken $gw.legacyBearer.tokenSecretRef.key -}}
 {{- $dataDir := "/data" -}}
+{{- $paramsDir := "/etc/walkie-talkie/tenant-params" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,8 +63,9 @@ spec:
         {{- end }}
       {{- $explicitCredential := or .Values.credentials.create.walkieTalkieToken .Values.credentials.create.githubToken (gt (len .Values.credentials.create.harness) 0) }}
       {{- $rollOnCredentials := and $explicitCredential (not .Values.credentials.existingSecret) }}
-      {{- if or $rollOnCredentials $gw.podAnnotations }}
       annotations:
+        # Restart when the catalog changes; the gateway reads it at start-up.
+        checksum/tenant-params: {{ .Values.tenants.catalog | toJson | sha256sum }}
         {{- if $rollOnCredentials }}
         # The static tenant and legacy bridge tokens may come from the chart's
         # credential Secret; restart with the firstmate pod when it changes.
@@ -72,7 +74,6 @@ spec:
         {{- with $gw.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- end }}
     spec:
       serviceAccountName: {{ include "firstmate.gateway.fullname" . }}
       automountServiceAccountToken: false
@@ -134,6 +135,8 @@ spec:
                   key: {{ required "gateway.secrets.keys.vaultKeys is required" $gw.secrets.keys.vaultKeys }}
             - name: FM_WT_VAULT_ACTIVE_KEY
               value: {{ required "gateway.vault.activeKey is required" $gw.vault.activeKey | quote }}
+            - name: FM_WT_CATALOG
+              value: {{ printf "%s/catalog.json" $paramsDir | quote }}
             - name: FM_WT_TENANT_TOKEN_SECRET
               valueFrom:
                 secretKeyRef:
@@ -186,6 +189,9 @@ spec:
               mountPath: {{ $dataDir }}
             - name: tmp
               mountPath: /tmp
+            - name: tenant-params
+              mountPath: {{ $paramsDir }}
+              readOnly: true
           resources:
             {{- toYaml $gw.resources | nindent 12 }}
           {{- with $gw.securityContext }}
@@ -202,4 +208,7 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        - name: tenant-params
+          configMap:
+            name: {{ include "firstmate.tenantParamsName" . }}
 {{- end }}

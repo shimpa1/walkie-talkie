@@ -625,6 +625,9 @@ token.
 | accept the retiring shared token (`FM_WT_TOKEN`) as the first admin | `FM_WT_LEGACY_BEARER` | `legacyBearer` | `false` |
 | reverse-proxy hops whose `X-Forwarded-For` is trusted | `FM_WT_TRUSTED_PROXY_HOPS` | `trustedProxyHops` | `0` |
 | record uninvited sign-ins as access requests (`false`: strict invite-only) | `FM_WT_ACCESS_REQUESTS` | `accessRequests` | `true` |
+| provider and model catalog (JSON file; turns on [Setup](#setup-provider-key-and-model)) | `FM_WT_CATALOG` | `catalog` | *(none: Setup off)* |
+| credential vault keyring, `k1:<base64 32 bytes>[,k2:…]` | `FM_WT_VAULT_KEYS` | — (environment only) | *(required with a catalog)* |
+| keyring id new credentials are encrypted under | `FM_WT_VAULT_ACTIVE_KEY` | `vaultActiveKey` | `k1` |
 
 Registering the GitHub OAuth App:
 
@@ -691,12 +694,88 @@ A link code:
 - is stored only as its hash;
 - is redeemed only from the app's own origin, under a strict rate limit.
 
+### Setup: provider, key and model
+
+With a catalog (`FM_WT_CATALOG`), a signed-in user whose firstmate is not
+declared in the configuration gets a **Setup** tab. There they:
+
+1. pick a **provider** from the catalog the admin declared;
+2. save their own **API key** for it;
+3. choose a **model**, plus an optional cheaper model for routine work, from
+   that provider's list;
+4. optionally save a **GitHub token** (a fine-grained PAT) so their firstmate
+   can push and open pull requests as them.
+
+Nothing runs yet: the choice is recorded for when per-user firstmates are
+provisioned. Owners of declared firstmates are not offered Setup.
+
+The catalog is a JSON file; the Helm chart renders it from `tenants.catalog`.
+Each provider has an `id`, a display `name`, the `keyEnv` its key travels under
+(also the key's name in the API), a `validate` block and its `models`:
+
+```json
+{
+  "harnesses": [{ "name": "opencode" }],
+  "providers": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "keyEnv": "ANTHROPIC_API_KEY",
+      "validate": { "url": "https://api.anthropic.com/v1/models?limit=1000", "auth": "x-api-key", "headers": { "anthropic-version": "2023-06-01" } },
+      "models": ["claude-opus-5-5", "claude-sonnet-5-5"]
+    }
+  ],
+  "github": { "keyEnv": ["GH_TOKEN", "GITHUB_TOKEN"], "validate": { "url": "https://api.github.com/user", "auth": "bearer" } }
+}
+```
+
+Keys are **write-only**:
+
+- **Checked before stored.** A key is sent in one `GET` to its provider's
+  `validate.url`, with the key in the declared header (`bearer`, `x-api-key`
+  or `x-goog-api-key`). That URL comes only from the catalog, so a user cannot
+  make the gateway call any other host. It must be `https`, redirects are never
+  followed, and the check times out after 10 seconds. `2xx` stores the key;
+  `401`/`403` answers `422 {"error": "key_rejected"}`; anything else answers
+  `502 {"error": "provider_unreachable"}` and stores nothing. A provider whose
+  `validate` block sets `invalidReason` (Google: `API_KEY_INVALID`) also has a
+  `400` carrying that reason in `error.details[].reason` answer `key_rejected`;
+  any other `400` stays `provider_unreachable`. A provider's response text is
+  only inspected for that reason code or a model list, and never passed on or
+  logged, because some echo the key.
+- **Encrypted at rest.** AES-256-GCM with a random 96-bit nonce per write. The
+  additional authenticated data binds each value to its owner, its name and
+  its key id, so a row copied to another user or slot fails to decrypt.
+- **Never read back.** `GET /api/me/credentials` lists only
+  `{name, provider, added_at, validated_at, status}`: no prefix, suffix or hash.
+  Replacing a key is another `PUT`; removing it is `DELETE`.
+- **Model check.** Where the provider lists models for the key, the gateway
+  records which catalog models the key can use, and a model choice the key
+  cannot use answers `422 {"error": "model_unavailable"}`. A listing that is
+  one page of several (`has_more`, `nextPageToken`) restricts nothing.
+
+Key checks are rate-limited per user. Removing a user deletes their keys and
+choice.
+
+**Rotating the vault key.** Add a new key to `FM_WT_VAULT_KEYS`
+(`k1:…,k2:<openssl rand -base64 32>`), make it active
+(`FM_WT_VAULT_ACTIVE_KEY=k2`), restart, then run in the gateway's environment:
+
+```sh
+walkie-talkie vault rotate   # or: node dist/src/index.js vault rotate
+```
+
+It re-encrypts every stored credential under the active key in one
+transaction, then prints counts and key ids only. When it reports every
+credential current, drop the old key from `FM_WT_VAULT_KEYS`. A row that
+cannot be decrypted aborts the rotation and nothing changes.
+
 Gateway routes, besides the forwarded API and the web app:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz` | the gateway's own liveness, open; no firstmate data |
-| `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate"} \| null, "legacy_bearer"}` |
+| `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate", "setup"} \| null, "legacy_bearer"}` |
 | `GET` | `/auth/github/start` | begins GitHub sign-in (rate-limited) |
 | `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|pending\|suspended\|busy>` |
 | `POST` | `/auth/logout` | ends this session |
@@ -704,6 +783,10 @@ Gateway routes, besides the forwarded API and the web app:
 | `POST` | `/auth/link/redeem` | `{"code"}`: signs this device in (rate-limited); `400 {"error": "invalid_code"}` otherwise |
 | `GET` / `DELETE` | `/api/me/devices` | session: list this user's devices / sign out all the others |
 | `DELETE` | `/api/me/devices/<id>` | session: sign out one of this user's devices |
+| `GET` | `/api/catalog` | session: providers (`id`, `name`, `key_name`, `models`), harnesses, and whether a GitHub token is offered |
+| `GET` | `/api/me/credentials` | session: this user's saved keys, metadata only |
+| `PUT` / `DELETE` | `/api/me/credentials/<key_name>` | session: check and save `{"value"}` / remove a key |
+| `GET` / `PUT` | `/api/me/firstmate` | session: this user's choice and what setup still needs / choose `{"provider", "model", "routine_model"?}` |
 | `GET` / `POST` | `/api/admin/invites` | admin: open invites / invite `{"login"}` |
 | `DELETE` | `/api/admin/invites/<id>` | admin: revoke an open invite |
 | `GET` | `/api/admin/requests` | admin: pending access requests |
@@ -713,7 +796,7 @@ Gateway routes, besides the forwarded API and the web app:
 | `DELETE` | `/api/admin/users/<id>` | admin: remove a user |
 | `GET` | `/api/admin/audit` | admin: the latest 100 audit entries (ids and outcomes, never secrets) |
 
-The `/api/me/*` and `/api/admin/*` routes take a GitHub session only. The
+The `/api/me/*`, `/api/catalog` and `/api/admin/*` routes take a GitHub session only. The
 retiring shared token never reaches them, and a non-admin gets 403 on the admin
 routes.
 

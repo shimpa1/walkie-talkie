@@ -43,7 +43,7 @@ path when you want a single VM.
 | `ConfigMap` | Non-secret configuration (paths, session, bind, port). |
 | `ConfigMap` (optional) | Agent configuration (`agents.enabled`): the opencode provider/model catalog and firstmate's dispatch profiles. |
 | `ServiceAccount` | Pod identity; no API permissions are granted. |
-| Gateway objects (optional) | `gateway.enabled`: the multi-user gateway's Deployment, store PVC, two Services, ServiceAccount and network policies (see [Multi-user gateway](#multi-user-gateway)). |
+| Gateway objects (optional) | `gateway.enabled`: the multi-user gateway's Deployment, store PVC, two Services, ServiceAccount, network policies and the tenant-params ConfigMap with the provider catalog (see [Multi-user gateway](#multi-user-gateway)). |
 
 The two containers share the home volume:
 
@@ -602,7 +602,8 @@ move the HTTPRoute backend.
 | Resource (release `firstmate`) | Purpose |
 | --- | --- |
 | `Deployment` `firstmate-gateway` (1 replica, `Recreate`) | The walkie-talkie image in gateway mode. It mounts no ServiceAccount token, runs as uid 1000 with a read-only root filesystem, and is probed on `/healthz`. |
-| `PersistentVolumeClaim` `firstmate-gateway-data` (1Gi) | The gateway's SQLite store: users, sessions, invites and the audit log. It is annotated `helm.sh/resource-policy: keep`, so turning the gateway off, or uninstalling, keeps the users. |
+| `ConfigMap` `firstmate-tenant-params` | `catalog.json`: the provider and model catalog from `tenants.catalog`, mounted read-only at `/etc/walkie-talkie/tenant-params` (`FM_WT_CATALOG`). A catalog change restarts the gateway. |
+| `PersistentVolumeClaim` `firstmate-gateway-data` (1Gi) | The gateway's SQLite store: users, sessions, invites, the audit log, users' encrypted keys and their model choices. It is annotated `helm.sh/resource-policy: keep`, so turning the gateway off, or uninstalling, keeps the users. |
 | `Service` `firstmate-gateway` (:8787) | The public port, and the HTTPRoute's backend while the gateway is on. |
 | `Service` `firstmate-gateway-internal` (:8788) | Credential delivery to per-user firstmates, which come in a later phase. Nothing listens there yet, and it is never on the HTTPRoute. |
 | `ServiceAccount` `firstmate-gateway` | The gateway's own identity. It has no token mounted and no API permissions. |
@@ -634,6 +635,7 @@ pod.
 | `gateway.tenantNamespace` | `firstmate-tenants` | The only namespace allowed to reach the internal port. |
 | `gateway.persistence.*` | 1Gi `ReadWriteOnce`, cluster default class | The store claim. |
 | `gateway.networkPolicy.enabled` | `true` | The two policies above. This needs a CNI that enforces NetworkPolicy and lets kubelet probes through. |
+| `tenants.catalog` | Anthropic, OpenAI, OpenRouter, Google, DeepSeek; opencode; optional GitHub token | What users choose from in **Setup** (see [Provider catalog](#provider-catalog)). |
 
 The chart has **no field for a secret value**. The OAuth client secret, the
 vault keyring, the tenant-token master, the static tenants' tokens and the
@@ -643,10 +645,81 @@ legacy token reach the gateway only as `secretKeyRef`. A value given inline
 templates reject it again when schema validation is skipped. That happens even
 while the gateway is disabled.
 
-The gateway also mounts the vault keyring and the tenant-token master now,
-although only later phases read them. The keys must therefore exist in the
+The gateway also mounts the tenant-token master now, although only a later
+phase reads it. The vault keyring encrypts users' keys from the start. The keys must therefore exist in the
 Secret before the gateway is enabled; otherwise the pod stays in
 `CreateContainerConfigError`.
+
+### Provider catalog
+
+`tenants.catalog` is the menu users pick from when they set up their own
+firstmate. It renders only with the gateway enabled. Each provider declares its
+`id`, display `name`, the `keyEnv` its key is delivered under, the `validate`
+endpoint, and the `models` on offer:
+
+```yaml
+tenants:
+  catalog:
+    harnesses:
+      - name: opencode
+    providers:
+      - id: deepseek
+        name: DeepSeek
+        keyEnv: DEEPSEEK_API_KEY
+        validate:
+          url: https://api.deepseek.com/models
+          auth: bearer            # or x-api-key / x-goog-api-key
+        models: [deepseek-flash, deepseek-chat]
+      - id: google
+        name: Google
+        keyEnv: GOOGLE_GENERATIVE_AI_API_KEY
+        validate:
+          url: https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000
+          auth: x-goog-api-key
+          invalidReason: API_KEY_INVALID   # a 400 with this reason is a bad key
+        models: [gemini-2.5-pro, gemini-2.5-flash]
+    github:                       # optional per-user GitHub token
+      keyEnv: [GH_TOKEN, GITHUB_TOKEN]
+      validate: { url: https://api.github.com/user, auth: bearer }
+```
+
+- The `validate.url` hosts are the **only** hosts the gateway sends a user's
+  key to. They must be `https`, and redirects are never followed.
+- A `2xx` answer stores the key and `401`/`403` rejects it; anything else
+  leaves it unverified and stores nothing. A provider that signals a bad key
+  with a `400` instead (Google) sets `validate.invalidReason` to the reason code
+  its error carries in `error.details[].reason`; only a `400` with that reason
+  rejects the key, and any other `400` stays unverified.
+- Ask for the whole model list in the URL where the provider pages it
+  (Anthropic `?limit=1000`, Google `?pageSize=1000`). A listing that says more
+  pages follow restricts nothing.
+- The catalog never holds a key. Users bring their own; it is checked with the
+  provider, encrypted with the vault keyring and stored in the gateway's store.
+- The render fails on a duplicate provider id or key name, a non-https
+  validation URL, an unknown `auth`, a reserved header (`Authorization`,
+  `Host`, …), a provider without models, or a key written into the catalog. The
+  gateway checks the same rules again when it starts.
+- Model ids are pinned here. Check them against each provider's own model list
+  when you change them.
+- The captain's own firstmate (the static tenant) does not use the catalog; its
+  model stays in `agents.*`.
+
+### Vault key rotation
+
+1. In the gateway's Doppler config, append a new key to `WT_VAULT_KEYS`:
+   `k1:<old>,k2:<openssl rand -base64 32>`.
+2. In a values PR, set `gateway.vault.activeKey: k2` and deploy. The gateway
+   restarts; new keys are encrypted under `k2`, and old ones still decrypt
+   under `k1`.
+3. Re-encrypt the stored keys in the gateway's own container:
+
+   ```sh
+   kubectl -n firstmate exec deploy/firstmate-gateway -- node dist/src/index.js vault rotate
+   ```
+
+   It prints counts and key ids only. A failure changes nothing.
+4. Once it reports every credential current, remove `k1` from
+   `WT_VAULT_KEYS`.
 
 ### One-time setup (outside the repo)
 

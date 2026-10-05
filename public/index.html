@@ -27,6 +27,7 @@
     <nav id="tabs" class="tabs" aria-label="Sections">
       <button class="tab is-active" data-view="status" type="button">Status</button>
       <button class="tab" data-view="conversations" type="button">Conversations</button>
+      <button id="setup-tab" class="tab" data-view="setup" type="button" hidden>Setup</button>
       <button class="tab" data-view="settings" type="button">Settings</button>
       <button id="admin-tab" class="tab" data-view="admin" type="button" hidden>Admin</button>
     </nav>
@@ -109,6 +110,60 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section id="view-setup" class="view" aria-labelledby="setup-heading">
+        <h2 id="setup-heading">Set up your firstmate</h2>
+        <p class="hint">
+          Your firstmate runs on the provider and model you choose, with your own
+          API key. A key is checked with its provider, stored encrypted, and never
+          shown again, not even to you or the admin.
+        </p>
+        <p id="setup-status" class="hint" role="status"></p>
+
+        <div class="setup-step">
+          <h3>1. Provider</h3>
+          <label for="setup-provider">Who runs your model</label>
+          <select id="setup-provider" name="provider"></select>
+        </div>
+
+        <form id="setup-key-form" class="setup-step">
+          <h3>2. API key</h3>
+          <p id="setup-key-line" class="hint">Add your API key.</p>
+          <label for="setup-key" class="visually-hidden">API key</label>
+          <input id="setup-key" name="key" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512" />
+          <div class="row">
+            <button type="submit">Check and save key</button>
+            <button id="setup-key-remove" class="ghost" type="button" hidden>Remove key</button>
+          </div>
+        </form>
+
+        <form id="setup-model-form" class="setup-step">
+          <h3>3. Model</h3>
+          <label for="setup-model">Main model</label>
+          <select id="setup-model" name="model"></select>
+          <label for="setup-routine">Cheaper model for routine work (optional)</label>
+          <select id="setup-routine" name="routine_model"></select>
+          <div class="row">
+            <button type="submit">Save choice</button>
+          </div>
+        </form>
+
+        <form id="setup-github-form" class="setup-step" hidden>
+          <h3>GitHub token (optional)</h3>
+          <p id="setup-github-line" class="hint">
+            A fine-grained personal access token lets your firstmate push branches
+            and open pull requests. Without one it works but cannot reach GitHub as you.
+          </p>
+          <label for="setup-github" class="visually-hidden">GitHub token</label>
+          <input id="setup-github" name="github" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512" />
+          <div class="row">
+            <button type="submit">Check and save token</button>
+            <button id="setup-github-remove" class="ghost" type="button" hidden>Remove token</button>
+          </div>
+        </form>
+
+        <p id="setup-summary" class="hint setup-summary" role="status"></p>
       </section>
 
       <section id="view-admin" class="view" aria-labelledby="admin-heading">
