@@ -1,0 +1,58 @@
+{{- if and .Values.gateway.enabled .Values.gateway.networkPolicy.enabled }}
+{{- $gwNs := include "firstmate.gatewayApiNamespace" . }}
+{{- if not $gwNs }}
+{{- fail "gateway.networkPolicy.enabled requires networkPolicy.gatewayNamespace or at least one httpRoute.parentRefs entry" }}
+{{- end }}
+# The gateway: its public port only from the Gateway's namespace, its internal
+# credential port only from the per-user firstmates' namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstmate.gateway.fullname" . }}
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "firstmate.gateway.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $gwNs }}
+      ports:
+        - protocol: TCP
+          port: http
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "gateway.tenantNamespace is required" .Values.gateway.tenantNamespace }}
+      ports:
+        - protocol: TCP
+          port: internal
+---
+# The firstmate pod: its walkie-talkie port only from the gateway, so the
+# Gateway (and anything else) can no longer reach it directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstmate.fullname" . }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "firstmate.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "firstmate.gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: walkie-talkie
+{{- end }}

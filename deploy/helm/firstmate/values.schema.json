@@ -196,6 +196,120 @@
         }
       }
     },
+    "gateway": {
+      "type": "object",
+      "description": "Multi-user gateway. Secret values are never accepted inline: only Secret references.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "publicOrigin": { "type": "string" },
+        "githubClientId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{0,100}$" },
+        "admins": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "accessRequests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } }
+        },
+        "legacyBearer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "tokenSecretRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "name": { "type": "string" }, "key": { "type": "string" } }
+            }
+          }
+        },
+        "staticTenants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["githubId", "upstream", "tokenSecretRef"],
+            "properties": {
+              "githubId": { "type": "integer", "minimum": 1 },
+              "upstream": { "type": "string", "pattern": "^https?://[^/?#@]+/?$" },
+              "tokenSecretRef": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "key"],
+                "properties": { "name": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        },
+        "secrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "keys": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "githubClientSecret": { "type": "string", "minLength": 1 },
+                "vaultKeys": { "type": "string", "minLength": 1 },
+                "tenantTokenSecret": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "vault": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "activeKey": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" } }
+        },
+        "trustedProxyHops": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "internalPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "internalPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "annotations": { "type": "object" }
+          }
+        },
+        "tenantNamespace": { "type": "string" },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "storageClass": { "type": ["string", "null"] },
+            "accessModes": { "type": "array", "items": { "type": "string" } },
+            "size": { "type": "string" },
+            "annotations": { "type": "object" }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } }
+        },
+        "resources": { "type": "object" },
+        "podSecurityContext": { "type": "object" },
+        "securityContext": { "type": "object" },
+        "podAnnotations": { "type": "object" },
+        "podLabels": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": true,

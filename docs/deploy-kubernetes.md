@@ -43,6 +43,7 @@ path when you want a single VM.
 | `ConfigMap` | Non-secret configuration (paths, session, bind, port). |
 | `ConfigMap` (optional) | Agent configuration (`agents.enabled`): the opencode provider/model catalog and firstmate's dispatch profiles. |
 | `ServiceAccount` | Pod identity; no API permissions are granted. |
+| Gateway objects (optional) | `gateway.enabled`: the multi-user gateway's Deployment, store PVC, two Services, ServiceAccount and network policies (see [Multi-user gateway](#multi-user-gateway)). |
 
 The two containers share the home volume:
 
@@ -491,6 +492,7 @@ workspace, so an attach lands on a live firstmate rather than an empty server.
 | `agents.*` | `enabled: false` | Declarative harnesses, provider/model catalog, and dispatch profiles (see [Agent configuration](#agent-configuration)). |
 | `firstmate.resources` / `walkieTalkie.resources` | small requests | Per-container resources. |
 | `networkPolicy.enabled` | `false` | Restrict ingress to the Gateway namespace. |
+| `gateway.*` | `enabled: false` | The multi-user gateway in front of the firstmate pod (see [Multi-user gateway](#multi-user-gateway)). |
 | `nodeSelector` / `tolerations` / `affinity` / `priorityClassName` | empty | Scheduling. |
 | `firstmate.podSecurityContext` / `firstmate.securityContext` / `walkieTalkie.securityContext` | non-root, uid/gid 1000, fsGroup 1000 | Change to match your Pod Security Admission and volume ownership. |
 
@@ -581,6 +583,200 @@ cluster.
 | 2026-10-03 | `e4dc8b5e7db3` (rebuilt) | `6eb5b4543933` (unchanged) | main at `e4dc8b5` (merge of PR #26). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `e4dc8b5`, so the running runtime image already matches main and was not rebuilt. |
 | 2026-10-04 | `d9702fcbf9d9` (rebuilt) | `6eb5b4543933` (unchanged) | main at `d9702fc` (merge of PR #28). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `d9702fc`, so the running runtime image already matches main and was not rebuilt. |
 | 2026-10-04 | `36ac8b81ad5b` (rebuilt) | `6eb5b4543933` (unchanged) | main at `36ac8b8` (merge of PR #30). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `36ac8b8`, so the running runtime image already matches main and was not rebuilt. |
+
+## Multi-user gateway
+
+*Written 2026-10-05. The chart support is merged with the atus values at
+`gateway.enabled: false`, so nothing below has been deployed. Enabling it is a
+separate deploy decision.*
+
+`gateway.enabled: true` adds walkie-talkie's multi-user gateway
+(`FM_WT_MODE=gateway`, see the README's "Multi-user gateway") as its own
+workload in front of the firstmate pod. People sign in with GitHub, and the
+gateway forwards each signed-in user's API calls only to that user's own
+firstmate. The existing firstmate pod becomes a **static tenant**: an upstream
+the gateway routes to but does not manage. The StatefulSet, its PVC, images,
+model and agents config do not change. The gateway values only add objects and
+move the HTTPRoute backend.
+
+| Resource (release `firstmate`) | Purpose |
+| --- | --- |
+| `Deployment` `firstmate-gateway` (1 replica, `Recreate`) | The walkie-talkie image in gateway mode. It mounts no ServiceAccount token, runs as uid 1000 with a read-only root filesystem, and is probed on `/healthz`. |
+| `PersistentVolumeClaim` `firstmate-gateway-data` (1Gi) | The gateway's SQLite store: users, sessions, invites and the audit log. It is annotated `helm.sh/resource-policy: keep`, so turning the gateway off, or uninstalling, keeps the users. |
+| `Service` `firstmate-gateway` (:8787) | The public port, and the HTTPRoute's backend while the gateway is on. |
+| `Service` `firstmate-gateway-internal` (:8788) | Credential delivery to per-user firstmates, which come in a later phase. Nothing listens there yet, and it is never on the HTTPRoute. |
+| `ServiceAccount` `firstmate-gateway` | The gateway's own identity. It has no token mounted and no API permissions. |
+| `NetworkPolicy` `firstmate-gateway` | The gateway's public port accepts traffic only from the Gateway's namespace, and its internal port only from `gateway.tenantNamespace`. |
+| `NetworkPolicy` `firstmate` | The firstmate pod's walkie-talkie port accepts traffic only from gateway pods, so nothing can bypass the gateway. While the gateway's policies render, this replaces the plain `networkPolicy`. |
+
+Gateway pods are labelled `app.kubernetes.io/name: firstmate-gateway` and
+`app.kubernetes.io/component: gateway`. Because the name label differs from the
+firstmate pod's, the firstmate Service and StatefulSet never select a gateway
+pod.
+
+### Gateway values
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `gateway.enabled` | `false` | Render the gateway, switch the HTTPRoute to it, and add the policies. When `false`, nothing renders and the output is the same as before. |
+| `gateway.image.repository` / `.tag` | `""` (falls back to `walkieTalkie.image`) | The gateway image. It must be a build that includes gateway mode. |
+| `gateway.publicOrigin` | `https://` + first `httpRoute.hostnames` | The origin users open. The OAuth callback and the CSRF check use it. |
+| `gateway.githubClientId` | `""` (required when enabled) | The OAuth App's client id. It is public. |
+| `gateway.admins` | `[]` (at least one required when enabled) | GitHub numeric ids that hold the admin role. |
+| `gateway.accessRequests.enabled` | `true` | Uninvited sign-ins become access requests. `false` is strict invite-only. |
+| `gateway.legacyBearer.enabled` | `false` | Migration bridge: accept the old shared token from a browser as the first admin. |
+| `gateway.legacyBearer.tokenSecretRef` | the chart's credential Secret, key `credentials.keys.walkieTalkieToken` | Where the old token is read from. |
+| `gateway.staticTenants` | `[]` | A list of `{githubId, upstream, tokenSecretRef: {name, key}}` entries. The token always comes from a Secret. |
+| `gateway.secrets.existingSecret` | `""` (required when enabled) | The Secret holding the three gateway secrets. |
+| `gateway.secrets.keys.*` | `WT_GITHUB_CLIENT_SECRET`, `WT_VAULT_KEYS`, `WT_TENANT_TOKEN_SECRET` | Key names in that Secret. |
+| `gateway.vault.activeKey` | `k1` | The keyring id that new credentials are encrypted under. It is not a secret. |
+| `gateway.trustedProxyHops` | `1` | `X-Forwarded-For` hops trusted for per-client rate limits. |
+| `gateway.tenantNamespace` | `firstmate-tenants` | The only namespace allowed to reach the internal port. |
+| `gateway.persistence.*` | 1Gi `ReadWriteOnce`, cluster default class | The store claim. |
+| `gateway.networkPolicy.enabled` | `true` | The two policies above. This needs a CNI that enforces NetworkPolicy and lets kubelet probes through. |
+
+The chart has **no field for a secret value**. The OAuth client secret, the
+vault keyring, the tenant-token master, the static tenants' tokens and the
+legacy token reach the gateway only as `secretKeyRef`. A value given inline
+(for example `gateway.githubClientSecret`, `gateway.secrets.vaultKeys` or
+`staticTenants[].token`) fails the render. The values schema rejects it, and the
+templates reject it again when schema validation is skipped. That happens even
+while the gateway is disabled.
+
+The gateway also mounts the vault keyring and the tenant-token master now,
+although only later phases read them. The keys must therefore exist in the
+Secret before the gateway is enabled; otherwise the pod stays in
+`CreateContainerConfigError`.
+
+### One-time setup (outside the repo)
+
+Two steps cannot be expressed in the repo. Both happen once, before the enable
+PR is deployed.
+
+**1. Register the GitHub OAuth App.** Register it on the captain's account
+(`shimpa1`): GitHub → Settings → Developer settings → OAuth Apps → **New OAuth
+App**. GitHub has no API for creating one.
+
+| Field | Value |
+| --- | --- |
+| Application name | `walkie-talkie (atus)` |
+| Homepage URL | `https://walkie-talkie.atus.hr` |
+| Authorization callback URL | `https://walkie-talkie.atus.hr/auth/github/callback` (exactly; this is `<gateway.publicOrigin>/auth/github/callback`) |
+| Enable Device Flow | off |
+
+After registering:
+
+- **Generate a new client secret.** Store it only in Doppler, as
+  `WT_GITHUB_CLIENT_SECRET` (step 2).
+- **Copy the Client ID** into `gateway.githubClientId` in the enable PR. It is
+  public.
+
+The gateway requests no scopes. Sign-in reads only the public profile, and the
+GitHub access token is dropped after that one call.
+
+**2. Add the Doppler keys.** Put them in a Doppler config dedicated to the
+gateway. Sync it with its own DopplerSecret into the Secret
+`firstmate-gateway-secrets` in namespace `firstmate`, alongside the existing
+`doppler-firstmate` → `firstmate-doppler-secrets`.
+
+Do **not** add these keys to the config behind `firstmate-doppler-secrets`. The
+firstmate container takes that whole Secret through `envFrom`, so the agent
+would see the gateway's client secret and vault keys.
+
+| Doppler key | Value | Generator |
+| --- | --- | --- |
+| `WT_GITHUB_CLIENT_SECRET` | the OAuth App client secret from step 1 | GitHub |
+| `WT_VAULT_KEYS` | `k1:<base64 of 32 random bytes>` | `printf 'k1:%s\n' "$(openssl rand -base64 32)"` |
+| `WT_TENANT_TOKEN_SECRET` | base64 of 32 random bytes | `openssl rand -base64 32` |
+
+The `k1` prefix must match `gateway.vault.activeKey`. A later key rotation adds
+`,k2:<…>` and moves `activeKey` to `k2`.
+
+**3. Check that the CNI enforces NetworkPolicy** (read-only). Identify the
+cluster's CNI:
+
+```sh
+kubectl -n kube-system get daemonsets
+```
+
+- **Calico or Cilium:** both enforce NetworkPolicy, and both admit node-local
+  kubelet probes by default.
+- **Flannel alone:** it enforces nothing. The policies would be inert, though
+  harmless. Phase 5's tenant isolation must not be deployed on such a cluster.
+
+The policies also have to admit kubelet probes. If they did not, the firstmate
+pod would go un-Ready behind its new policy. If the CNI blocks probes, set
+`gateway.networkPolicy.enabled: false` in the enable PR and fix the CNI first.
+
+### Cutover (the enable PR)
+
+The atus values already declare everything except three fields. The enable PR
+sets them:
+
+```yaml
+gateway:
+  enabled: true
+  githubClientId: <Client ID from step 1>
+  image:
+    tag: <a walkie-talkie build of main at or after the merge of PR #33>
+```
+
+The atus values already carry:
+
+- `admins: [20532068]`;
+- `legacyBearer.enabled: true`;
+- the static tenant `{githubId: 20532068, upstream:
+  http://firstmate.firstmate.svc.cluster.local:8787, tokenSecretRef:
+  {name: firstmate-credentials, key: walkie-talkie-token}}`;
+- `secrets.existingSecret: firstmate-gateway-secrets`;
+- the `beta3` store class.
+
+The firstmate pod's sidecar image stays on its current build. Only the gateway
+runs the new image.
+
+Deploying it with `helm upgrade` creates the gateway objects and moves the
+HTTPRoute backend from `firstmate:8787` to `firstmate-gateway:8787`. The
+StatefulSet is not modified, so `firstmate-0` does not restart.
+
+Expected behaviour afterwards:
+
+- `https://walkie-talkie.atus.hr/healthz` answers `{"ok":true}`.
+- `/auth/session` reports `"mode":"gateway"` and `"legacy_bearer":true`.
+- **The installed phone keeps working.** It still sends its old bearer token,
+  and the bridge maps that token to the admin. Responses carry
+  `x-wt-legacy-auth: deprecated`, and the app offers **Sign in with GitHub**.
+- **Sign in with GitHub on each device.** Status and Conversations are the same,
+  now proxied from `firstmate-0`. On the installed iOS app, if the GitHub
+  redirect lands in Safari instead, use Settings → **Link a device** in Safari
+  and enter the code on the app's sign-in screen.
+
+### Retire the bridge
+
+Once every device has signed in with GitHub, a follow-up values PR sets
+`gateway.legacyBearer.enabled: false`. After that, the walkie-talkie token is
+only the gateway → firstmate-pod credential. To rotate it, pass a new
+`credentials.create.walkieTalkieToken` on the next upgrade. The firstmate pod
+and the gateway both restart onto it, and no phone needs to change.
+
+### Rollback
+
+Rollback works at any step. Set `gateway.enabled: false` and upgrade. That:
+
+- puts the HTTPRoute back on `firstmate:8787`;
+- removes the gateway Deployment, Services, ServiceAccount and policies.
+
+The firstmate pod was never modified, so there is nothing to restore. The
+gateway's store claim is kept, so re-enabling later brings back the same users,
+invites and sessions.
+
+After a rollback, a phone talks to the firstmate pod directly again and needs
+the walkie-talkie token:
+
+- **The phone never signed in with GitHub:** it still holds the token and works
+  at once.
+- **The phone signed in:** the app has forgotten the token. Re-enter it under
+  Settings. If the token was rotated after the bridge was retired, use the new
+  value.
 
 ## Upgrade
 

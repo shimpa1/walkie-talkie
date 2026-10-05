@@ -382,3 +382,159 @@ networkPolicy:
   # Namespace the Gateway lives in. When empty, uses the first httpRoute
   # parentRef namespace.
   gatewayNamespace: ""
+
+# ---------------------------------------------------------------------------
+# Multi-user gateway (walkie-talkie in FM_WT_MODE=gateway)
+# ---------------------------------------------------------------------------
+# When enabled, the chart adds a separate gateway workload in front of the
+# firstmate pod: people sign in with GitHub, and the gateway forwards each
+# signed-in user's API calls only to that user's own firstmate. The HTTPRoute
+# then points at the gateway instead of the firstmate Service, and network
+# policies let only the gateway reach the firstmate pod's walkie-talkie port.
+# The firstmate StatefulSet, its volume, images and agents config are not
+# touched: the existing pod becomes a "static tenant" the gateway routes to.
+# Disabled, none of this renders and the chart output is exactly as before.
+# See "Multi-user gateway" in docs/deploy-kubernetes.md for the GitHub OAuth App,
+# the secrets, the cutover and rollback.
+gateway:
+  enabled: false
+
+  # The gateway runs the walkie-talkie image in gateway mode. Empty repository
+  # or tag fall back to walkieTalkie.image, but the image must be a build that
+  # includes gateway mode, so pin it explicitly when the firstmate pod's sidecar
+  # stays on an older build.
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # The https origin people open, e.g. https://walkie-talkie.example.com. The
+  # GitHub OAuth callback and the CSRF origin check use it. Empty derives it
+  # from the first httpRoute hostname.
+  publicOrigin: ""
+
+  # Client id of the GitHub OAuth App (public, so it lives here). Its client
+  # secret never does: see `secrets`. Required when enabled.
+  githubClientId: ""
+
+  # GitHub numeric ids that hold the admin role. Declared here and nowhere else;
+  # adding or removing an admin is a reviewed values change. At least one is
+  # required when enabled. Find an id with `gh api users/<login> --jq .id`.
+  admins: []
+
+  # Uninvited GitHub sign-ins become capped access requests the admin approves
+  # or denies. false is strict invite-only: they are refused and nothing is
+  # recorded.
+  accessRequests:
+    enabled: true
+
+  # Migration bridge: while enabled, the gateway accepts the old shared bearer
+  # token from a browser as the first declared admin, so an installed phone keeps
+  # working the moment the HTTPRoute moves to the gateway. Turn it off once every
+  # device has signed in with GitHub. The token comes from `tokenSecretRef`;
+  # leaving its name empty uses the chart's own credential Secret and the
+  # `credentials.keys.walkieTalkieToken` key, which is the token the phone holds.
+  legacyBearer:
+    enabled: false
+    tokenSecretRef:
+      name: ""
+      key: ""
+
+  # Firstmates the gateway routes to but does not manage: each maps one GitHub
+  # numeric id to a walkie-talkie upstream and the bearer token that upstream
+  # accepts, read from an existing Secret (never inline). The chart's own
+  # firstmate pod is one:
+  #  - githubId: 20532068
+  #    upstream: http://firstmate.firstmate.svc.cluster.local:8787
+  #    tokenSecretRef:
+  #      name: firstmate-credentials
+  #      key: walkie-talkie-token
+  staticTenants: []
+
+  # Secret values reach the gateway only through secretKeyRef from an existing
+  # Secret, for example one the Doppler operator syncs. The chart has no field
+  # for an inline value and fails the render if one is given. Use a Secret that
+  # is not also injected wholesale into the firstmate container (envFrom), so the
+  # agent never sees these keys. Required when enabled.
+  secrets:
+    existingSecret: ""
+    keys:
+      # GitHub OAuth App client secret.
+      githubClientSecret: WT_GITHUB_CLIENT_SECRET
+      # Credential vault keyring, "k1:<base64 32 bytes>[,k2:...]" (FM_WT_VAULT_KEYS).
+      vaultKeys: WT_VAULT_KEYS
+      # Master secret the per-tenant internal tokens derive from
+      # (FM_WT_TENANT_TOKEN_SECRET).
+      tenantTokenSecret: WT_TENANT_TOKEN_SECRET
+
+  # Id of the keyring entry new credentials are encrypted under
+  # (FM_WT_VAULT_ACTIVE_KEY). Not secret.
+  vault:
+    activeKey: k1
+
+  # Reverse-proxy hops in front of the gateway whose X-Forwarded-For entries are
+  # trusted for per-client rate limits. 1 fits a Gateway that appends the client
+  # address; 0 trusts none and keys limits on the peer address.
+  trustedProxyHops: 1
+
+  # Public port (the web app, sign-in and the forwarded API) and the internal
+  # port that per-user firstmates fetch their credentials from. The internal
+  # port is never on the HTTPRoute.
+  port: 8787
+  internalPort: 8788
+  service:
+    type: ClusterIP
+    port: 8787
+    internalPort: 8788
+    annotations: {}
+
+  # Namespace whose pods may reach the internal port (per-user firstmates).
+  tenantNamespace: firstmate-tenants
+
+  # The gateway's own SQLite store: users, sessions, invites and the audit log.
+  # A small ReadWriteOnce claim mounted only by the gateway. It is kept when the
+  # gateway is disabled or the release uninstalled, so turning the gateway off
+  # and on again keeps its users.
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+
+  # When enabled with the gateway: the gateway accepts its public port only from
+  # the Gateway namespace and its internal port only from `tenantNamespace`, and
+  # the firstmate pod accepts its walkie-talkie port only from the gateway. This
+  # replaces the plain `networkPolicy` above while the gateway is on. Needs a CNI
+  # that enforces NetworkPolicy and lets kubelet probes through.
+  networkPolicy:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
+
+  podSecurityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

@@ -1,0 +1,205 @@
+{{- include "firstmate.gateway.refuseInlineSecrets" . -}}
+{{- if .Values.gateway.enabled -}}
+{{- $gw := .Values.gateway -}}
+{{- $origin := include "firstmate.gateway.publicOrigin" . -}}
+{{- if not $origin -}}
+{{- fail "gateway.enabled requires gateway.publicOrigin or at least one httpRoute.hostnames entry" -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" $origin) -}}
+{{- fail (printf "gateway.publicOrigin must be an https origin, got %q" $origin) -}}
+{{- end -}}
+{{- if not $gw.githubClientId -}}
+{{- fail "gateway.enabled requires gateway.githubClientId, the GitHub OAuth App client id" -}}
+{{- end -}}
+{{- if not $gw.admins -}}
+{{- fail "gateway.enabled requires at least one admin GitHub numeric id in gateway.admins" -}}
+{{- end -}}
+{{- if not $gw.secrets.existingSecret -}}
+{{- fail "gateway.enabled requires gateway.secrets.existingSecret, the Secret holding the OAuth client secret, vault keyring and tenant-token secret" -}}
+{{- end -}}
+{{- $admins := list -}}
+{{- range $id := $gw.admins -}}
+{{- $admins = append $admins (printf "%d" (int64 $id)) -}}
+{{- end -}}
+{{- $tenants := list -}}
+{{- $tenantTokens := list -}}
+{{- $seen := dict -}}
+{{- range $i, $t := (default (list) $gw.staticTenants) -}}
+{{- $id := int64 (required "gateway.staticTenants[].githubId is required" $t.githubId) -}}
+{{- if hasKey $seen (toString $id) -}}
+{{- fail (printf "gateway.staticTenants: githubId %d is declared twice" $id) -}}
+{{- end -}}
+{{- $_ := set $seen (toString $id) true -}}
+{{- $upstream := required "gateway.staticTenants[].upstream is required" $t.upstream -}}
+{{- $ref := required "gateway.staticTenants[].tokenSecretRef is required" $t.tokenSecretRef -}}
+{{- $env := printf "FM_WT_STATIC_TENANT_TOKEN_%d" $i -}}
+{{- $tenants = append $tenants (dict "githubId" $id "upstream" $upstream "tokenEnv" $env) -}}
+{{- $tenantTokens = append $tenantTokens (dict "env" $env "name" (required "gateway.staticTenants[].tokenSecretRef.name is required" $ref.name) "key" (required "gateway.staticTenants[].tokenSecretRef.key is required" $ref.key)) -}}
+{{- end -}}
+{{- $legacyName := default (include "firstmate.secretName" .) $gw.legacyBearer.tokenSecretRef.name -}}
+{{- $legacyKey := default .Values.credentials.keys.walkieTalkieToken $gw.legacyBearer.tokenSecretRef.key -}}
+{{- $dataDir := "/data" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "firstmate.gateway.fullname" . }}
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One SQLite writer on a ReadWriteOnce volume: stop the old pod first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "firstmate.gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "firstmate.gateway.selectorLabels" . | nindent 8 }}
+        {{- with $gw.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- $explicitCredential := or .Values.credentials.create.walkieTalkieToken .Values.credentials.create.githubToken (gt (len .Values.credentials.create.harness) 0) }}
+      {{- $rollOnCredentials := and $explicitCredential (not .Values.credentials.existingSecret) }}
+      {{- if or $rollOnCredentials $gw.podAnnotations }}
+      annotations:
+        {{- if $rollOnCredentials }}
+        # The static tenant and legacy bridge tokens may come from the chart's
+        # credential Secret; restart with the firstmate pod when it changes.
+        checksum/secret: {{ include "firstmate.secretChecksum" . | sha256sum }}
+        {{- end }}
+        {{- with $gw.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "firstmate.gateway.fullname" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $gw.podSecurityContext | nindent 8 }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      {{- with $gw.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $gw.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $gw.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gateway
+          image: {{ include "firstmate.gateway.image" . }}
+          imagePullPolicy: {{ $gw.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $gw.port }}
+              protocol: TCP
+            - name: internal
+              containerPort: {{ $gw.internalPort }}
+              protocol: TCP
+          env:
+            - name: FM_WT_MODE
+              value: gateway
+            - name: FM_WT_HOST
+              value: "0.0.0.0"
+            - name: FM_WT_PORT
+              value: {{ $gw.port | quote }}
+            - name: FM_WT_ALLOW_PUBLIC_BIND
+              value: "1"
+            - name: FM_WT_PUBLIC_ORIGIN
+              value: {{ $origin | quote }}
+            - name: FM_WT_GITHUB_CLIENT_ID
+              value: {{ $gw.githubClientId | quote }}
+            - name: FM_WT_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $gw.secrets.existingSecret }}
+                  key: {{ required "gateway.secrets.keys.githubClientSecret is required" $gw.secrets.keys.githubClientSecret }}
+            - name: FM_WT_VAULT_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $gw.secrets.existingSecret }}
+                  key: {{ required "gateway.secrets.keys.vaultKeys is required" $gw.secrets.keys.vaultKeys }}
+            - name: FM_WT_VAULT_ACTIVE_KEY
+              value: {{ required "gateway.vault.activeKey is required" $gw.vault.activeKey | quote }}
+            - name: FM_WT_TENANT_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $gw.secrets.existingSecret }}
+                  key: {{ required "gateway.secrets.keys.tenantTokenSecret is required" $gw.secrets.keys.tenantTokenSecret }}
+            - name: FM_WT_ADMINS
+              value: {{ join "," $admins | quote }}
+            - name: FM_WT_ACCESS_REQUESTS
+              value: {{ ternary "1" "0" $gw.accessRequests.enabled | quote }}
+            - name: FM_WT_TRUSTED_PROXY_HOPS
+              value: {{ $gw.trustedProxyHops | quote }}
+            - name: FM_WT_GATEWAY_DB
+              value: {{ printf "%s/walkie-talkie.gateway.db" $dataDir | quote }}
+            - name: FM_WT_STATIC_TENANTS
+              value: {{ $tenants | toJson | quote }}
+            {{- range $tenantTokens }}
+            - name: {{ .env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name }}
+                  key: {{ .key }}
+            {{- end }}
+            - name: FM_WT_LEGACY_BEARER
+              value: {{ ternary "1" "0" $gw.legacyBearer.enabled | quote }}
+            {{- if $gw.legacyBearer.enabled }}
+            - name: FM_WT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $legacyName }}
+                  key: {{ $legacyKey }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: {{ $dataDir }}
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml $gw.resources | nindent 12 }}
+          {{- with $gw.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if $gw.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "firstmate.gateway.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -43,5 +43,52 @@ jobs:
             exit 1
           fi
 
+      - name: Gateway off renders the same as before
+        run: |
+          chart=deploy/helm/firstmate
+          atus=$chart/examples/values-atus.yaml
+          # The atus values declare the whole gateway block with enabled: false;
+          # it must render exactly what the same values render with the gateway
+          # block reset to the chart defaults.
+          helm template firstmate $chart -n firstmate -f "$atus" \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/off.yaml
+          python3 -c 'import sys,re; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(re.sub(r"(?ms)^gateway:\n.*", "", s))' "$atus" /tmp/atus-no-gateway.yaml
+          helm template firstmate $chart -n firstmate -f /tmp/atus-no-gateway.yaml \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/baseline.yaml
+          diff -u /tmp/baseline.yaml /tmp/off.yaml
+          if grep -Eq 'firstmate-gateway|FM_WT_MODE' /tmp/off.yaml; then
+            echo "gateway objects rendered while gateway.enabled is false" >&2
+            exit 1
+          fi
+
+      - name: Gateway on renders the route switch and policies
+        run: |
+          helm template firstmate deploy/helm/firstmate -n firstmate \
+            -f deploy/helm/firstmate/examples/values-atus.yaml \
+            --set gateway.enabled=true --set gateway.githubClientId=Ov23liExample \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/on.yaml
+          grep -Pzq 'kind: Service\n\s+name: firstmate-gateway\n\s+port: 8787' /tmp/on.yaml
+          grep -q '^kind: Deployment$' /tmp/on.yaml
+          grep -q 'name: firstmate-gateway-internal$' /tmp/on.yaml
+          grep -q 'name: firstmate-gateway-data$' /tmp/on.yaml
+          test "$(grep -c '^kind: NetworkPolicy$' /tmp/on.yaml)" -eq 2
+          grep -Pzq 'name: FM_WT_GITHUB_CLIENT_SECRET\n\s+valueFrom:\n\s+secretKeyRef:' /tmp/on.yaml
+
+      - name: Gateway inline secrets and missing admins fail closed
+        run: |
+          chart=deploy/helm/firstmate
+          on="-f $chart/examples/values-atus.yaml --set gateway.enabled=true --set gateway.githubClientId=Ov23liExample"
+          for bad in gateway.githubClientSecret=x gateway.secrets.githubClientSecret=x \
+            gateway.vaultKeys=x gateway.legacyBearer.token=x; do
+            if helm template firstmate $chart -n firstmate --set "$bad" >/dev/null 2>&1; then
+              echo "inline secret $bad did not fail the render" >&2
+              exit 1
+            fi
+          done
+          if helm template firstmate $chart -n firstmate $on --set 'gateway.admins=null' >/dev/null 2>&1; then
+            echo "gateway without admins did not fail the render" >&2
+            exit 1
+          fi
+
       - name: Entrypoint harness-start test
         run: bash deploy/kubernetes/firstmate/entrypoint.test.sh

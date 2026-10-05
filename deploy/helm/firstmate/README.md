@@ -49,3 +49,12 @@ may not use the reserved names the chart manages for itself — the
 `credentials.keys.walkieTalkieToken` and `credentials.keys.githubToken` key
 names and the `GH_TOKEN`/`GITHUB_TOKEN` env names. A collision fails the render
 rather than silently overwriting the built-in credential.
+
+`gateway` (off by default) adds walkie-talkie's multi-user gateway as its own
+Deployment in front of the firstmate pod: GitHub sign-in, invite-only access, and
+per-user routing. The firstmate pod becomes a static tenant that only the gateway
+may reach, and the HTTPRoute moves to the gateway. The StatefulSet itself is
+unchanged. Secret values are accepted only as Secret references, and an inline
+value fails the render. See "Multi-user gateway" in
+[`docs/deploy-kubernetes.md`](../../../docs/deploy-kubernetes.md) for the GitHub
+OAuth App, the Doppler keys, the cutover and rollback.

@@ -179,3 +179,46 @@ agents:
     default:
       - harness: opencode
         model: deepseek/deepseek-flash
+
+# Multi-user gateway (docs/deploy-kubernetes.md, "Multi-user gateway"). Off:
+# with `enabled: false` nothing below renders and the release is exactly as
+# above. Everything the cutover needs is declared here so the enable PR is
+# small: it sets `enabled: true`, the OAuth App's `githubClientId`, and a
+# `gateway.image.tag` built from a commit that includes gateway mode (main at or
+# after the merge of PR #33; the firstmate pod's sidecar image above predates
+# it and stays as it is). The firstmate StatefulSet above is unchanged by any of
+# this: it becomes the admin's static tenant behind the gateway.
+gateway:
+  enabled: false
+  image:
+    repository: shimpa/walkie-talkie
+    tag: ""
+  # Set from the registered GitHub OAuth App (callback
+  # https://walkie-talkie.atus.hr/auth/github/callback) in the enable PR.
+  githubClientId: ""
+  # shimpa1's GitHub numeric id.
+  admins:
+    - 20532068
+  # Keep the installed phone working on its old token until it signs in with
+  # GitHub; a follow-up values PR turns this off. The token is the chart's own
+  # `firstmate-credentials` / `walkie-talkie-token`, the one the phone holds.
+  legacyBearer:
+    enabled: true
+  # The captain's existing firstmate, routed to but not managed by the gateway.
+  # The gateway presents the same walkie-talkie token to it.
+  staticTenants:
+    - githubId: 20532068
+      upstream: http://firstmate.firstmate.svc.cluster.local:8787
+      tokenSecretRef:
+        name: firstmate-credentials
+        key: walkie-talkie-token
+  # A dedicated Doppler-synced Secret (DopplerSecret -> Secret
+  # firstmate-gateway-secrets) carrying WT_GITHUB_CLIENT_SECRET, WT_VAULT_KEYS
+  # and WT_TENANT_TOKEN_SECRET. Not firstmate-doppler-secrets: the firstmate
+  # container takes that whole Secret through envFrom, and these keys must reach
+  # only the gateway.
+  secrets:
+    existingSecret: firstmate-gateway-secrets
+  persistence:
+    storageClass: beta3
+    size: 1Gi

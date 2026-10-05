@@ -1,10 +1,7 @@
-{{- if .Values.networkPolicy.enabled }}
-{{- $gwNs := .Values.networkPolicy.gatewayNamespace }}
-{{- if not $gwNs }}
-{{- if .Values.httpRoute.parentRefs }}
-{{- $gwNs = (index .Values.httpRoute.parentRefs 0).namespace }}
-{{- end }}
-{{- end }}
+{{- /* While the gateway's policies render, gateway-networkpolicy.yaml owns the */}}
+{{- /* firstmate pod's policy; this one would let the Gateway bypass the gateway. */}}
+{{- if and .Values.networkPolicy.enabled (not (and .Values.gateway.enabled .Values.gateway.networkPolicy.enabled)) }}
+{{- $gwNs := include "firstmate.gatewayApiNamespace" . }}
 {{- if not $gwNs }}
 {{- fail "networkPolicy.enabled requires networkPolicy.gatewayNamespace or at least one httpRoute.parentRefs entry" }}
 {{- end }}
