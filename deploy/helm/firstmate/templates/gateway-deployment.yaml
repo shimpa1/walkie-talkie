@@ -17,9 +17,6 @@
 {{- if not $gw.secrets.existingSecret -}}
 {{- fail "gateway.enabled requires gateway.secrets.existingSecret, the Secret holding the OAuth client secret, vault keyring and tenant-token secret" -}}
 {{- end -}}
-{{- if and $gw.persistence.enabled $gw.persistence.existingClaim -}}
-{{- fail "gateway.persistence.existingClaim requires gateway.persistence.enabled: false" -}}
-{{- end -}}
 {{- $admins := list -}}
 {{- range $id := $gw.admins -}}
 {{- $admins = append $admins (printf "%d" (int64 $id)) -}}
@@ -168,9 +165,6 @@ spec:
                   name: {{ $legacyName }}
                   key: {{ $legacyKey }}
             {{- end }}
-            {{- with $gw.extraEnv }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -203,9 +197,6 @@ spec:
           {{- if $gw.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "firstmate.gateway.fullname" . }}-data
-          {{- else if $gw.persistence.existingClaim }}
-          persistentVolumeClaim:
-            claimName: {{ $gw.persistence.existingClaim }}
           {{- else }}
           emptyDir: {}
           {{- end }}

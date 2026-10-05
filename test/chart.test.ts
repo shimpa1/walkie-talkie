@@ -570,7 +570,23 @@ for (const [label, values] of [
   });
 }
 
-test("gateway on without admins fails the render", { skip: skipHelm }, () => {
+test("an inline FM_WT_* secret cannot be injected through gateway env", { skip: skipHelm }, () => {
+  const file = valuesFile({
+    gateway: { extraEnv: [{ name: "FM_WT_GITHUB_CLIENT_SECRET", value: "literal-client-secret" }] },
+  });
+  const rendered = render([...GATEWAY_ON, "-f", file]);
+  assert.notEqual(rendered.status, 0, "gateway.extraEnv rendered");
+  if (skipSchemaFlag) {
+    const unchecked = render([...GATEWAY_ON, "-f", file, "--skip-schema-validation"]);
+    assert.equal(unchecked.status, 0, unchecked.stderr);
+    const deployment = findDoc(unchecked.stdout, "Deployment", "firstmate-gateway");
+    assert.ok(deployment);
+    assert.equal(deployment.includes("literal-client-secret"), false);
+    assert.match(deployment, /name: FM_WT_GITHUB_CLIENT_SECRET\n\s+valueFrom:\n\s+secretKeyRef:/);
+  }
+});
+
+test("gateway on without admins fails the render",{ skip: skipHelm }, () => {
   const rendered = render([...GATEWAY_ON, "-f", valuesFile({ gateway: { admins: [] } })]);
   assert.notEqual(rendered.status, 0);
   assert.match(rendered.stderr, /requires at least one admin GitHub numeric id in gateway\.admins/);

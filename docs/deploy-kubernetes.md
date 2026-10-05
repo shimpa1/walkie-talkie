@@ -632,7 +632,7 @@ pod.
 | `gateway.vault.activeKey` | `k1` | The keyring id that new credentials are encrypted under. It is not a secret. |
 | `gateway.trustedProxyHops` | `1` | `X-Forwarded-For` hops trusted for per-client rate limits. |
 | `gateway.tenantNamespace` | `firstmate-tenants` | The only namespace allowed to reach the internal port. |
-| `gateway.persistence.*` | 1Gi `ReadWriteOnce`, cluster default class | The store claim. `existingClaim` requires `enabled: false`. |
+| `gateway.persistence.*` | 1Gi `ReadWriteOnce`, cluster default class | The store claim. |
 | `gateway.networkPolicy.enabled` | `true` | The two policies above. This needs a CNI that enforces NetworkPolicy and lets kubelet probes through. |
 
 The chart has **no field for a secret value**. The OAuth client secret, the

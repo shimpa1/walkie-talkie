@@ -501,8 +501,6 @@ gateway:
     accessModes:
       - ReadWriteOnce
     size: 1Gi
-    # Use an already-created PVC instead. Requires `enabled: false`.
-    existingClaim: ""
     annotations: {}
 
   # When enabled with the gateway: the gateway accepts its public port only from
@@ -535,7 +533,6 @@ gateway:
       drop:
         - ALL
 
-  extraEnv: []
   podAnnotations: {}
   podLabels: {}
   nodeSelector: {}
