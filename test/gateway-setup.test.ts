@@ -528,7 +528,7 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     assert.deepEqual(empty, {
       managed: true,
       choice: null,
-      setup: { model_chosen: false, key_saved: false, model_available: false, ready: false },
+      setup: { model_chosen: false, routine_chosen: false, key_saved: false, model_available: false, routine_available: false, ready: false },
       state: "none",
     });
 
@@ -552,7 +552,14 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     const chosen = await choose({ provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" });
     assert.equal(chosen.status, 200);
     const view = await json(chosen);
-    assert.deepEqual(view.setup, { model_chosen: true, key_saved: true, model_available: true, ready: true });
+    assert.deepEqual(view.setup, {
+      model_chosen: true,
+      routine_chosen: true,
+      key_saved: true,
+      model_available: true,
+      routine_available: true,
+      ready: true,
+    });
     const choice = view.choice as Record<string, unknown>;
     assert.equal(choice.harness, "opencode");
     assert.equal(choice.model, "claude-opus-5-5");
@@ -566,7 +573,14 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
     assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/OPENROUTER_API_KEY")).status, 200);
     assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/OPENROUTER_API_KEY")).status, 404);
     const after = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
-    assert.deepEqual(after.setup, { model_chosen: true, key_saved: false, model_available: false, ready: false });
+    assert.deepEqual(after.setup, {
+      model_chosen: true,
+      routine_chosen: true,
+      key_saved: false,
+      model_available: false,
+      routine_available: false,
+      ready: false,
+    });
 
     const actions = (await readAudit(w.gateway.config.gateway?.dbPath ?? "")).map((entry) => entry.action);
     for (const action of ["credential.saved", "credential.deleted", "firstmate.choice"]) assert.ok(actions.includes(action), action);
@@ -585,7 +599,14 @@ test("replacing a key with one that cannot use the chosen model makes setup not 
     const replaced = await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: `${CANARY}-haiku-only` });
     assert.equal(replaced.status, 200);
     const view = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
-    assert.deepEqual(view.setup, { model_chosen: true, key_saved: true, model_available: false, ready: false });
+    assert.deepEqual(view.setup, {
+      model_chosen: true,
+      routine_chosen: true,
+      key_saved: true,
+      model_available: false,
+      routine_available: true,
+      ready: false,
+    });
 
     // The routine model counts too.
     assert.equal(
@@ -599,7 +620,64 @@ test("replacing a key with one that cannot use the chosen model makes setup not 
     );
     assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: `${CANARY}-haiku-only` })).status, 200);
     const routine = await json(await w.call(w.sessions.alice, "GET", "/api/me/firstmate"));
-    assert.equal((routine.setup as Record<string, unknown>).ready, false);
+    assert.deepEqual(routine.setup, {
+      model_chosen: true,
+      routine_chosen: true,
+      key_saved: true,
+      model_available: true,
+      routine_available: false,
+      ready: false,
+    });
+  } finally {
+    await w.close();
+  }
+});
+
+test("a chosen model or routine model that leaves the catalog is reported as no longer offered", async () => {
+  const w = await world();
+  try {
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: CANARY })).status, 200);
+    const chosen = { provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" };
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", chosen)).status, 200);
+    const dbPath = w.gateway.config.gateway?.dbPath ?? "";
+    w.gateway.closeStore();
+
+    const anthropic = testCatalog(w.providers.url).providers[0];
+    assert.ok(anthropic);
+    const narrowed = (models: string[]): Catalog => ({ ...testCatalog(w.providers.url), providers: [{ ...anthropic, models }] });
+    const setupWith = async (catalog: Catalog): Promise<unknown> => {
+      const gateway = await startGateway({
+        github: w.github,
+        admins: [ADMIN.id],
+        dbPath,
+        catalog,
+        vault: w.vault,
+        keyChecker: new KeyChecker({ allowedOrigins: validationOrigins(catalog) }),
+      });
+      try {
+        const session = (await signIn(gateway, w.github, ALICE)).session ?? "";
+        const response = await fetch(`${gateway.url}/api/me/firstmate`, { headers: { cookie: `${SESSION_COOKIE}=${session}` } });
+        return (await json(response)).setup;
+      } finally {
+        await gateway.close();
+      }
+    };
+    assert.deepEqual(await setupWith(narrowed(["claude-haiku-4-5"])), {
+      model_chosen: false,
+      routine_chosen: true,
+      key_saved: true,
+      model_available: false,
+      routine_available: true,
+      ready: false,
+    });
+    assert.deepEqual(await setupWith(narrowed(["claude-opus-5-5"])), {
+      model_chosen: true,
+      routine_chosen: false,
+      key_saved: true,
+      model_available: true,
+      routine_available: false,
+      ready: false,
+    });
   } finally {
     await w.close();
   }

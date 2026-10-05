@@ -428,10 +428,16 @@ function renderSetupSummary() {
   const choice = view.choice;
   if (view.setup.ready && choice) {
     line.textContent = `Ready: your firstmate will run ${choice.harness} on ${choice.provider}/${choice.model}. It starts once the admin turns on per-user firstmates.`;
+  } else if (choice && !view.setup.model_chosen) {
+    line.textContent = `${choice.provider}/${choice.model} is no longer offered; choose another model.`;
+  } else if (choice && !view.setup.routine_chosen) {
+    line.textContent = `Your routine model ${choice.provider}/${choice.routine_model} is no longer offered; choose another.`;
   } else if (choice && !view.setup.key_saved) {
     line.textContent = `You chose ${choice.provider}/${choice.model}; add that provider's key to finish.`;
   } else if (choice && !view.setup.model_available) {
     line.textContent = `Your saved ${choice.provider} key cannot use ${choice.model}; choose another model.`;
+  } else if (choice && !view.setup.routine_available) {
+    line.textContent = `Your saved ${choice.provider} key cannot use your routine model ${choice.routine_model}; choose another.`;
   } else {
     line.textContent = "Pick a provider, save its key, then choose a model.";
   }

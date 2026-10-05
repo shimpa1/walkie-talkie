@@ -127,16 +127,23 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
   const choice = ctx.store.modelChoice(user.id);
   const provider = choice === null ? null : providerById(ctx.catalog, choice.provider);
   const key = provider === null ? null : ctx.store.credential(user.id, provider.keyEnv);
-  const offered = provider !== null && choice !== null && provider.models.includes(choice.model);
-  const available = offered && key !== null && keyCanUse(key.models, [choice.model, choice.routineModel]);
+  const offered = (model: string | null): boolean => provider !== null && model !== null && provider.models.includes(model);
+  const usable = (model: string | null): boolean => offered(model) && key !== null && keyCanUse(key.models, [model]);
+  const routineModel = choice?.routineModel ?? null;
+  const modelChosen = offered(choice?.model ?? null);
+  const routineChosen = choice !== null && (routineModel === null || offered(routineModel));
+  const modelAvailable = usable(choice?.model ?? null);
+  const routineAvailable = choice !== null && (routineModel === null ? key !== null : usable(routineModel));
   return {
     managed: true,
     choice: choiceView(choice),
     setup: {
-      model_chosen: offered,
+      model_chosen: modelChosen,
+      routine_chosen: routineChosen,
       key_saved: key !== null,
-      model_available: available,
-      ready: available,
+      model_available: modelAvailable,
+      routine_available: routineAvailable,
+      ready: modelAvailable && routineAvailable,
     },
     // Provisioning a firstmate is not available yet: the choice is kept for it.
     state: "none",

@@ -2036,14 +2036,29 @@ test("signing out clears the previous user's header and Admin tab", async () => 
 });
 
 /** The setup API as the Setup view uses it, keeping what the app saved. */
-function setupRoutes(): { routes: GatewayRoutes; saved: { credentials: Array<Record<string, unknown>>; choice: Record<string, unknown> | null } } {
-  const saved: { credentials: Array<Record<string, unknown>>; choice: Record<string, unknown> | null } = { credentials: [], choice: null };
+interface SavedSetup {
+  credentials: Array<Record<string, unknown>>;
+  choice: Record<string, unknown> | null;
+  /** When set, GET /api/me/firstmate answers these setup flags instead of deriving them. */
+  setup?: Record<string, boolean>;
+}
+
+function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
+  const saved: SavedSetup = { credentials: [], choice: null };
   const view = (): Record<string, unknown> => {
     const key = saved.credentials.some((credential) => credential.provider === saved.choice?.provider);
+    const chosen = saved.choice !== null;
     return {
       managed: true,
       choice: saved.choice,
-      setup: { model_chosen: saved.choice !== null, key_saved: key, model_available: saved.choice !== null && key, ready: saved.choice !== null && key },
+      setup: saved.setup ?? {
+        model_chosen: chosen,
+        routine_chosen: chosen,
+        key_saved: key,
+        model_available: chosen && key,
+        routine_available: chosen && key,
+        ready: chosen && key,
+      },
       state: "none",
     };
   };
@@ -2130,6 +2145,32 @@ test("a user without a firstmate starts on Setup: the key is sent once, cleared,
     }
   } finally {
     await server.close();
+  }
+});
+
+test("the Setup summary names what is unusable: the model, the routine model, or one that left the catalog", async () => {
+  const choice = { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: "claude-haiku-4-5" };
+  const flags = { model_chosen: true, routine_chosen: true, key_saved: true, model_available: true, routine_available: true, ready: false };
+  const cases: Array<[Record<string, boolean>, RegExp]> = [
+    [{ ...flags, model_chosen: false, model_available: false }, /^anthropic\/claude-opus-5-5 is no longer offered/],
+    [{ ...flags, routine_chosen: false, routine_available: false }, /^Your routine model anthropic\/claude-haiku-4-5 is no longer offered/],
+    [{ ...flags, model_available: false }, /key cannot use claude-opus-5-5;/],
+    [{ ...flags, routine_available: false }, /key cannot use your routine model claude-haiku-4-5;/],
+    [{ ...flags, ready: true }, /^Ready/],
+  ];
+  for (const [setup, expected] of cases) {
+    const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+    const { routes, saved } = setupRoutes();
+    saved.choice = choice;
+    saved.setup = setup;
+    const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
+    try {
+      const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl);
+      await waitFor(() => getElement("setup-summary").textContent !== "");
+      assert.match(getElement("setup-summary").textContent, expected);
+    } finally {
+      await server.close();
+    }
   }
 });
 
