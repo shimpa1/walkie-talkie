@@ -374,7 +374,7 @@ test("removing a user keeps their tenant as retained, so its home volume stays t
   }
 });
 
-test("replacing or deleting a delivered key restarts the running firstmate; an unrelated key does not", async () => {
+test("replacing a delivered key or deleting the GitHub token restarts the running firstmate; deleting its provider key stops it", async () => {
   const w = await world();
   const fake = await startFakeKube("firstmate-tenants");
   const reconciler = new TenantReconciler({
@@ -404,7 +404,6 @@ test("replacing or deleting a delivered key restarts the running firstmate; an u
       ["PUT", "GH_TOKEN", 3],
       ["DELETE", "GH_TOKEN", 4],
       ["DELETE", "OPENROUTER_API_KEY", 4],
-      ["DELETE", "ANTHROPIC_API_KEY", 5],
     ];
     for (const [method, name, expected] of steps) {
       const [kicksBefore, versionBefore] = [w.kicks(), version()];
@@ -414,6 +413,28 @@ test("replacing or deleting a delivered key restarts the running firstmate; an u
       assert.equal(w.kicks() - kicksBefore, expected > versionBefore ? 1 : 0, `${method} ${name} kicks only when delivered`);
       assert.equal(await rollout(), String(expected), `the pod template follows ${method} ${name}`);
     }
+
+    const kicksBefore = w.kicks();
+    assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/ANTHROPIC_API_KEY")).status, 200);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "stopped");
+    assert.equal(version(), 4, "deleting the provider key stops the firstmate rather than restarting it");
+    assert.equal(w.kicks(), kicksBefore + 1);
+    assert.equal(await rollout(), "4");
+    const set = fake.get("statefulsets", tenantNames(tid).workload) as { spec: { replicas: number } };
+    assert.equal(set.spec.replicas, 0);
+    const audit = await readAudit(w.gateway.config.gateway?.dbPath ?? "");
+    assert.ok(audit.some((entry) => entry.action === "firstmate.stopped" && entry.subject === w.users.alice.id));
+
+    const noKey = await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start");
+    assert.equal(noKey.status, 409);
+    assert.deepEqual(await noKey.json(), { error: "key_required" });
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "stopped");
+
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: "replacement-again" })).status, 200);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "running");
+    await rollout();
+    assert.equal((fake.get("statefulsets", tenantNames(tid).workload) as { spec: { replicas: number } }).spec.replicas, 1);
   } finally {
     await reconciler.stop();
     await fake.close();

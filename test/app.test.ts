@@ -2095,7 +2095,9 @@ function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
         saved.credentials = [...saved.credentials.filter((entry) => entry.name !== name), credential];
         return jsonResponse({ credential, models: null });
       }
+      const removed = saved.credentials.find((entry) => entry.name === name);
       saved.credentials = saved.credentials.filter((entry) => entry.name !== name);
+      if (removed?.provider === saved.choice?.provider && saved.state === "running") saved.state = "stopped";
       return jsonResponse({ deleted: true });
     }
     if (path === "/api/me/firstmate/start" && method === "POST") {
@@ -2349,6 +2351,48 @@ test("a ready user starts and stops their own firstmate from Setup, warned that 
     getElement("setup-stop").dispatch("click");
     await waitFor(() => getElement("setup-run-line").textContent.startsWith("Stopped."));
     assert.equal(getElement("setup-start").hidden, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("only a delivered key's save says it restarts; removing the running firstmate's provider key takes a second tap and stops it", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const { routes, saved } = setupRoutes();
+  saved.choice = { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: null };
+  saved.credentials = [{ name: "ANTHROPIC_API_KEY", provider: "anthropic", added_at: "2026-10-05T10:00:00Z", validated_at: "2026-10-05T10:00:00Z", status: "valid" }];
+  saved.provisioning = true;
+  saved.state = "running";
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
+  const deletes = (): number => gateway.requests.filter((request) => request.method === "DELETE").length;
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=setup");
+    await waitFor(() => getElement("setup-run-line").textContent === "Running.");
+
+    // Another provider's key is not delivered to the firstmate, so it does not restart.
+    getElement("setup-provider").value = "deepseek";
+    getElement("setup-provider").dispatch("change");
+    getElement("setup-key").value = "sk-deepseek-canary-0123456789";
+    getElement("setup-key-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-status").textContent.startsWith("Saved: your DeepSeek key"));
+    assert.ok(!getElement("setup-status").textContent.includes("restarts onto it"));
+
+    getElement("setup-provider").value = "anthropic";
+    getElement("setup-provider").dispatch("change");
+    getElement("setup-key").value = "sk-ant-canary-app-0123456789";
+    getElement("setup-key-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-status").textContent.startsWith("Saved: your Anthropic key"));
+    assert.ok(getElement("setup-status").textContent.includes("restarts onto it"));
+
+    const remove = getElement("setup-key-remove");
+    remove.dispatch("click");
+    assert.equal(remove.textContent, "Tap again: this stops your firstmate");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(deletes(), 0, "the first tap only warns");
+    remove.dispatch("click");
+    await waitFor(() => getElement("setup-status").textContent === "Removed your Anthropic key. Your firstmate stopped.");
+    assert.equal(deletes(), 1);
+    await waitFor(() => getElement("setup-run-line").textContent.startsWith("Stopped."));
   } finally {
     await server.close();
   }

@@ -765,6 +765,10 @@ Lifecycle, all in the app:
 - **Key or model change**: the firstmate restarts onto it. A key change bumps
   its config version, and a model change changes its agents config. The app
   warns that work in flight restarts with it.
+- **Key deleted**: deleting the chosen provider's key stops the firstmate,
+  since it cannot run without it; the app asks for a second tap first. Start
+  answers `key_required` until a key for that provider is saved again.
+  Deleting the GitHub token restarts it without the token.
 - **Suspend / Resume**: an admin. A suspended user's firstmate is scaled to zero
   and gets no credentials. Resuming restores what the user had.
 - **Remove**: an admin. The workload is deleted at once. The home volume is kept

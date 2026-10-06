@@ -229,7 +229,7 @@ export async function handleSetupRoute(
     if (!ctx.store.deleteCredential(me.id, name)) return sendError(res, 404, "no_credential");
     ctx.store.audit({ at: ctx.now(), actor: me.id, action: "credential.deleted", subject: me.id, detail: { name } });
     ctx.log(`credential deleted: user ${me.id} ${name}`);
-    deliveredCredentialChanged(ctx, me, name);
+    deliveredCredentialChanged(ctx, me, name, true);
     return sendJson(res, 200, JSON.stringify({ deleted: true }));
   }
   if (method !== "PUT") return sendError(res, 405, "method not allowed");
@@ -291,7 +291,7 @@ async function saveKey(
     detail: { name: slot.name, provider: providerId, kid: ctx.vault.activeKid },
   });
   ctx.log(`credential saved: user ${me.id} ${slot.name} (kid ${ctx.vault.activeKid})`);
-  deliveredCredentialChanged(ctx, me, slot.name);
+  deliveredCredentialChanged(ctx, me, slot.name, false);
   sendJson(
     res,
     200,
@@ -344,7 +344,9 @@ type Provisioning = NonNullable<SetupContext["provisioning"]>;
 /** Start the user's managed firstmate: setup must be ready and the tenant cap leave room. */
 function startFirstmate(ctx: SetupContext, provisioning: Provisioning, res: ServerResponse, caller: SessionCaller): void {
   const me = caller.user;
-  if (!setupStatus(ctx, me).setup.ready) return sendError(res, 409, "setup_incomplete");
+  const { choice, setup } = setupStatus(ctx, me);
+  if (choice !== null && !setup.key_saved) return sendError(res, 409, "key_required");
+  if (!setup.ready) return sendError(res, 409, "setup_incomplete");
   if (!provisioning.canStart(me.id)) return sendError(res, 409, "capacity_reached");
   const at = ctx.now();
   const tenant = ctx.store.ensureTenant(me.id, at);
@@ -369,14 +371,25 @@ function stopFirstmate(ctx: SetupContext, provisioning: Provisioning, res: Serve
 }
 
 /**
- * A credential the user's firstmate was delivered (the chosen provider's key,
- * or the GitHub token) was replaced or deleted: its pod restarts and fetches
- * again, so it never keeps the old value.
+ * A credential the user's firstmate was delivered changed. Replacing it, or
+ * deleting the GitHub token, restarts the pod so it fetches again and never
+ * keeps the old value; deleting the chosen provider's key stops a running
+ * firstmate, which cannot run without it.
  */
-function deliveredCredentialChanged(ctx: SetupContext, user: UserRecord, name: string): void {
+function deliveredCredentialChanged(ctx: SetupContext, user: UserRecord, name: string, deleted: boolean): void {
   if (ctx.provisioning === null) return;
   const choice = ctx.store.modelChoice(user.id);
   const provider = choice === null ? null : providerById(ctx.catalog, choice.provider);
+  if (deleted && name === provider?.keyEnv) {
+    const tenant = ctx.store.tenantByUser(user.id);
+    if (tenant === null || tenant.desired !== "running") return;
+    const at = ctx.now();
+    ctx.store.setTenantDesired(user.id, "stopped", at);
+    ctx.store.audit({ at, actor: user.id, action: "firstmate.stopped", subject: user.id, detail: { tid: tenant.tid } });
+    ctx.log(`firstmate stopped: user ${user.id} tenant=${tenant.tid} (key deleted)`);
+    ctx.provisioning.kick();
+    return;
+  }
   if (name !== provider?.keyEnv && name !== ctx.catalog.github?.keyEnv[0]) return;
   ctx.store.bumpTenantConfig(user.id, ctx.now());
   ctx.provisioning.kick();

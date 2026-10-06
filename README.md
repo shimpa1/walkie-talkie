@@ -856,14 +856,17 @@ untracked.
 saved and able to use it), a user starts their own firstmate with `POST
 /api/me/firstmate/start` and stops it with `POST /api/me/firstmate/stop` (a
 same-origin write with the session, like the other `/api/me` routes). Start
-answers `409 {"error": "setup_incomplete"}` before setup is ready and `409
+answers `409 {"error": "key_required"}` while the chosen provider's key is
+missing, `409 {"error": "setup_incomplete"}` before setup is otherwise ready and `409
 {"error": "capacity_reached"}` past the cap; stop answers `409 {"error":
 "firstmate_not_started"}` when there is nothing to stop. Both answer `409
 {"error": "managed_by_config"}` for a declared firstmate's owner and `409
 {"error": "not_available"}` without tenant provisioning. Stopping scales to
-zero and keeps the volume, Secret and ConfigMap. Replacing or deleting a key
-the firstmate is delivered (the chosen provider's key or the GitHub token)
-restarts it, so it fetches the change and never keeps the old value. A model
+zero and keeps the volume, Secret and ConfigMap. Replacing a key the firstmate
+is delivered (the chosen provider's key or the GitHub token), or deleting the
+GitHub token, restarts it, so it fetches the change and never keeps the old
+value. Deleting the chosen provider's key stops a running firstmate instead;
+the app asks for a second tap first. A model
 change restarts it too, onto the regenerated agents config. The app's **Setup**
 tab has the same Start and Stop buttons, shows the lifecycle state, and warns
 that changing the key or model restarts a running firstmate.

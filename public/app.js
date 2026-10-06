@@ -462,6 +462,7 @@ function renderSetupProvider() {
     ? `Your ${provider.name} key is saved (checked ${formatTimestamp(key.validated_at)}). Save a new one to replace it.`
     : `Add your ${provider.name} API key. It is checked with ${provider.name} before it is saved.`;
   $("setup-key-remove").hidden = !key;
+  disarmButton($("setup-key-remove"), "Remove key");
   const choice = setupState.firstmate && setupState.firstmate.choice;
   const mine = choice && choice.provider === provider.id ? choice : null;
   const models = provider.models.map((model) => [model, model]);
@@ -595,6 +596,28 @@ async function loadSetup() {
   }
 }
 
+function firstmateStarted() {
+  return Boolean(setupState.firstmate && STARTED.includes(setupState.firstmate.state));
+}
+
+/** Whether the firstmate is delivered this credential: the chosen provider's key or the GitHub token. */
+function chosenProviderKey(name) {
+  const catalog = setupState.catalog;
+  const choice = setupState.firstmate && setupState.firstmate.choice;
+  const provider = catalog && choice ? catalog.providers.find((entry) => entry.id === choice.provider) : null;
+  return Boolean(provider && provider.key_name === name);
+}
+
+function deliveredCredential(name) {
+  const github = setupState.catalog && setupState.catalog.github;
+  return chosenProviderKey(name) || Boolean(github && github.key_name === name);
+}
+
+function disarmButton(button, label) {
+  delete button.dataset.armed;
+  button.textContent = label;
+}
+
 /** Send a key for checking and storage. The field is cleared whatever happens. */
 async function saveSetupKey(input, name, label) {
   const value = input.value.trim();
@@ -606,7 +629,7 @@ async function saveSetupKey(input, name, label) {
   setSetupStatus(`Checking your ${label}…`, "");
   try {
     await api(`/api/me/credentials/${encodeURIComponent(name)}`, jsonInit("PUT", { value }));
-    const restarting = Boolean(setupState.firstmate && STARTED.includes(setupState.firstmate.state));
+    const restarting = firstmateStarted() && deliveredCredential(name);
     setSetupStatus(
       `Saved: your ${label} works and is stored encrypted.${restarting ? " Your firstmate restarts onto it." : ""}`,
       "ok",
@@ -617,10 +640,17 @@ async function saveSetupKey(input, name, label) {
   await loadSetup();
 }
 
-async function removeSetupKey(name, label) {
+/** Delete a saved key; removing the running firstmate's provider key asks for a second tap, as it stops it. */
+async function removeSetupKey(button, name, label) {
+  const stopping = firstmateStarted() && chosenProviderKey(name);
+  if (stopping && button.dataset.armed !== "1") {
+    button.dataset.armed = "1";
+    button.textContent = "Tap again: this stops your firstmate";
+    return;
+  }
   try {
     await api(`/api/me/credentials/${encodeURIComponent(name)}`, { method: "DELETE" });
-    setSetupStatus(`Removed your ${label}.`, "ok");
+    setSetupStatus(`Removed your ${label}.${stopping ? " Your firstmate stopped." : ""}`, "ok");
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
@@ -2230,11 +2260,11 @@ async function init() {
   $("setup-github-form").addEventListener("submit", (event) => void submitSetupGithub(event));
   $("setup-key-remove").addEventListener("click", () => {
     const provider = setupProvider();
-    if (provider) void removeSetupKey(provider.key_name, `${provider.name} key`);
+    if (provider) void removeSetupKey($("setup-key-remove"), provider.key_name, `${provider.name} key`);
   });
   $("setup-github-remove").addEventListener("click", () => {
     const github = setupState.catalog && setupState.catalog.github;
-    if (github) void removeSetupKey(github.key_name, "GitHub token");
+    if (github) void removeSetupKey($("setup-github-remove"), github.key_name, "GitHub token");
   });
   $("setup-start").addEventListener("click", () => void firstmateAction("start"));
   $("setup-stop").addEventListener("click", () => void firstmateAction("stop"));
