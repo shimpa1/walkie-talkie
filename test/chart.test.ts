@@ -336,8 +336,11 @@ function inventory(rendered: string): string[] {
 /** A fixed token so the chart's generated credential Secret renders the same twice. */
 const FIXED_TOKEN = ["--set", "credentials.create.walkieTalkieToken=tok"];
 
-/** The atus example with the gateway switched on, as the enable PR would. */
-const GATEWAY_ON = ["-f", VALUES_ATUS, "--set", "gateway.enabled=true", "--set", "gateway.githubClientId=Ov23liExample", ...FIXED_TOKEN];
+/** The atus example as committed: the gateway is on. */
+const GATEWAY_ON = ["-f", VALUES_ATUS, ...FIXED_TOKEN];
+
+/** The atus example with the gateway switched off, as the rollback would. */
+const GATEWAY_OFF = ["-f", VALUES_ATUS, "--set", "gateway.enabled=false", ...FIXED_TOKEN];
 
 /** A complete gateway block, for proving it changes nothing while disabled. */
 const FULL_GATEWAY = {
@@ -367,7 +370,7 @@ const PRE_GATEWAY_INVENTORY = [
 ];
 
 test("gateway off: the atus example renders the same objects and route as before", { skip: skipHelm }, () => {
-  const rendered = render(["-f", VALUES_ATUS, ...FIXED_TOKEN]);
+  const rendered = render(GATEWAY_OFF);
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.deepEqual(inventory(rendered.stdout), PRE_GATEWAY_INVENTORY);
   assert.doesNotMatch(rendered.stdout, /firstmate-gateway|FM_WT_MODE/);
@@ -408,7 +411,7 @@ test("gateway on: the route switches to the gateway Service", { skip: skipHelm }
 });
 
 test("gateway on: the firstmate StatefulSet is byte-identical", { skip: skipHelm }, () => {
-  const off = render(["-f", VALUES_ATUS, ...FIXED_TOKEN]);
+  const off = render(GATEWAY_OFF);
   const on = render(GATEWAY_ON);
   assert.equal(on.status, 0, on.stderr);
   const before = findDoc(off.stdout, "StatefulSet", "firstmate");
@@ -595,7 +598,7 @@ test("gateway on without admins fails the render",{ skip: skipHelm }, () => {
 });
 
 test("gateway on without the OAuth client id fails the render", { skip: skipHelm }, () => {
-  const rendered = render(["-f", VALUES_ATUS, "--set", "gateway.enabled=true", ...FIXED_TOKEN]);
+  const rendered = render([...GATEWAY_ON, "--set", "gateway.githubClientId="]);
   assert.notEqual(rendered.status, 0);
   assert.match(rendered.stderr, /requires gateway\.githubClientId/);
 });
@@ -680,7 +683,7 @@ test("gateway on: the launch catalog renders into the tenant-params ConfigMap th
 });
 
 test("gateway off: the catalog renders nothing", { skip: skipHelm }, () => {
-  const rendered = render(["-f", VALUES_ATUS, ...FIXED_TOKEN]);
+  const rendered = render(GATEWAY_OFF);
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.doesNotMatch(rendered.stdout, /tenant-params|catalog\.json/);
 });
@@ -969,9 +972,9 @@ test("tenants on: the rendered tenant parameters are what the gateway's own pars
   assert.equal(params.gatewayInternalUrl, "http://firstmate-gateway-internal.firstmate.svc:8788");
   assert.equal(params.home, "/home/firstmate");
   assert.equal(params.port, 8787);
-  // Images fall back to the firstmate runtime and the gateway's (here walkieTalkie's) image.
-  assert.equal(params.images.firstmate.image, "shimpa/firstmate-runtime:6eb5b4543933");
-  assert.equal(params.images.walkieTalkie.image, "shimpa/walkie-talkie:36ac8b81ad5b");
+  // The atus values pin the tenant runtime; the sidecar falls back to the gateway's image.
+  assert.equal(params.images.firstmate.image, "shimpa/firstmate-runtime:b9c3cf045ff9");
+  assert.equal(params.images.walkieTalkie.image, "shimpa/walkie-talkie:b9c3cf045ff9");
   assert.equal(params.harnessCommand, `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"`);
   assert.deepEqual(params.storage, { storageClass: "beta3", size: "10Gi" });
   assert.deepEqual(params.security, { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 });

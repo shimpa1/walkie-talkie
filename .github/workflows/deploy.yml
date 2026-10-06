@@ -47,10 +47,11 @@ jobs:
         run: |
           chart=deploy/helm/firstmate
           atus=$chart/examples/values-atus.yaml
-          # The atus values declare the whole gateway block with enabled: false;
-          # it must render exactly what the same values render with the gateway
-          # block reset to the chart defaults.
+          # The atus values declare the whole gateway block; switched off (the
+          # rollback), it must render exactly what the same values render with
+          # the gateway block reset to the chart defaults.
           helm template firstmate $chart -n firstmate -f "$atus" \
+            --set gateway.enabled=false \
             --set credentials.create.walkieTalkieToken=tok >/tmp/off.yaml
           python3 -c 'import sys,re; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(re.sub(r"(?ms)^gateway:\n.*", "", s))' "$atus" /tmp/atus-no-gateway.yaml
           helm template firstmate $chart -n firstmate -f /tmp/atus-no-gateway.yaml \
@@ -125,10 +126,12 @@ jobs:
           v4 = [b for b in blocks if b["cidr"] == "0.0.0.0/0"]
           assert len(v4) == 1 and {"10.0.0.0/8", "169.254.0.0/16"} <= set(v4[0]["except"]), blocks
           CHECK
-          # Off (the atus values as committed), none of it renders.
+          # Off (the atus values as committed), none of it renders. The gateway's
+          # own policy still names the tenant namespace in a selector, so look
+          # for objects named or placed there, not for the name anywhere.
           helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
             --set credentials.create.walkieTalkieToken=tok >/tmp/tenants-off.yaml
-          if grep -Eq 'firstmate-tenants|kind: (Role|RoleBinding|ResourceQuota|LimitRange|Namespace)$' /tmp/tenants-off.yaml; then
+          if grep -Eq '^\s+(name|namespace): firstmate-tenants$|kind: (Role|RoleBinding|ResourceQuota|LimitRange|Namespace)$' /tmp/tenants-off.yaml; then
             echo "tenant objects rendered while tenants are off" >&2
             exit 1
           fi

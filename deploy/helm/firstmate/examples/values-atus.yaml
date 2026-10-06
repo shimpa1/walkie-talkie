@@ -180,22 +180,25 @@ agents:
       - harness: opencode
         model: deepseek/deepseek-flash
 
-# Multi-user gateway (docs/deploy-kubernetes.md, "Multi-user gateway"). Off:
-# with `enabled: false` nothing below renders and the release is exactly as
-# above. Everything the cutover needs is declared here so the enable PR is
-# small: it sets `enabled: true`, the OAuth App's `githubClientId`, and a
-# `gateway.image.tag` built from a commit that includes gateway mode (main at or
-# after the merge of PR #33; the firstmate pod's sidecar image above predates
-# it and stays as it is). The firstmate StatefulSet above is unchanged by any of
-# this: it becomes the admin's static tenant behind the gateway.
+# Multi-user gateway (docs/deploy-kubernetes.md, "Multi-user gateway"). On:
+# the gateway runs its own Deployment in front of the firstmate pod and the
+# HTTPRoute points at it. The firstmate StatefulSet above is unchanged by any
+# of this (its sidecar image predates gateway mode and stays as it is): it
+# becomes the admin's static tenant behind the gateway. Setting `enabled: false`
+# and upgrading is the rollback; the gateway's store claim is kept.
 gateway:
-  enabled: false
+  enabled: true
   image:
     repository: shimpa/walkie-talkie
-    tag: ""
-  # Set from the registered GitHub OAuth App (callback
-  # https://walkie-talkie.atus.hr/auth/github/callback) in the enable PR.
-  githubClientId: ""
+    # Commit b9c3cf0: main at the merge of PR #37 (gateway mode, per-user
+    # firstmate lifecycle). Built with:
+    #   docker buildx build --platform linux/amd64 \
+    #     -t shimpa/walkie-talkie:b9c3cf045ff9 --push .
+    tag: "b9c3cf045ff9"
+  # The registered GitHub OAuth App "walkie-talkie (atus)" (callback
+  # https://walkie-talkie.atus.hr/auth/github/callback). The client id is
+  # public; the client secret is only in Doppler (walkie-talkie/gateway).
+  githubClientId: "Ov23litrgQH1slEFh7Ee"
   # shimpa1's GitHub numeric id.
   admins:
     - 20532068
@@ -212,9 +215,10 @@ gateway:
       tokenSecretRef:
         name: firstmate-credentials
         key: walkie-talkie-token
-  # A dedicated Doppler-synced Secret (DopplerSecret -> Secret
-  # firstmate-gateway-secrets) carrying WT_GITHUB_CLIENT_SECRET, WT_VAULT_KEYS
-  # and WT_TENANT_TOKEN_SECRET. Not firstmate-doppler-secrets: the firstmate
+  # A dedicated Doppler-synced Secret (DopplerSecret doppler-firstmate-gateway,
+  # Doppler walkie-talkie/gateway -> Secret firstmate-gateway-secrets) carrying
+  # WT_GITHUB_CLIENT_SECRET, WT_VAULT_KEYS and WT_TENANT_TOKEN_SECRET. Not
+  # firstmate-doppler-secrets: the firstmate
   # container takes that whole Secret through envFrom, and these keys must reach
   # only the gateway.
   secrets:
@@ -224,17 +228,25 @@ gateway:
     size: 1Gi
 
 # Per-user firstmates (docs/deploy-kubernetes.md, "Per-user firstmates"). Off:
-# enabling them is a separate deploy decision that needs the gateway on, the
-# CNI NetworkPolicy check passed, and `tenants.image.firstmate.tag` pinned to a
-# runtime build whose entrypoint fetches credentials from the gateway (the
-# image above predates it). Tenant homes use the same class. The 2026-10-06
-# check on atus found tenant egress NOT enforced: the cluster-wide Calico
-# GlobalNetworkPolicy akash-guard-threatintel-egress-deny ends in an
+# enabling them is a separate deploy decision that needs the gateway on and the
+# CNI NetworkPolicy check passed. Tenant homes use the same class. The
+# 2026-10-06 check on atus found tenant egress NOT enforced: the cluster-wide
+# Calico GlobalNetworkPolicy akash-guard-threatintel-egress-deny ends in an
 # unconditional Allow that overrides every namespace's egress default-deny
 # (ingress isolation is enforced). Do not enable tenants until that is fixed
 # and the check passes (see "Check that the CNI enforces NetworkPolicy").
 tenants:
   enabled: false
+  image:
+    # The runtime for per-user firstmates, which must fetch its credentials
+    # from the gateway at start (entrypoint step 2c); the captain's firstmate
+    # image above predates that. Commit b9c3cf0 (main at the merge of PR #37).
+    # Inert while tenants are off. Built with:
+    #   docker buildx build --platform linux/amd64 \
+    #     -t shimpa/firstmate-runtime:b9c3cf045ff9 --push deploy/kubernetes/firstmate
+    firstmate:
+      repository: shimpa/firstmate-runtime
+      tag: "b9c3cf045ff9"
   persistence:
     storageClass: beta3
   # atus pods resolve names through kubespray's node-local DNS cache, which
