@@ -47,10 +47,11 @@ jobs:
         run: |
           chart=deploy/helm/firstmate
           atus=$chart/examples/values-atus.yaml
-          # The atus values declare the whole gateway block with enabled: false;
-          # it must render exactly what the same values render with the gateway
-          # block reset to the chart defaults.
+          # The atus values declare the whole gateway block; switched off (the
+          # rollback), it must render exactly what the same values render with
+          # the gateway block reset to the chart defaults.
           helm template firstmate $chart -n firstmate -f "$atus" \
+            --set gateway.enabled=false \
             --set credentials.create.walkieTalkieToken=tok >/tmp/off.yaml
           python3 -c 'import sys,re; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(re.sub(r"(?ms)^gateway:\n.*", "", s))' "$atus" /tmp/atus-no-gateway.yaml
           helm template firstmate $chart -n firstmate -f /tmp/atus-no-gateway.yaml \

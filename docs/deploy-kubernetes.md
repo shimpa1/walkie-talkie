@@ -587,9 +587,10 @@ cluster.
 
 ## Multi-user gateway
 
-*Written 2026-10-05. The chart support is merged with the atus values at
-`gateway.enabled: false`, so nothing below has been deployed. Enabling it is a
-separate deploy decision.*
+*Written 2026-10-05. The chart support is merged, and since 2026-10-06 the
+atus values set `gateway.enabled: true` (see [Cutover](#cutover-the-enable-pr)).
+A merged values change is not a deploy: the gateway runs on atus only once the
+captain has it deployed.*
 
 `gateway.enabled: true` adds walkie-talkie's multi-user gateway
 (`FM_WT_MODE=gateway`, see the README's "Multi-user gateway") as its own
@@ -796,8 +797,9 @@ capabilities, `RuntimeDefault` seccomp, no ServiceAccount token and no service
 links. No provider key or GitHub token is ever in a Secret: the runtime pulls
 them from the gateway's internal port at start (D4), so the runtime image must be
 a build whose entrypoint does that (`deploy/kubernetes/firstmate/entrypoint.sh`,
-step 2c). The atus runtime image `6eb5b4543933` predates it; pin a newer build
-in `tenants.image.firstmate.tag`.
+step 2c). The atus firstmate image `6eb5b4543933` predates it, so the atus
+values pin `b9c3cf045ff9` (main at the merge of PR #37) in
+`tenants.image.firstmate.tag`.
 
 | Value | Default | What it does |
 | --- | --- | --- |
@@ -860,6 +862,15 @@ Do **not** add these keys to the config behind `firstmate-doppler-secrets`. The
 firstmate container takes that whole Secret through `envFrom`, so the agent
 would see the gateway's client secret and vault keys.
 
+On atus the config is `walkie-talkie`/`gateway`: the root config of its own
+`gateway` environment, so it inherits nothing from `walkie-talkie`/`prd` (the
+config behind `firstmate-doppler-secrets`). A branch config such as `prd_gateway`
+would inherit every `prd` key. The DopplerSecret `doppler-firstmate-gateway` is
+declared in the atus repository at
+`deployments/firstmate/dopplersecret-gateway.yaml`. It reads a token for that
+config alone from the Secret `doppler-token-gateway`, which is created out of
+band.
+
 | Doppler key | Value | Generator |
 | --- | --- | --- |
 | `WT_GITHUB_CLIENT_SECRET` | the OAuth App client secret from step 1 | GitHub |
@@ -910,15 +921,15 @@ through node-local DNS at `169.254.25.10`, which the atus values admit through
 
 ### Cutover (the enable PR)
 
-The atus values already declare everything except three fields. The enable PR
-sets them:
+The atus values already declared everything except three fields. The enable PR
+(2026-10-06) set them:
 
 ```yaml
 gateway:
   enabled: true
-  githubClientId: <Client ID from step 1>
+  githubClientId: Ov23litrgQH1slEFh7Ee   # the OAuth App from step 1
   image:
-    tag: <a walkie-talkie build of main at or after the merge of PR #33>
+    tag: "b9c3cf045ff9"                  # main at the merge of PR #37
 ```
 
 The atus values already carry:
