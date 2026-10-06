@@ -462,7 +462,6 @@ function renderSetupProvider() {
     ? `Your ${provider.name} key is saved (checked ${formatTimestamp(key.validated_at)}). Save a new one to replace it.`
     : `Add your ${provider.name} API key. It is checked with ${provider.name} before it is saved.`;
   $("setup-key-remove").hidden = !key;
-  disarmButton($("setup-key-remove"), "Remove key");
   const choice = setupState.firstmate && setupState.firstmate.choice;
   const mine = choice && choice.provider === provider.id ? choice : null;
   const models = provider.models.map((model) => [model, model]);
@@ -613,9 +612,10 @@ function deliveredCredential(name) {
   return chosenProviderKey(name) || Boolean(github && github.key_name === name);
 }
 
-function disarmButton(button, label) {
+function disarmKeyRemove() {
+  const button = $("setup-key-remove");
   delete button.dataset.armed;
-  button.textContent = label;
+  button.textContent = "Remove key";
 }
 
 /** Send a key for checking and storage. The field is cleared whatever happens. */
@@ -637,6 +637,7 @@ async function saveSetupKey(input, name, label) {
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
+  disarmKeyRemove();
   await loadSetup();
 }
 
@@ -654,6 +655,7 @@ async function removeSetupKey(button, name, label) {
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
+  disarmKeyRemove();
   await loadSetup();
 }
 
@@ -2254,7 +2256,10 @@ async function init() {
   $("link-device").addEventListener("click", () => void showLinkCode());
   $("link-form").addEventListener("submit", (event) => void redeemLinkCode(event));
   $("invite-form").addEventListener("submit", (event) => void submitInvite(event));
-  $("setup-provider").addEventListener("change", renderSetupProvider);
+  $("setup-provider").addEventListener("change", () => {
+    disarmKeyRemove();
+    renderSetupProvider();
+  });
   $("setup-key-form").addEventListener("submit", (event) => void submitSetupKey(event));
   $("setup-model-form").addEventListener("submit", (event) => void submitSetupModel(event));
   $("setup-github-form").addEventListener("submit", (event) => void submitSetupGithub(event));

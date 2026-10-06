@@ -2097,7 +2097,7 @@ function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
       }
       const removed = saved.credentials.find((entry) => entry.name === name);
       saved.credentials = saved.credentials.filter((entry) => entry.name !== name);
-      if (removed?.provider === saved.choice?.provider && saved.state === "running") saved.state = "stopped";
+      if (removed?.provider === saved.choice?.provider && saved.state !== undefined && saved.state !== "none") saved.state = "stopped";
       return jsonResponse({ deleted: true });
     }
     if (path === "/api/me/firstmate/start" && method === "POST") {
@@ -2362,12 +2362,12 @@ test("only a delivered key's save says it restarts; removing the running firstma
   saved.choice = { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: null };
   saved.credentials = [{ name: "ANTHROPIC_API_KEY", provider: "anthropic", added_at: "2026-10-05T10:00:00Z", validated_at: "2026-10-05T10:00:00Z", status: "valid" }];
   saved.provisioning = true;
-  saved.state = "running";
+  saved.state = "starting";
   const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
   const deletes = (): number => gateway.requests.filter((request) => request.method === "DELETE").length;
   try {
     const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=setup");
-    await waitFor(() => getElement("setup-run-line").textContent === "Running.");
+    await waitFor(() => getElement("setup-run-line").textContent === "Starting…");
 
     // Another provider's key is not delivered to the firstmate, so it does not restart.
     getElement("setup-provider").value = "deepseek";
@@ -2389,6 +2389,11 @@ test("only a delivered key's save says it restarts; removing the running firstma
     assert.equal(remove.textContent, "Tap again: this stops your firstmate");
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(deletes(), 0, "the first tap only warns");
+    const reads = (): number => gateway.requests.filter((request) => request.path === "/api/me/firstmate").length;
+    const readsBefore = reads();
+    await waitFor(() => reads() > readsBefore, 7000);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(remove.textContent, "Tap again: this stops your firstmate", "a refresh keeps the button armed");
     remove.dispatch("click");
     await waitFor(() => getElement("setup-status").textContent === "Removed your Anthropic key. Your firstmate stopped.");
     assert.equal(deletes(), 1);
