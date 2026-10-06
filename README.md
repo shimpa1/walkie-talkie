@@ -821,13 +821,15 @@ desired firstmate with server-side apply (`fieldManager=walkie-talkie-gateway`,
 of a firstmate no longer desired, but never a volume claim. It reads pod status
 back as each firstmate's observed state. It runs every minute, every few seconds
 while one is starting or stopping, and uses only get, list, patch and delete in
-the tenant namespace.
+the tenant namespace. If a firstmate's chosen provider or model leaves the
+catalog, its objects are left as they are, except that a stop or suspension
+still scales it to zero.
 
 A firstmate's lifecycle state, in `GET /api/me/firstmate` (`state`), in
 `/auth/session` (`user.firstmate_state`) and in the admin's user list:
 `none` → `provisioning` → `starting` → `running`, or `crashloop`, `stopping`,
-`stopped`. A suspended user's firstmate is scaled to zero and gets no
-credentials; resuming restores it. Removing a user deletes their firstmate's
+`stopped`. A suspended user's firstmate is scaled to zero (it reads
+`stopping`, then `stopped`) and gets no credentials; resuming restores it. Removing a user deletes their firstmate's
 workload; the volume is kept, and its tenant id stays recorded as retained so
 the volume is never untracked.
 
