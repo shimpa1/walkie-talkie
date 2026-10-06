@@ -83,8 +83,12 @@ export interface AccessRequest {
   requestedAt: number;
 }
 
-/** What recording an uninvited sign-in did. */
-export type AccessRequestOutcome = "pending" | "denied" | "full";
+/**
+ * What recording an uninvited sign-in did: `created` for a new request,
+ * `pending` for one already waiting (refreshed), `denied` within the denial
+ * memory, `full` when the queue is at its cap.
+ */
+export type AccessRequestOutcome = "created" | "pending" | "denied" | "full";
 
 export interface AuditEntry {
   at: number;
@@ -141,6 +145,10 @@ export interface TenantRecord {
 export interface RetainedTenant {
   tid: string;
   removedAt: number;
+  /** The removed user's GitHub login at removal, for the admin's list; null for older rows. */
+  login: string | null;
+  /** When an admin asked to purge it now, or null to wait out the grace period. */
+  purgeRequestedAt: number | null;
 }
 
 /** A tenant with what the reconciler and delivery need about its owner. */
@@ -177,7 +185,7 @@ export const LINK_CODE_LENGTH = 8;
 /** A device's public handle: a prefix of its session hash, which reveals nothing usable. */
 const DEVICE_HANDLE_LENGTH = 16;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -277,6 +285,10 @@ const MIGRATIONS: Record<number, string> = {
       tid TEXT PRIMARY KEY,
       removed_at INTEGER NOT NULL
     );
+  `,
+  5: `
+    ALTER TABLE retained_tenants ADD COLUMN login TEXT;
+    ALTER TABLE retained_tenants ADD COLUMN purge_requested_at INTEGER;
   `,
 };
 
@@ -460,7 +472,10 @@ export class GatewayStore {
   deleteUser(userId: string, now: number): boolean {
     return this.transaction(() => {
       this.db
-        .prepare("INSERT OR IGNORE INTO retained_tenants (tid, removed_at) SELECT tid, ? FROM tenants WHERE user_id = ?")
+        .prepare(
+          "INSERT OR IGNORE INTO retained_tenants (tid, removed_at, login) " +
+            "SELECT t.tid, ?, u.login FROM tenants t JOIN users u ON u.id = t.user_id WHERE t.user_id = ? AND t.desired != 'none'",
+        )
         .run(now, userId);
       const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(userId);
       return asNumber(result.changes) > 0;
@@ -648,7 +663,7 @@ export class GatewayStore {
       this.db
         .prepare("INSERT INTO access_requests (github_id, login, requested_at, state) VALUES (?, ?, ?, 'pending')")
         .run(githubId, login, now);
-      return "pending";
+      return "created";
     });
   }
 
@@ -781,6 +796,14 @@ export class GatewayStore {
   deleteCredential(userId: string, name: string): boolean {
     const result = this.db.prepare("DELETE FROM credentials WHERE user_id = ? AND name = ?").run(userId, name);
     return asNumber(result.changes) > 0;
+  }
+
+  /** How many credentials are sealed under a key id other than `kid`. */
+  countCredentialsNotUnder(kid: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM credentials WHERE kid != ?").get(kid) as
+      | Record<string, unknown>
+      | undefined;
+    return row === undefined ? 0 : asNumber(row.n);
   }
 
   /**
@@ -929,10 +952,29 @@ export class GatewayStore {
 
   /** Removed users' tenants whose home volume is still in the cluster, oldest first. */
   listRetainedTenants(): RetainedTenant[] {
-    const rows = this.db.prepare("SELECT tid, removed_at FROM retained_tenants ORDER BY removed_at, tid").all() as Array<
-      Record<string, unknown>
-    >;
-    return rows.map((row) => ({ tid: String(row.tid), removedAt: asNumber(row.removed_at) }));
+    const rows = this.db
+      .prepare("SELECT tid, removed_at, login, purge_requested_at FROM retained_tenants ORDER BY removed_at, tid")
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      tid: String(row.tid),
+      removedAt: asNumber(row.removed_at),
+      login: row.login === null ? null : String(row.login),
+      purgeRequestedAt: row.purge_requested_at === null ? null : asNumber(row.purge_requested_at),
+    }));
+  }
+
+  /** An admin asked to purge a retained home volume now. False when it is not retained. */
+  requestPurge(tid: string, now: number): boolean {
+    const result = this.db
+      .prepare("UPDATE retained_tenants SET purge_requested_at = COALESCE(purge_requested_at, ?) WHERE tid = ?")
+      .run(now, tid);
+    return asNumber(result.changes) > 0;
+  }
+
+  /** The retained home volume is gone from the cluster: stop tracking it. */
+  deleteRetainedTenant(tid: string): boolean {
+    const result = this.db.prepare("DELETE FROM retained_tenants WHERE tid = ?").run(tid);
+    return asNumber(result.changes) > 0;
   }
 
   // ---- login attempts ----------------------------------------------------

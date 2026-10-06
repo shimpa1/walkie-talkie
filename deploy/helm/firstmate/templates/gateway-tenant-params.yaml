@@ -101,6 +101,7 @@
 {{- $params = dict
   "namespace" (required "gateway.tenantNamespace is required" $gw.tenantNamespace)
   "maxTenants" (int $t.maxTenants)
+  "purgeAfterDays" (int $t.purgeAfterDays)
   "serviceAccountName" "fm-tenant"
   "gatewayInternalUrl" (printf "http://%s-internal.%s.svc:%d" (include "firstmate.gateway.fullname" .) .Release.Namespace (int $gw.service.internalPort))
   "home" .Values.firstmate.home

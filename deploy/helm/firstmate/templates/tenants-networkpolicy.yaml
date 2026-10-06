@@ -71,6 +71,18 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    {{- with $np.dns.extraCidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
     - to:
         - namespaceSelector:
             matchLabels:

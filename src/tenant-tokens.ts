@@ -67,6 +67,15 @@ export class TenantTokens {
   }
 
   /**
+   * A short, one-way fingerprint of the master, carried in every tenant pod's
+   * template: rotating the master changes it, so each tenant restarts once
+   * onto its new tokens. It reveals nothing usable about the master.
+   */
+  epoch(): string {
+    return createHmac("sha256", this.master).update("wt-tenant-epoch/v1", "utf8").digest("hex").slice(0, 16);
+  }
+
+  /**
    * The tenant a presented credential token was minted for, or null. The MAC
    * is compared in constant time; a malformed token never reaches it.
    */

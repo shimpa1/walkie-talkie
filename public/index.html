@@ -164,6 +164,18 @@
         </form>
 
         <p id="setup-summary" class="hint setup-summary" role="status"></p>
+
+        <div id="setup-run" class="setup-step" hidden>
+          <h3>4. Your firstmate</h3>
+          <p id="setup-run-line" class="hint" role="status"></p>
+          <p id="setup-run-warning" class="hint" hidden>
+            Changing your key or model restarts your firstmate; work in flight restarts with it.
+          </p>
+          <div class="row">
+            <button id="setup-start" type="button" hidden>Start my firstmate</button>
+            <button id="setup-stop" class="ghost" type="button" hidden>Stop my firstmate</button>
+          </div>
+        </div>
       </section>
 
       <section id="view-admin" class="view" aria-labelledby="admin-heading">
@@ -186,6 +198,14 @@
         <div id="invites-body" class="cards"></div>
         <div class="section-title">Users</div>
         <div id="users-body" class="cards"></div>
+        <div id="retained-section" hidden>
+          <div class="section-title">Removed users' homes</div>
+          <p class="hint">
+            A removed user's firstmate home is kept for recovery, then deleted for good.
+            Each one still takes a firstmate slot until then.
+          </p>
+          <div id="retained-body" class="cards"></div>
+        </div>
       </section>
 
       <section id="view-settings" class="view" aria-labelledby="settings-heading">

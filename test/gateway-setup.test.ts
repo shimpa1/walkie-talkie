@@ -530,6 +530,8 @@ test("a model choice comes from the catalog, needs the provider's key, and respe
       choice: null,
       setup: { model_chosen: false, routine_chosen: false, key_saved: false, model_available: false, routine_available: false, ready: false },
       state: "none",
+      // This gateway runs no per-user firstmates, so the app offers no Start.
+      provisioning: false,
     });
 
     const choose = (body: unknown): Promise<Response> => w.call(w.sessions.alice, "PUT", "/api/me/firstmate", body);

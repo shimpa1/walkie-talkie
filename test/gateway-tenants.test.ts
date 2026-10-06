@@ -328,6 +328,7 @@ test("starting past maxTenants is refused, counting removed users' retained home
     for (const [id, login] of [[8008, "dave"], [9009, "erin"]] as const) {
       const user = w.gateway.store.createUser(id, login, 0);
       w.gateway.store.ensureTenant(user.id, 0);
+      w.gateway.store.setTenantDesired(user.id, "stopped", 0);
       w.gateway.store.deleteUser(user.id, 0);
     }
     assert.equal(w.gateway.store.listRetainedTenants().length, 2);
@@ -373,7 +374,7 @@ test("removing a user keeps their tenant as retained, so its home volume stays t
   }
 });
 
-test("replacing or deleting a delivered key restarts the running firstmate; an unrelated key does not", async () => {
+test("replacing a delivered key or deleting the GitHub token restarts the running firstmate; deleting its provider key stops it", async () => {
   const w = await world();
   const fake = await startFakeKube("firstmate-tenants");
   const reconciler = new TenantReconciler({
@@ -403,7 +404,6 @@ test("replacing or deleting a delivered key restarts the running firstmate; an u
       ["PUT", "GH_TOKEN", 3],
       ["DELETE", "GH_TOKEN", 4],
       ["DELETE", "OPENROUTER_API_KEY", 4],
-      ["DELETE", "ANTHROPIC_API_KEY", 5],
     ];
     for (const [method, name, expected] of steps) {
       const [kicksBefore, versionBefore] = [w.kicks(), version()];
@@ -413,9 +413,102 @@ test("replacing or deleting a delivered key restarts the running firstmate; an u
       assert.equal(w.kicks() - kicksBefore, expected > versionBefore ? 1 : 0, `${method} ${name} kicks only when delivered`);
       assert.equal(await rollout(), String(expected), `the pod template follows ${method} ${name}`);
     }
+
+    const kicksBefore = w.kicks();
+    assert.equal((await w.call(w.sessions.alice, "DELETE", "/api/me/credentials/ANTHROPIC_API_KEY")).status, 200);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "stopped");
+    assert.equal(version(), 4, "deleting the provider key stops the firstmate rather than restarting it");
+    assert.equal(w.kicks(), kicksBefore + 1);
+    assert.equal(await rollout(), "4");
+    const set = fake.get("statefulsets", tenantNames(tid).workload) as { spec: { replicas: number } };
+    assert.equal(set.spec.replicas, 0);
+    const audit = await readAudit(w.gateway.config.gateway?.dbPath ?? "");
+    assert.ok(audit.some((entry) => entry.action === "firstmate.stopped" && entry.subject === w.users.alice.id));
+
+    const noKey = await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start");
+    assert.equal(noKey.status, 409);
+    assert.deepEqual(await noKey.json(), { error: "key_required" });
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "stopped");
+
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: "replacement-again" })).status, 200);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "running");
+    await rollout();
+    assert.equal((fake.get("statefulsets", tenantNames(tid).workload) as { spec: { replicas: number } }).spec.replicas, 1);
   } finally {
     await reconciler.stop();
     await fake.close();
+    await w.close();
+  }
+});
+
+test("an admin sees removed users' retained homes and can purge one now, confirming it by name", async () => {
+  const w = await world();
+  try {
+    w.ready(w.users.alice);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    const tid = w.gateway.store.tenantByUser(w.users.alice.id)?.tid;
+    assert.ok(tid);
+    assert.equal((await w.call(w.sessions.admin, "DELETE", `/api/admin/users/${w.users.alice.id}`)).status, 200);
+
+    assert.equal((await w.call(w.sessions.bob, "GET", "/api/admin/retained")).status, 403);
+    const listed = (await (await w.call(w.sessions.admin, "GET", "/api/admin/retained")).json()) as { retained: Array<Record<string, unknown>> };
+    assert.equal(listed.retained.length, 1);
+    const entry = listed.retained[0] ?? {};
+    assert.equal(entry.tid, tid);
+    assert.equal(entry.login, "alice");
+    assert.equal(entry.purge_requested, false);
+    assert.equal(Date.parse(String(entry.purge_at)) - Date.parse(String(entry.removed_at)), 30 * 24 * 60 * 60 * 1000);
+
+    const mismatch = await w.call(w.sessions.admin, "POST", `/api/admin/retained/${tid}/purge`, { confirm: "uaaaaaaa" });
+    assert.equal(mismatch.status, 400);
+    assert.deepEqual(await mismatch.json(), { error: "confirm_mismatch" });
+    assert.equal((await w.call(w.sessions.admin, "POST", "/api/admin/retained/uzzzzzzz/purge", { confirm: "uzzzzzzz" })).status, 404);
+    assert.equal((await w.call(w.sessions.bob, "POST", `/api/admin/retained/${tid}/purge`, { confirm: tid })).status, 403);
+
+    const kicksBefore = w.kicks();
+    const purge = await w.call(w.sessions.admin, "POST", `/api/admin/retained/${tid}/purge`, { confirm: tid });
+    assert.equal(purge.status, 200);
+    assert.deepEqual(await purge.json(), { purge: "requested" });
+    assert.equal(w.kicks(), kicksBefore + 1, "the reconciler deletes it soon");
+    const after = (await (await w.call(w.sessions.admin, "GET", "/api/admin/retained")).json()) as { retained: Array<Record<string, unknown>> };
+    assert.equal(after.retained[0]?.purge_requested, true);
+    // Until the volume is gone it still holds a slot.
+    assert.equal(w.gateway.store.listRetainedTenants().length, 1);
+  } finally {
+    await w.close();
+  }
+});
+
+test("a new access request is pushed to each admin's own devices through the admin's firstmate, once", async () => {
+  const w = await world();
+  try {
+    const notices = (): typeof w.captainPod.requests => w.captainPod.requests.filter((request) => request.url === "/api/push/notify");
+    const stranger = { id: 7007, login: "stranger" };
+    assert.equal((await signIn(w.gateway, w.github, stranger)).location, "/?signin=pending");
+    for (let i = 0; i < 100 && notices().length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(notices().length, 1);
+    const notice = notices()[0];
+    assert.equal(notice?.method, "POST");
+    assert.equal(notice?.headers.authorization, "Bearer captain-token");
+    assert.deepEqual(JSON.parse(notice?.body ?? "{}"), {
+      title: "Access request",
+      body: "@stranger asked to use walkie-talkie.",
+      url: "/?view=admin",
+      tag: "access-request",
+    });
+    assert.ok(w.gateway.logs.some((line) => line === `access request notice: admin github ${ADMIN.id} -> HTTP 200`));
+
+    // Signing in again while the request waits notifies nobody again.
+    assert.equal((await signIn(w.gateway, w.github, stranger)).location, "/?signin=pending");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(notices().length, 1);
+
+    // The notice route is never forwarded from a browser.
+    const forwarded = await w.call(w.sessions.admin, "POST", "/api/push/notify", { title: "x", body: "y" });
+    assert.equal(forwarded.status, 404);
+    assert.equal(notices().length, 1);
+  } finally {
     await w.close();
   }
 });

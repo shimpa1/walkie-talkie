@@ -225,10 +225,22 @@ gateway:
 
 # Per-user firstmates (docs/deploy-kubernetes.md, "Per-user firstmates"). Off:
 # enabling them is a separate deploy decision that needs the gateway on, the
-# read-only CNI NetworkPolicy check passed, and `tenants.image.firstmate.tag`
-# pinned to a runtime build whose entrypoint fetches credentials from the
-# gateway (the image above predates it). Tenant homes use the same class.
+# CNI NetworkPolicy check passed, and `tenants.image.firstmate.tag` pinned to a
+# runtime build whose entrypoint fetches credentials from the gateway (the
+# image above predates it). Tenant homes use the same class. The 2026-10-06
+# check on atus found tenant egress NOT enforced: the cluster-wide Calico
+# GlobalNetworkPolicy akash-guard-threatintel-egress-deny ends in an
+# unconditional Allow that overrides every namespace's egress default-deny
+# (ingress isolation is enforced). Do not enable tenants until that is fixed
+# and the check passes (see "Check that the CNI enforces NetworkPolicy").
 tenants:
   enabled: false
   persistence:
     storageClass: beta3
+  # atus pods resolve names through kubespray's node-local DNS cache, which
+  # listens on 169.254.25.10 (inside the link-local range tenants may not
+  # otherwise reach).
+  networkPolicy:
+    dns:
+      extraCidrs:
+        - 169.254.25.10/32

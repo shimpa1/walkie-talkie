@@ -332,16 +332,54 @@ function renderUsers(users) {
   }
 }
 
+function renderRetained(retained) {
+  const body = $("retained-body");
+  body.textContent = "";
+  if (!retained.length) {
+    body.appendChild(el("p", "hint", "None."));
+    return;
+  }
+  for (const home of retained) {
+    const who = home.login ? `@${home.login}` : home.tid;
+    const when = home.purge_requested ? "deleting now" : `deleted ${formatTimestamp(home.purge_at)}`;
+    const node = card(who, `removed ${formatTimestamp(home.removed_at)} · ${when}`);
+    if (home.purge_requested) {
+      body.appendChild(node);
+      continue;
+    }
+    body.appendChild(
+      withActions(node, [
+        actionButton(
+          "Purge now",
+          "purge",
+          home.tid,
+          () =>
+            adminAction(
+              `/api/admin/retained/${encodeURIComponent(home.tid)}/purge`,
+              jsonInit("POST", { confirm: home.tid }),
+              `Deleting ${who}'s firstmate home.`,
+            ),
+          "Tap again to delete for good",
+        ),
+      ]),
+    );
+  }
+}
+
 async function loadAdmin() {
   try {
-    const [requests, invites, users] = await Promise.all([
+    const [requests, invites, users, retained] = await Promise.all([
       api("/api/admin/requests"),
       api("/api/admin/invites"),
       api("/api/admin/users"),
+      // Only a gateway that runs per-user firstmates keeps removed users' homes.
+      api("/api/admin/retained").catch((error) => (error && error.status === 404 ? null : Promise.reject(error))),
     ]);
     renderRequests(requests.requests || []);
     renderInvites(invites.invites || []);
     renderUsers(users.users || []);
+    $("retained-section").hidden = retained === null;
+    if (retained !== null) renderRetained(retained.retained || []);
   } catch (error) {
     setAdminStatus(`Could not load: ${error.message}`, "bad");
   }
@@ -440,7 +478,9 @@ function renderSetupSummary() {
   }
   const choice = view.choice;
   if (view.setup.ready && choice) {
-    line.textContent = `Ready: your firstmate will run ${choice.harness} on ${choice.provider}/${choice.model}. It starts once the admin turns on per-user firstmates.`;
+    line.textContent = view.provisioning
+      ? `Ready: your firstmate runs ${choice.harness} on ${choice.provider}/${choice.model}.`
+      : `Ready: your firstmate will run ${choice.harness} on ${choice.provider}/${choice.model}. It starts once the admin turns on per-user firstmates.`;
   } else if (choice && !view.setup.model_chosen) {
     line.textContent = `${choice.provider}/${choice.model} is no longer offered; choose another model.`;
   } else if (choice && !view.setup.routine_chosen) {
@@ -473,6 +513,69 @@ function renderSetup() {
   renderSetupSummary();
 }
 
+/** How the Setup view describes the firstmate's lifecycle state. */
+const RUN_LINES = {
+  none: "Not started yet.",
+  provisioning: "Starting: setting up your firstmate…",
+  starting: "Starting…",
+  running: "Running.",
+  crashloop: "Failing to start. Check your key, or ask the admin.",
+  stopping: "Stopping…",
+  stopped: "Stopped. Your home and setup are kept; start it again any time.",
+};
+const STARTED = ["provisioning", "starting", "running", "crashloop"];
+const SETTLING = ["provisioning", "starting", "stopping"];
+let runRefreshTimer = null;
+let runRefreshes = 0;
+
+/** The Start/Stop card: offered when this gateway runs per-user firstmates. */
+function renderRun() {
+  const view = setupState.firstmate;
+  const box = $("setup-run");
+  if (!view || !view.managed || view.provisioning !== true) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const runState = view.state || "none";
+  const started = STARTED.includes(runState);
+  $("setup-run-line").textContent = RUN_LINES[runState] || runState;
+  $("setup-start").hidden = started || runState === "stopping";
+  $("setup-start").disabled = !(view.setup && view.setup.ready);
+  $("setup-stop").hidden = !started;
+  $("setup-run-warning").hidden = !started;
+}
+
+/** While the firstmate settles, re-read its state now and then (a bounded number of times). */
+function scheduleRunRefresh() {
+  if (runRefreshTimer !== null) clearTimeout(runRefreshTimer);
+  runRefreshTimer = null;
+  const view = setupState.firstmate;
+  if (!view || !SETTLING.includes(view.state) || state.view !== "setup" || runRefreshes >= 36) return;
+  runRefreshes += 1;
+  runRefreshTimer = setTimeout(() => {
+    runRefreshTimer = null;
+    void loadSetup();
+  }, 5000);
+}
+
+async function firstmateAction(action) {
+  try {
+    setupState.firstmate = await api(`/api/me/firstmate/${action}`, jsonInit("POST"));
+    setSetupStatus(action === "start" ? "Starting your firstmate." : "Stopping your firstmate.", "ok");
+    if (state.gateway && state.gateway.user) {
+      state.gateway.user.firstmate = action === "start" ? "ready" : "none";
+      state.gateway.user.firstmate_state = setupState.firstmate.state;
+    }
+    runRefreshes = 0;
+    renderSetupSummary();
+    renderRun();
+    scheduleRunRefresh();
+  } catch (error) {
+    setSetupStatus(error.message, "bad");
+  }
+}
+
 async function loadSetup() {
   if (!setupOffered()) return;
   try {
@@ -485,9 +588,34 @@ async function loadSetup() {
     setupState.credentials = credentials.credentials || [];
     setupState.firstmate = firstmate;
     renderSetup();
+    renderRun();
+    scheduleRunRefresh();
   } catch (error) {
     setSetupStatus(`Could not load: ${error.message}`, "bad");
   }
+}
+
+function firstmateStarted() {
+  return Boolean(setupState.firstmate && STARTED.includes(setupState.firstmate.state));
+}
+
+/** Whether the firstmate is delivered this credential: the chosen provider's key or the GitHub token. */
+function chosenProviderKey(name) {
+  const catalog = setupState.catalog;
+  const choice = setupState.firstmate && setupState.firstmate.choice;
+  const provider = catalog && choice ? catalog.providers.find((entry) => entry.id === choice.provider) : null;
+  return Boolean(provider && provider.key_name === name);
+}
+
+function deliveredCredential(name) {
+  const github = setupState.catalog && setupState.catalog.github;
+  return chosenProviderKey(name) || Boolean(github && github.key_name === name);
+}
+
+function disarmKeyRemove() {
+  const button = $("setup-key-remove");
+  delete button.dataset.armed;
+  button.textContent = "Remove key";
 }
 
 /** Send a key for checking and storage. The field is cleared whatever happens. */
@@ -501,20 +629,33 @@ async function saveSetupKey(input, name, label) {
   setSetupStatus(`Checking your ${label}…`, "");
   try {
     await api(`/api/me/credentials/${encodeURIComponent(name)}`, jsonInit("PUT", { value }));
-    setSetupStatus(`Saved: your ${label} works and is stored encrypted.`, "ok");
+    const restarting = firstmateStarted() && deliveredCredential(name);
+    setSetupStatus(
+      `Saved: your ${label} works and is stored encrypted.${restarting ? " Your firstmate restarts onto it." : ""}`,
+      "ok",
+    );
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
+  disarmKeyRemove();
   await loadSetup();
 }
 
-async function removeSetupKey(name, label) {
+/** Delete a saved key; removing the running firstmate's provider key asks for a second tap, as it stops it. */
+async function removeSetupKey(button, name, label) {
+  const stopping = firstmateStarted() && chosenProviderKey(name);
+  if (stopping && button.dataset.armed !== "1") {
+    button.dataset.armed = "1";
+    button.textContent = "Tap again: this stops your firstmate";
+    return;
+  }
   try {
     await api(`/api/me/credentials/${encodeURIComponent(name)}`, { method: "DELETE" });
-    setSetupStatus(`Removed your ${label}.`, "ok");
+    setSetupStatus(`Removed your ${label}.${stopping ? " Your firstmate stopped." : ""}`, "ok");
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
+  disarmKeyRemove();
   await loadSetup();
 }
 
@@ -541,8 +682,10 @@ async function submitSetupModel(event) {
   if (routine) body.routine_model = routine;
   try {
     setupState.firstmate = await api("/api/me/firstmate", jsonInit("PUT", body));
-    setSetupStatus(`Saved: ${provider.name} ${body.model}.`, "ok");
+    const restarting = STARTED.includes(setupState.firstmate.state);
+    setSetupStatus(`Saved: ${provider.name} ${body.model}.${restarting ? " Your firstmate restarts onto it." : ""}`, "ok");
     renderSetupSummary();
+    renderRun();
   } catch (error) {
     setSetupStatus(error.message, "bad");
   }
@@ -2113,18 +2256,23 @@ async function init() {
   $("link-device").addEventListener("click", () => void showLinkCode());
   $("link-form").addEventListener("submit", (event) => void redeemLinkCode(event));
   $("invite-form").addEventListener("submit", (event) => void submitInvite(event));
-  $("setup-provider").addEventListener("change", renderSetupProvider);
+  $("setup-provider").addEventListener("change", () => {
+    disarmKeyRemove();
+    renderSetupProvider();
+  });
   $("setup-key-form").addEventListener("submit", (event) => void submitSetupKey(event));
   $("setup-model-form").addEventListener("submit", (event) => void submitSetupModel(event));
   $("setup-github-form").addEventListener("submit", (event) => void submitSetupGithub(event));
   $("setup-key-remove").addEventListener("click", () => {
     const provider = setupProvider();
-    if (provider) void removeSetupKey(provider.key_name, `${provider.name} key`);
+    if (provider) void removeSetupKey($("setup-key-remove"), provider.key_name, `${provider.name} key`);
   });
   $("setup-github-remove").addEventListener("click", () => {
     const github = setupState.catalog && setupState.catalog.github;
-    if (github) void removeSetupKey(github.key_name, "GitHub token");
+    if (github) void removeSetupKey($("setup-github-remove"), github.key_name, "GitHub token");
   });
+  $("setup-start").addEventListener("click", () => void firstmateAction("start"));
+  $("setup-stop").addEventListener("click", () => void firstmateAction("stop"));
 
   const params = new URLSearchParams(window.location.search);
   const signin = params.get("signin");

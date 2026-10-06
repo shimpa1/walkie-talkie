@@ -27,6 +27,11 @@ export interface AccountContext {
   admissionOpen: () => boolean;
   /** A user's firstmate should change (removed, suspended, resumed): reconcile soon. */
   kick: () => void;
+  /**
+   * How long a removed user's home volume is kept before it is purged, or null
+   * when the gateway provisions no firstmates (then there is nothing to purge).
+   */
+  purgeGraceMs: number | null;
   log: (line: string) => void;
 }
 
@@ -42,6 +47,7 @@ const USER_PATH = /^\/api\/admin\/users\/(u_[A-Za-z0-9_-]{1,32})(?:\/(suspend|re
 const INVITE_PATH = /^\/api\/admin\/invites\/(inv_[A-Za-z0-9_-]{1,32})$/;
 const REQUEST_PATH = /^\/api\/admin\/requests\/(\d{1,15})\/(approve|deny)$/;
 const DEVICE_PATH = /^\/api\/me\/devices\/([0-9a-f]{16})$/;
+const PURGE_PATH = /^\/api\/admin\/retained\/(u[a-km-np-z2-9]{7})\/purge$/;
 
 /** Whether a path belongs to this module (and so never to the firstmate proxy). */
 export function isAccountPath(pathname: string): boolean {
@@ -245,6 +251,35 @@ export async function handleAccountRoute(
     if (!store.denyAccessRequest(githubId, me.id, at)) return sendError(res, 404, "no such pending request");
     store.audit({ at, actor: me.id, action: "access.denied", subject: null, detail: { github_id: githubId } });
     return sendJson(res, 200, JSON.stringify({ denied: true }));
+  }
+
+  // ---- removed users' home volumes ------------------------------------------
+  if (pathname === "/api/admin/retained" || PURGE_PATH.test(pathname)) {
+    const grace = ctx.purgeGraceMs;
+    if (grace === null) return sendError(res, 404, "not found");
+    if (pathname === "/api/admin/retained") {
+      if (method !== "GET" && method !== "HEAD") return sendError(res, 405, "method not allowed");
+      const retained = store.listRetainedTenants().map((entry) => ({
+        tid: entry.tid,
+        login: entry.login,
+        removed_at: new Date(entry.removedAt).toISOString(),
+        purge_at: new Date(entry.purgeRequestedAt ?? entry.removedAt + grace).toISOString(),
+        purge_requested: entry.purgeRequestedAt !== null,
+      }));
+      return sendJson(res, 200, JSON.stringify({ retained }));
+    }
+    if (method !== "POST") return sendError(res, 405, "method not allowed");
+    const tid = PURGE_PATH.exec(pathname)?.[1] ?? "";
+    // Deleting a home cannot be undone: the request must name the volume again.
+    const body = await readJsonObject(req, res);
+    if (body === null) return;
+    if (body.confirm !== tid) return sendError(res, 400, "confirm_mismatch");
+    const at = ctx.now();
+    if (!store.requestPurge(tid, at)) return sendError(res, 404, "no such retained home");
+    store.audit({ at, actor: me.id, action: "tenant.purge_requested", subject: null, detail: { tid } });
+    ctx.log(`tenant ${tid}: purge requested by ${me.id}`);
+    ctx.kick();
+    return sendJson(res, 200, JSON.stringify({ purge: "requested" }));
   }
 
   // ---- audit ---------------------------------------------------------------

@@ -2,17 +2,18 @@ import { isAbsolute, resolve } from "node:path";
 
 import { ConfigError, configFilePath, readConfigFile } from "./config.js";
 import { GatewayConfigError, resolveGatewayDbPath, resolveVault } from "./gateway-config.js";
-import { openGatewayStore } from "./gateway-store.js";
+import { openGatewayStore, type GatewayStore, type RotationResult } from "./gateway-store.js";
+import type { Vault } from "./vault.js";
 
 /**
  * `walkie-talkie vault rotate`: re-seal every stored credential under the
  * active vault key, in one transaction.
  *
- * Run it in the gateway's own container after a new key has been added to
- * the keyring (FM_WT_VAULT_KEYS) and made active (FM_WT_VAULT_ACTIVE_KEY); it
- * reads the same settings and store the gateway does. Once it reports every
- * row current, the old key id can leave the keyring. It prints counts and key
- * ids only, never a credential.
+ * The gateway does the same by itself at start-up (resealOnStart below), so a
+ * rotation needs no command; this stays for audit and recovery. It reads the
+ * same settings and store the gateway does. Once it reports every row
+ * current, the old key id can leave the keyring. It prints counts and key ids
+ * only, never a credential.
  */
 
 export interface CliIo {
@@ -58,5 +59,27 @@ export async function runVaultCommand(args: string[], io: CliIo): Promise<number
     return 1;
   } finally {
     store.close();
+  }
+}
+
+/**
+ * At gateway start-up, re-seal every credential still under a key id other
+ * than the active one. Rotating the vault key is then a values change (the new
+ * active id) plus a Doppler change (the keyring) and nothing else: the
+ * restarted gateway moves every row itself. The rotation is all-or-nothing; a
+ * row that will not open (its key left the keyring) is logged by owner and
+ * slot only, nothing changes, and the gateway keeps starting. Returns what it
+ * did, or null when it could not.
+ */
+export function resealOnStart(store: GatewayStore, vault: Vault, log: (line: string) => void, now: number): RotationResult | null {
+  if (store.countCredentialsNotUnder(vault.activeKid) === 0) return { rotated: 0, current: 0 };
+  try {
+    const result = store.rotateCredentials(vault);
+    store.audit({ at: now, actor: null, action: "vault.resealed", subject: null, detail: { kid: vault.activeKid, rotated: result.rotated } });
+    log(`vault: re-sealed ${result.rotated} credential(s) under ${vault.activeKid} at start-up`);
+    return result;
+  } catch (error) {
+    log(`vault: re-seal at start-up failed, nothing changed: ${error instanceof Error ? error.message : "error"}`);
+    return null;
   }
 }

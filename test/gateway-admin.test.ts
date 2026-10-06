@@ -250,7 +250,7 @@ test("pending requests are capped, and an unanswered one expires after 30 days",
   const w = await world();
   try {
     for (let i = 0; i < MAX_PENDING_ACCESS_REQUESTS; i += 1) {
-      assert.equal(w.gateway.store.recordAccessRequest(10_000 + i, `asker-${i}`, Date.parse("2026-10-04T12:00:00Z")), "pending");
+      assert.equal(w.gateway.store.recordAccessRequest(10_000 + i, `asker-${i}`, Date.parse("2026-10-04T12:00:00Z")), "created");
     }
     assert.equal((await signIn(w.gateway, w.github, STRANGER)).location, "/?signin=not_invited", "a full queue records nothing");
     w.gateway.advance(ACCESS_REQUEST_MS + 1);
@@ -519,6 +519,16 @@ test("a phase 1 database upgrades in place and keeps its users and sessions", ()
   assert.equal(after.listInvites(now).length, 1);
   after.close();
   const version = new sqlite.DatabaseSync(path);
-  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 4 });
+  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 5 });
   version.close();
+});
+
+test("without per-user firstmates there are no retained homes to list or purge", async () => {
+  const w = await world();
+  try {
+    assert.equal((await w.call(w.admin, "GET", "/api/admin/retained")).status, 404);
+    assert.equal((await w.call(w.admin, "POST", "/api/admin/retained/uaaaaaaa/purge", { confirm: "uaaaaaaa" })).status, 404);
+  } finally {
+    await w.close();
+  }
 });

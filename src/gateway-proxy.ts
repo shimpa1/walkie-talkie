@@ -168,3 +168,47 @@ export async function proxyToTenant(
     upstream.end(body ?? undefined);
   });
 }
+
+/** A push notice the gateway sends to a firstmate's own devices. */
+export interface FirstmateNotice {
+  title: string;
+  body: string;
+  url: string;
+  tag?: string;
+}
+
+const NOTICE_TIMEOUT_MS = 5_000;
+
+/**
+ * Ask a firstmate's walkie-talkie service to push a notice to its own
+ * subscribed devices (`POST /api/push/notify`, which the proxy never forwards
+ * from a browser), presenting that firstmate's bearer token. Resolves to the
+ * HTTP status, or 0 when it could not be reached; the response body is never
+ * read or logged.
+ */
+export function notifyFirstmate(target: ProxyTarget, notice: FirstmateNotice, timeoutMs = NOTICE_TIMEOUT_MS): Promise<number> {
+  const body = JSON.stringify(notice);
+  const url = new URL("/api/push/notify", target.upstream);
+  const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise((resolve) => {
+    const request = send(
+      url,
+      {
+        method: "POST",
+        timeout: timeoutMs,
+        headers: {
+          authorization: `Bearer ${target.token}`,
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(body)),
+        },
+      },
+      (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => resolve(0));
+    request.end(body);
+  });
+}

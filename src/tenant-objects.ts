@@ -35,6 +35,8 @@ export const NAME_LABEL = "app.kubernetes.io/name";
 export const TENANT_POD_NAME = "firstmate-tenant";
 export const CONFIG_VERSION_ANNOTATION = "walkie-talkie.atus.hr/config-version";
 export const AGENTS_CHECKSUM_ANNOTATION = "checksum/agents";
+/** Changes when the tenant-token master is rotated, so each pod restarts onto its new tokens. */
+export const TOKEN_EPOCH_ANNOTATION = "walkie-talkie.atus.hr/token-epoch";
 /** The gateway's internal route a tenant fetches its credentials from. */
 export const CREDENTIALS_PATH = "/internal/v1/credentials";
 /** The runtime writes this once its credentials are in and the herdr server runs. */
@@ -62,6 +64,8 @@ export interface TenantSpec {
   /** Every name the user's GitHub token is delivered under; [] when not offered. */
   githubKeyEnv: string[];
   tokens: { api: string; credentials: string };
+  /** The tenant-token master's fingerprint (TenantTokens.epoch). */
+  tokenEpoch: string;
 }
 
 export interface TenantObjects {
@@ -316,6 +320,7 @@ export function buildTenantObjects(params: TenantParams, spec: TenantSpec): Tena
           annotations: {
             [CONFIG_VERSION_ANNOTATION]: String(spec.configVersion),
             [AGENTS_CHECKSUM_ANNOTATION]: agentsChecksum,
+            [TOKEN_EPOCH_ANNOTATION]: spec.tokenEpoch,
           },
         },
         spec: podSpec,

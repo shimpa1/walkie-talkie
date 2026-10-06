@@ -671,7 +671,14 @@ Admins work from the app's **Admin** tab, which only admins see:
 - **Suspend** signs a user out everywhere and blocks their sign-in. **Resume**
   undoes it.
 - **Remove** deletes the user. They would need a new invite or approval to get
-  back in.
+  back in. A removed user's firstmate home is kept for recovery and then
+  deleted (see [Per-user firstmates](#per-user-firstmates)).
+- **New access requests are pushed to admins.** When an uninvited sign-in
+  records a new request, the gateway asks each admin's own firstmate to push
+  "@login asked to use walkie-talkie." to the devices subscribed there (its
+  `POST /api/push/notify`, which takes that firstmate's bearer token and is never
+  forwarded from a browser). A repeat sign-in while the request waits sends
+  nothing, and the notices are rate-limited.
 
 Accounts declared in the configuration (admins and static tenant owners) are
 managed there, not in the app: they cannot be suspended or removed, and an admin
@@ -763,16 +770,17 @@ choice.
 
 **Rotating the vault key.** Add a new key to `FM_WT_VAULT_KEYS`
 (`k1:…,k2:<openssl rand -base64 32>`), make it active
-(`FM_WT_VAULT_ACTIVE_KEY=k2`), restart, then run in the gateway's environment:
+(`FM_WT_VAULT_ACTIVE_KEY=k2`) and restart. At start-up the gateway re-encrypts
+every credential still under another key id with the active key, in one
+transaction, and logs counts and key ids only. After that restart, drop the old
+key from `FM_WT_VAULT_KEYS`. If a credential cannot be decrypted (its key already
+left the keyring), the start-up re-seal changes nothing and logs which owner and
+slot failed, and the gateway keeps running. The same rotation can be run by
+hand, for audit or recovery:
 
 ```sh
 walkie-talkie vault rotate   # or: node dist/src/index.js vault rotate
 ```
-
-It re-encrypts every stored credential under the active key in one
-transaction, then prints counts and key ids only. When it reports every
-credential current, drop the old key from `FM_WT_VAULT_KEYS`. A row that
-cannot be decrypted aborts the rotation and nothing changes.
 
 ### Per-user firstmates
 
@@ -833,18 +841,41 @@ A firstmate's lifecycle state, in `GET /api/me/firstmate` (`state`), in
 workload; the volume is kept, and its tenant id stays recorded as retained so
 the volume is never untracked.
 
+**Removed users' homes.** A removed user's home volume (`home-fm-<tid>-0`) is
+kept for `purgeAfterDays` (in the parameters; the chart default is 30) so it can
+be recovered, then the reconciler deletes it. Until then it counts against
+`maxTenants`. An admin sees these under Admin → **Removed users' homes**
+(`GET /api/admin/retained`) and can delete one at once with **Purge now**
+(`POST /api/admin/retained/<tid>/purge` with `{"confirm": "<tid>"}`; a
+mismatched confirmation answers `400 {"error": "confirm_mismatch"}`). The claim
+is deleted only after the firstmate's workload is gone, and the record is
+dropped only once the claim is gone from the cluster, so no home is ever left
+untracked.
+
 **Start and stop.** Once setup is ready (a model chosen, and the provider's key
 saved and able to use it), a user starts their own firstmate with `POST
 /api/me/firstmate/start` and stops it with `POST /api/me/firstmate/stop` (a
 same-origin write with the session, like the other `/api/me` routes). Start
-answers `409 {"error": "setup_incomplete"}` before setup is ready and `409
+answers `409 {"error": "key_required"}` while the chosen provider's key is
+missing, `409 {"error": "setup_incomplete"}` before setup is otherwise ready and `409
 {"error": "capacity_reached"}` past the cap; stop answers `409 {"error":
 "firstmate_not_started"}` when there is nothing to stop. Both answer `409
 {"error": "managed_by_config"}` for a declared firstmate's owner and `409
 {"error": "not_available"}` without tenant provisioning. Stopping scales to
-zero and keeps the volume, Secret and ConfigMap. Replacing or deleting a key
-the firstmate is delivered (the chosen provider's key or the GitHub token)
-restarts it, so it fetches the change and never keeps the old value.
+zero and keeps the volume, Secret and ConfigMap. Replacing a key the firstmate
+is delivered (the chosen provider's key or the GitHub token), or deleting the
+GitHub token, restarts it, so it fetches the change and never keeps the old
+value. Deleting the chosen provider's key stops a running firstmate instead;
+the app asks for a second tap first. A model
+change restarts it too, onto the regenerated agents config. The app's **Setup**
+tab has the same Start and Stop buttons, shows the lifecycle state, and warns
+that changing the key or model restarts a running firstmate.
+
+**Rotating the tenant-token master.** Change `FM_WT_TENANT_TOKEN_SECRET` and
+restart the gateway. Every tenant's derived tokens change, and so does a
+fingerprint of the master in each pod template
+(`walkie-talkie.atus.hr/token-epoch`), so the reconciler re-applies every
+tenant's Secret and each tenant restarts once onto its new tokens.
 
 **Routing.** A signed-in user's API calls go only to their own firstmate's
 Service, with that firstmate's derived `api` token. While it is not running,
@@ -891,6 +922,8 @@ Gateway routes, besides the forwarded API and the web app:
 | `PUT` / `DELETE` | `/api/me/credentials/<key_name>` | session: check and save `{"value"}` / remove a key |
 | `GET` / `PUT` | `/api/me/firstmate` | session: this user's choice, what setup still needs and their firstmate's `state` / choose `{"provider", "model", "routine_model"?}` |
 | `POST` | `/api/me/firstmate/start`, `.../stop` | session: start this user's managed firstmate once setup is ready / stop it |
+| `GET` | `/api/admin/retained` | admin: removed users' home volumes kept for recovery, with when each is deleted |
+| `POST` | `/api/admin/retained/<tid>/purge` | admin: `{"confirm": "<tid>"}` deletes that home now |
 | `GET` / `POST` | `/api/admin/invites` | admin: open invites / invite `{"login"}` |
 | `DELETE` | `/api/admin/invites/<id>` | admin: revoke an open invite |
 | `GET` | `/api/admin/requests` | admin: pending access requests |
@@ -936,6 +969,7 @@ Every endpoint except `/api/health` and `/api/push/config` requires
 | `POST` | `/api/push/subscribe` | stores a browser push subscription |
 | `POST` | `/api/push/unsubscribe` | removes a subscription by endpoint |
 | `POST` | `/api/push/test` | sends one test notification to all subscriptions |
+| `POST` | `/api/push/notify` | `{"title", "body", "url"?, "tag"?}`: pushes one notice to all subscriptions; for the multi-user gateway, which holds this service's token |
 | `GET` | `/` | the web app |
 
 Firstmate's JSON is passed through unchanged by `/api/status` and
