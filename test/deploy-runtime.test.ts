@@ -157,3 +157,28 @@ test("the entrypoint replaces a retained herdr husk instead of trusting its agen
   assert.match(entrypoint, /\.watch\.lock/);
   assert.match(entrypoint, /state\/\.watcher-down and state\/\.wake-queue/);
 });
+
+/**
+ * A per-user firstmate run by the multi-user gateway gets its provider key only
+ * by pulling it from the gateway at start (no key in any Secret). The fetch has
+ * to happen before the herdr server starts, because the server hands its
+ * environment to every pane; the token must leave the environment first and
+ * must never be on a command line. entrypoint.test.sh drives all of it against
+ * a fake gateway.
+ */
+test("the entrypoint fetches a managed firstmate's credentials before the herdr server, token kept off argv", () => {
+  const entrypoint = readFileSync(ENTRYPOINT, "utf8");
+  const fetchAt = entrypoint.indexOf("fetch_tenant_credentials || exit 1");
+  const serverAt = entrypoint.indexOf('herdr server --session "$SESSION" &');
+  assert.ok(fetchAt > 0, "the fetch runs when FM_TENANT_CREDENTIALS_URL is set");
+  assert.ok(serverAt > fetchAt, "the herdr server starts after the fetch");
+  assert.match(entrypoint, /unset FM_TENANT_CREDENTIALS_TOKEN/);
+  // The bearer reaches curl on stdin, never as an argument another process can read.
+  assert.match(entrypoint, /printf 'Authorization: Bearer %s\\n' "\$1" \\\n\s+\| curl [^\n]*\\\n\s+-H @- /);
+  assert.doesNotMatch(entrypoint, /curl[^\n]*(\$token|\$1|TOKEN)/);
+  assert.match(entrypoint, /--max-redirs 0/);
+  // Only the names the gateway declared are exported, and a delivery without
+  // the provider key is refused rather than starting a keyless harness.
+  assert.match(entrypoint, /FM_TENANT_CREDENTIAL_ENVS/);
+  assert.match(entrypoint, /refusing to start a keyless harness/);
+});

@@ -213,3 +213,103 @@ The tenant-params ConfigMap the gateway mounts: <release>-tenant-params.
 {{- define "firstmate.tenantParamsName" -}}
 {{- printf "%s-tenant-params" (include "firstmate.fullname" . | trunc 49 | trimSuffix "-") -}}
 {{- end -}}
+
+{{/*
+Per-user firstmates (tenants.*): whether they render, failing the render on
+a combination that would provision them without their isolation.
+*/}}
+{{- define "firstmate.tenants.enabled" -}}
+{{- if .Values.tenants.enabled -}}
+{{- if not .Values.gateway.enabled -}}
+{{- fail "tenants.enabled requires gateway.enabled: the gateway provisions and fronts every per-user firstmate" -}}
+{{- end -}}
+{{- if not .Values.gateway.networkPolicy.enabled -}}
+{{- fail "tenants.enabled requires gateway.networkPolicy.enabled: the gateway's internal credential port must admit only the tenant namespace" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+A tenant image reference: the tenants.image.<which> fields, falling back field
+by field to `fallbackRepo`/`fallbackTag`. `latest` and an empty tag are
+refused: a tenant runs an immutable image.
+*/}}
+{{- define "firstmate.tenants.image" -}}
+{{- $repo := default .fallbackRepo .image.repository -}}
+{{- $tag := default .fallbackTag .image.tag -}}
+{{- if or (not $repo) (not $tag) (eq (toString $tag) "latest") -}}
+{{- fail (printf "tenants.image.%s needs a repository and an immutable tag (not latest)" .which) -}}
+{{- end -}}
+{{- printf "%s:%s" $repo (toString $tag) -}}
+{{- end -}}
+
+{{/*
+A CPU quantity in millicores ("250m", "1", "0.5"), for the namespace quota.
+*/}}
+{{- define "firstmate.tenants.milliCPU" -}}
+{{- $q := toString .q -}}
+{{- if regexMatch "^[0-9]+m$" $q -}}
+{{- trimSuffix "m" $q | atoi -}}
+{{- else if regexMatch "^[0-9]+$" $q -}}
+{{- mul (atoi $q) 1000 -}}
+{{- else if regexMatch "^[0-9]+\\.[0-9]{1,3}$" $q -}}
+{{- $parts := splitList "." $q -}}
+{{- add (mul (atoi (index $parts 0)) 1000) (atoi (printf "%-3s" (index $parts 1) | replace " " "0")) -}}
+{{- else -}}
+{{- fail (printf "%s: CPU %q must be millicores (250m) or cores (1, 0.5)" .what $q) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A memory or storage quantity in MiB ("512Mi", "2Gi"), for the namespace quota.
+*/}}
+{{- define "firstmate.tenants.mebibytes" -}}
+{{- $q := toString .q -}}
+{{- if regexMatch "^[0-9]+Mi$" $q -}}
+{{- trimSuffix "Mi" $q | atoi -}}
+{{- else if regexMatch "^[0-9]+Gi$" $q -}}
+{{- mul (trimSuffix "Gi" $q | atoi) 1024 -}}
+{{- else if regexMatch "^[0-9]+Ti$" $q -}}
+{{- mul (trimSuffix "Ti" $q | atoi) 1048576 -}}
+{{- else -}}
+{{- fail (printf "%s: %q must be in Mi, Gi or Ti" .what $q) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+One tenant pod's quota footprint as a dict of integers: cpu (millicores) and
+requests/limits memory (MiB). A pod counts the larger of its app containers'
+sum and its init container.
+*/}}
+{{- define "firstmate.tenants.podFootprint" -}}
+{{- $r := .Values.tenants.resources -}}
+{{- $out := dict -}}
+{{- range $field := list "requests.cpu" "requests.memory" "limits.memory" -}}
+{{- $parts := splitList "." $field -}}
+{{- $section := index $parts 0 -}}
+{{- $res := index $parts 1 -}}
+{{- $sum := 0 -}}
+{{- $init := 0 -}}
+{{- range $c := list "firstmate" "walkieTalkie" "init" -}}
+{{- $what := printf "tenants.resources.%s.%s.%s" $c $section $res -}}
+{{- $q := index (default (dict) (index (index $r $c) $section)) $res -}}
+{{- if not $q -}}
+{{- fail (printf "%s is required: the tenant namespace quota is computed from it" $what) -}}
+{{- end -}}
+{{- $n := 0 -}}
+{{- if eq $res "cpu" -}}
+{{- $n = include "firstmate.tenants.milliCPU" (dict "q" $q "what" $what) | atoi -}}
+{{- else -}}
+{{- $n = include "firstmate.tenants.mebibytes" (dict "q" $q "what" $what) | atoi -}}
+{{- end -}}
+{{- if eq $c "init" -}}
+{{- $init = $n -}}
+{{- else -}}
+{{- $sum = add $sum $n -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $out $field (max $sum $init) -}}
+{{- end -}}
+{{- $out | toJson -}}
+{{- end -}}

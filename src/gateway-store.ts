@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { constantTimeEqual } from "./auth.js";
+import { newTenantId } from "./tenant-tokens.js";
 import { wipe, type SealedValue, type Vault } from "./vault.js";
 
 /**
@@ -17,7 +18,9 @@ import { wipe, type SealedValue, type Vault } from "./vault.js";
  * SQLite gives its WAL and shared-memory files the same mode.
  *
  * Users' provider keys and GitHub tokens are held only sealed by the vault
- * (AES-256-GCM, see vault.ts); the store never sees them in the clear. It never
+ * (AES-256-GCM, see vault.ts); the store never sees them in the clear. Each
+ * user's managed firstmate (tenant) is recorded by its opaque cluster id and
+ * desired state; its cluster objects are derived from that, never stored. It never
  * holds a sign-in access token, a cookie value, or any firstmate conversation
  * content.
  */
@@ -114,6 +117,33 @@ export interface ModelChoice {
   updatedAt: number;
 }
 
+/** What a user wants their managed firstmate to be doing. */
+export type TenantDesired = "none" | "running" | "stopped";
+
+/** What the reconciler last saw of a managed firstmate in the cluster. */
+export type TenantObserved = "none" | "pending" | "running" | "crashloop" | "stopped";
+
+/** A user's managed firstmate: its cluster id, desired state and last observation. */
+export interface TenantRecord {
+  userId: string;
+  /** Opaque DNS-safe id used in every cluster object name; never derived from the login. */
+  tid: string;
+  desired: TenantDesired;
+  /** Bumped when the delivered credentials change, so the pod restarts and fetches them again. */
+  configVersion: number;
+  observed: TenantObserved;
+  observedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A tenant with what the reconciler and delivery need about its owner. */
+export interface TenantOwner extends TenantRecord {
+  githubId: number;
+  login: string;
+  userState: UserState;
+}
+
 /** What `vault rotate` did. */
 export interface RotationResult {
   /** Rows re-sealed under the active key. */
@@ -141,7 +171,7 @@ export const LINK_CODE_LENGTH = 8;
 /** A device's public handle: a prefix of its session hash, which reveals nothing usable. */
 const DEVICE_HANDLE_LENGTH = 16;
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -223,6 +253,18 @@ const MIGRATIONS: Record<number, string> = {
       provider TEXT NOT NULL,
       model TEXT NOT NULL,
       routine_model TEXT,
+      updated_at INTEGER NOT NULL
+    );
+  `,
+  4: `
+    CREATE TABLE tenants (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      tid TEXT NOT NULL UNIQUE,
+      desired TEXT NOT NULL CHECK (desired IN ('none', 'running', 'stopped')),
+      config_version INTEGER NOT NULL,
+      observed TEXT NOT NULL CHECK (observed IN ('none', 'pending', 'running', 'crashloop', 'stopped')),
+      observed_at INTEGER,
+      created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
   `,
@@ -706,6 +748,17 @@ export class GatewayStore {
     return row === undefined ? null : toCredential(row);
   }
 
+  /**
+   * One credential's sealed value. Only credential delivery reads it, for the
+   * owner's own firstmate; the vault opens it and the caller wipes the result.
+   */
+  sealedCredential(userId: string, name: string): SealedValue | null {
+    const row = this.db
+      .prepare("SELECT kid, sealed FROM credentials WHERE user_id = ? AND name = ?")
+      .get(userId, name) as Record<string, unknown> | undefined;
+    return row === undefined ? null : { kid: String(row.kid), blob: row.sealed as Uint8Array };
+  }
+
   deleteCredential(userId: string, name: string): boolean {
     const result = this.db.prepare("DELETE FROM credentials WHERE user_id = ? AND name = ?").run(userId, name);
     return asNumber(result.changes) > 0;
@@ -776,6 +829,78 @@ export class GatewayStore {
       )
       .run(userId, choice.harness, choice.provider, choice.model, choice.routineModel, now);
     return { ...choice, updatedAt: now };
+  }
+
+  // ---- managed tenants -------------------------------------------------------
+
+  tenantByUser(userId: string): TenantRecord | null {
+    const row = this.db.prepare("SELECT * FROM tenants WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
+    return row === undefined ? null : toTenant(row);
+  }
+
+  /** A tenant by its cluster id, with its owner. */
+  tenantByTid(tid: string): TenantOwner | null {
+    const row = this.db
+      .prepare(
+        "SELECT t.*, u.github_id, u.login, u.state AS user_state FROM tenants t JOIN users u ON u.id = t.user_id WHERE t.tid = ?",
+      )
+      .get(tid) as Record<string, unknown> | undefined;
+    return row === undefined ? null : toTenantOwner(row);
+  }
+
+  /** The user's tenant, created on first use with a fresh id and nothing desired yet. */
+  ensureTenant(userId: string, now: number): TenantRecord {
+    const existing = this.tenantByUser(userId);
+    if (existing !== null) return existing;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = this.db
+        .prepare(
+          "INSERT INTO tenants (user_id, tid, desired, config_version, observed, observed_at, created_at, updated_at) " +
+            "VALUES (?, ?, 'none', 1, 'none', NULL, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .run(userId, newTenantId(), now, now);
+      const tenant = this.tenantByUser(userId);
+      if (tenant !== null) return tenant;
+      if (asNumber(result.changes) > 0) break;
+    }
+    throw new Error("could not allocate a tenant id");
+  }
+
+  setTenantDesired(userId: string, desired: TenantDesired, now: number): TenantRecord | null {
+    this.db.prepare("UPDATE tenants SET desired = ?, updated_at = ? WHERE user_id = ?").run(desired, now, userId);
+    return this.tenantByUser(userId);
+  }
+
+  /** Make the tenant's pod restart onto freshly delivered credentials. */
+  bumpTenantConfig(userId: string, now: number): void {
+    this.db
+      .prepare("UPDATE tenants SET config_version = config_version + 1, updated_at = ? WHERE user_id = ?")
+      .run(now, userId);
+  }
+
+  recordTenantObserved(tid: string, observed: TenantObserved, now: number): void {
+    this.db
+      .prepare("UPDATE tenants SET observed = ?, observed_at = ? WHERE tid = ?")
+      .run(observed, now, tid);
+  }
+
+  /** Every tenant with its owner, oldest first. */
+  listTenants(): TenantOwner[] {
+    const rows = this.db
+      .prepare(
+        "SELECT t.*, u.github_id, u.login, u.state AS user_state FROM tenants t JOIN users u ON u.id = t.user_id " +
+          "ORDER BY t.created_at, t.tid",
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(toTenantOwner);
+  }
+
+  /** Tenants that hold cluster resources: desired running or stopped. */
+  countActiveTenants(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM tenants WHERE desired != 'none'").get() as
+      | Record<string, unknown>
+      | undefined;
+    return row === undefined ? 0 : asNumber(row.n);
   }
 
   // ---- login attempts ----------------------------------------------------
@@ -863,6 +988,33 @@ function toCredential(row: Record<string, unknown>): CredentialRecord {
     addedAt: asNumber(row.added_at),
     validatedAt: asNumber(row.validated_at),
     models,
+  };
+}
+
+const TENANT_DESIRED: readonly TenantDesired[] = ["none", "running", "stopped"];
+const TENANT_OBSERVED: readonly TenantObserved[] = ["none", "pending", "running", "crashloop", "stopped"];
+
+function toTenant(row: Record<string, unknown>): TenantRecord {
+  const desired = String(row.desired);
+  const observed = String(row.observed);
+  return {
+    userId: String(row.user_id),
+    tid: String(row.tid),
+    desired: (TENANT_DESIRED as readonly string[]).includes(desired) ? (desired as TenantDesired) : "none",
+    configVersion: asNumber(row.config_version),
+    observed: (TENANT_OBSERVED as readonly string[]).includes(observed) ? (observed as TenantObserved) : "none",
+    observedAt: row.observed_at === null ? null : asNumber(row.observed_at),
+    createdAt: asNumber(row.created_at),
+    updatedAt: asNumber(row.updated_at),
+  };
+}
+
+function toTenantOwner(row: Record<string, unknown>): TenantOwner {
+  return {
+    ...toTenant(row),
+    githubId: asNumber(row.github_id),
+    login: String(row.login),
+    userState: row.user_state === "suspended" ? "suspended" : "active",
   };
 }
 

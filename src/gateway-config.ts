@@ -1,4 +1,6 @@
 import { CatalogError, loadCatalog, type Catalog } from "./catalog.js";
+import { loadTenantParams, TenantParamsError, type TenantParams } from "./tenant-params.js";
+import { TenantTokenError, TenantTokens } from "./tenant-tokens.js";
 import { Vault, VaultError } from "./vault.js";
 
 /**
@@ -10,7 +12,8 @@ import { Vault, VaultError } from "./vault.js";
  * gitignored config file or the environment; the secrets (the GitHub OAuth
  * client secret, each static tenant's bearer token and the vault keyring) are
  * read from the environment only, so a secret never has to be written into a
- * file.
+ * file. The same holds for the tenant-token master that per-user firstmates'
+ * internal tokens derive from.
  */
 
 export type ServiceMode = "standalone" | "gateway";
@@ -26,6 +29,16 @@ export interface StaticTenant {
   upstream: string;
   /** Bearer token that upstream accepts (its FM_WT_TOKEN). */
   token: string;
+}
+
+/** Per-user firstmates the gateway provisions and delivers credentials to. */
+export interface TenantProvisioning {
+  /** How a tenant runs, from the chart (tenants.json in tenant-params). */
+  params: TenantParams;
+  /** Derives each tenant's internal tokens from FM_WT_TENANT_TOKEN_SECRET. */
+  tokens: TenantTokens;
+  /** The internal port credential delivery listens on; never public. */
+  internalPort: number;
 }
 
 export interface GatewayConfig {
@@ -59,11 +72,17 @@ export interface GatewayConfig {
   catalog: Catalog | null;
   /** The credential vault, or null without a keyring. Required with a catalog. */
   vault: Vault | null;
+  /**
+   * Per-user firstmate provisioning, or null when the gateway provisions none
+   * (then only static tenants are routed to). Requires a catalog.
+   */
+  tenants: TenantProvisioning | null;
 }
 
 export const DEFAULT_GATEWAY_DB = "walkie-talkie.gateway.db";
 export const MAX_TRUSTED_PROXY_HOPS = 5;
 export const DEFAULT_VAULT_ACTIVE_KEY = "k1";
+export const DEFAULT_INTERNAL_PORT = 8788;
 
 export class GatewayConfigError extends Error {
   override name = "GatewayConfigError";
@@ -211,6 +230,8 @@ export interface GatewayFileConfig {
   accessRequests?: unknown;
   catalog?: unknown;
   vaultActiveKey?: unknown;
+  tenantParams?: unknown;
+  internalPort?: unknown;
 }
 
 /**
@@ -227,6 +248,71 @@ export function resolveVault(env: NodeJS.ProcessEnv, file: GatewayFileConfig): V
   } catch (error) {
     throw new GatewayConfigError(`FM_WT_VAULT_KEYS: ${error instanceof VaultError ? error.message : "invalid"}`);
   }
+}
+
+/** The provider catalog from FM_WT_CATALOG (a JSON file path), or null when none is configured. */
+export function resolveCatalog(
+  env: NodeJS.ProcessEnv,
+  file: GatewayFileConfig,
+  resolvePath: (path: string) => string,
+): Catalog | null {
+  const catalogRaw = pick(env.FM_WT_CATALOG, file.catalog);
+  if (catalogRaw === undefined || catalogRaw === null || catalogRaw === "") return null;
+  if (typeof catalogRaw !== "string") throw new GatewayConfigError("FM_WT_CATALOG must be the path of the catalog JSON");
+  try {
+    return loadCatalog(resolvePath(catalogRaw));
+  } catch (error) {
+    throw new GatewayConfigError(error instanceof CatalogError ? error.message : String(error));
+  }
+}
+
+/** The tenant parameters from FM_WT_TENANT_PARAMS (a JSON file path), or null when none are configured. */
+export function resolveTenantParams(
+  env: NodeJS.ProcessEnv,
+  file: GatewayFileConfig,
+  resolvePath: (path: string) => string,
+): TenantParams | null {
+  const raw = pick(env.FM_WT_TENANT_PARAMS, file.tenantParams);
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string") throw new GatewayConfigError("FM_WT_TENANT_PARAMS must be the path of the tenant parameters JSON");
+  try {
+    return loadTenantParams(resolvePath(raw));
+  } catch (error) {
+    throw new GatewayConfigError(error instanceof TenantParamsError ? `tenant parameters: ${error.message}` : String(error));
+  }
+}
+
+function parseInternalPort(value: unknown): number {
+  if (value === undefined || value === null || value === "") return DEFAULT_INTERNAL_PORT;
+  const port = typeof value === "string" ? Number(value) : value;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new GatewayConfigError("FM_WT_INTERNAL_PORT must be an integer between 1 and 65535");
+  }
+  return port;
+}
+
+/**
+ * Tenant provisioning: the chart's parameters plus the token master, which is
+ * environment-only. Null when no parameters are configured.
+ */
+export function resolveTenantProvisioning(
+  env: NodeJS.ProcessEnv,
+  file: GatewayFileConfig,
+  resolvePath: (path: string) => string,
+): TenantProvisioning | null {
+  const params = resolveTenantParams(env, file, resolvePath);
+  if (params === null) return null;
+  const master = env.FM_WT_TENANT_TOKEN_SECRET ?? "";
+  if (master.trim() === "") {
+    throw new GatewayConfigError("FM_WT_TENANT_PARAMS needs FM_WT_TENANT_TOKEN_SECRET in the environment");
+  }
+  let tokens: TenantTokens;
+  try {
+    tokens = new TenantTokens(master);
+  } catch (error) {
+    throw new GatewayConfigError(`FM_WT_TENANT_TOKEN_SECRET: ${error instanceof TenantTokenError ? error.message : "invalid"}`);
+  }
+  return { params, tokens, internalPort: parseInternalPort(pick(env.FM_WT_INTERNAL_PORT, file.internalPort)) };
 }
 
 /** The gateway store path, as the gateway and the `vault` CLI both resolve it. */
@@ -279,18 +365,13 @@ export function resolveGatewayConfig(
   }
 
   const vault = resolveVault(env, file);
-  const catalogRaw = pick(env.FM_WT_CATALOG, file.catalog);
-  let catalog: Catalog | null = null;
-  if (catalogRaw !== undefined && catalogRaw !== null && catalogRaw !== "") {
-    if (typeof catalogRaw !== "string") throw new GatewayConfigError("FM_WT_CATALOG must be the path of the catalog JSON");
-    try {
-      catalog = loadCatalog(resolvePath(catalogRaw));
-    } catch (error) {
-      throw new GatewayConfigError(error instanceof CatalogError ? error.message : String(error));
-    }
-    if (vault === null) {
-      throw new GatewayConfigError("FM_WT_CATALOG needs FM_WT_VAULT_KEYS: users' keys are only ever stored encrypted");
-    }
+  const catalog = resolveCatalog(env, file, resolvePath);
+  if (catalog !== null && vault === null) {
+    throw new GatewayConfigError("FM_WT_CATALOG needs FM_WT_VAULT_KEYS: users' keys are only ever stored encrypted");
+  }
+  const tenants = resolveTenantProvisioning(env, file, resolvePath);
+  if (tenants !== null && catalog === null) {
+    throw new GatewayConfigError("FM_WT_TENANT_PARAMS needs FM_WT_CATALOG: a tenant runs on a provider and model from it");
   }
 
   return {
@@ -306,5 +387,6 @@ export function resolveGatewayConfig(
       parseBool(pick(env.FM_WT_ACCESS_REQUESTS, file.accessRequests), "FM_WT_ACCESS_REQUESTS") ?? true,
     catalog,
     vault,
+    tenants,
   };
 }

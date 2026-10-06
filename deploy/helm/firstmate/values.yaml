@@ -542,10 +542,120 @@ gateway:
 # ---------------------------------------------------------------------------
 # Per-user firstmates (gateway mode)
 # ---------------------------------------------------------------------------
-# What the gateway offers users who set up their own firstmate. Rendered only
-# with the gateway enabled, as JSON into the ConfigMap <release>-tenant-params,
-# which the gateway mounts and validates at start-up.
+# What the gateway offers users who set up their own firstmate, and how it runs
+# the firstmate each of them starts. Rendered only with the gateway enabled, as
+# JSON into the ConfigMap <release>-tenant-params, which the gateway mounts and
+# validates at start-up.
 tenants:
+  # Provision per-user firstmates. When true (with gateway.enabled), the chart
+  # adds the tenant namespace (`gateway.tenantNamespace`, Pod Security
+  # "restricted"), its quota, limit range and default-deny network policies,
+  # and a Role there for the gateway, whose pod then mounts a ServiceAccount
+  # token. The gateway's reconciler creates each user's firstmate in that
+  # namespace when they start it, and the firstmate fetches the user's own key
+  # from the gateway's internal port at start (no key is ever in a Secret).
+  # Needs a CNI that enforces NetworkPolicy: without it tenant isolation is not
+  # real, so do not enable this there. False (the default) provisions nothing:
+  # users can still choose a model and save keys in Setup.
+  enabled: false
+
+  # Hard cap on per-user firstmates. Approving or inviting past it is refused,
+  # and the namespace ResourceQuota is computed as maxTenants x one tenant.
+  maxTenants: 5
+
+  # Images of a tenant pod, pinned to immutable tags. Empty fields fall back to
+  # firstmate.image (the runtime) and the gateway's image (the walkie-talkie
+  # sidecar). The runtime must be a build whose entrypoint fetches credentials
+  # from the gateway (deploy/kubernetes/firstmate/entrypoint.sh, step 2c).
+  image:
+    firstmate:
+      repository: ""
+      tag: ""
+      pullPolicy: IfNotPresent
+    walkieTalkie:
+      repository: ""
+      tag: ""
+      pullPolicy: IfNotPresent
+  # Pull secrets that exist in the tenant namespace.
+  imagePullSecrets: []
+
+  # The command that starts each tenant's primary harness. Empty uses
+  # firstmate.harnessCommand. The model comes from the user's choice through
+  # the generated opencode.json, not from this command.
+  harnessCommand: ""
+
+  # Per-tenant resources. The namespace quota is computed from these (CPU in m
+  # or cores, memory in Mi/Gi), so requests.cpu, requests.memory and
+  # limits.memory are required on all three containers.
+  resources:
+    firstmate:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+        ephemeral-storage: 4Gi
+    walkieTalkie:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+    # The init container that copies the herdr CLI for the sidecar.
+    init:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+
+  # Each tenant's home volume (one ReadWriteOnce claim per user). A size change
+  # applies to tenants created afterwards; an existing claim keeps its size.
+  persistence:
+    storageClass: ""
+    size: 10Gi
+
+  # The uid, gid and fsGroup tenant pods run as. The rest of the restricted
+  # posture (non-root, no privilege escalation, no capabilities, RuntimeDefault
+  # seccomp, no ServiceAccount token, no service links) is fixed in the gateway.
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
+  # The tenant namespace's network policies (always rendered with tenants):
+  # everything is denied, then the gateway may reach each tenant's sidecar, and
+  # tenants may reach DNS, the gateway's internal port, and the internet on
+  # `egressPorts` except private, link-local and loopback ranges. Add your
+  # cluster's pod and service CIDRs to `extraExcludeCidrs` if they fall outside
+  # `excludeCidrs`.
+  networkPolicy:
+    egressPorts:
+      - 443
+      - 80
+      - 22
+    excludeCidrs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 169.254.0.0/16
+      - 127.0.0.0/8
+    excludeCidrsV6:
+      - fc00::/7
+      - fe80::/10
+    extraExcludeCidrs: []
+    # Where tenants resolve names.
+    dns:
+      namespace: kube-system
+      podLabels:
+        k8s-app: kube-dns
+
   # The provider and model menu. The admin decides what is offered; each user
   # picks a provider and model from it and brings their own key. A key is sent
   # only to its provider's `validate.url` (https, no redirects followed), so

@@ -38,6 +38,7 @@
 {{- end -}}
 {{- $legacyName := default (include "firstmate.secretName" .) $gw.legacyBearer.tokenSecretRef.name -}}
 {{- $legacyKey := default .Values.credentials.keys.walkieTalkieToken $gw.legacyBearer.tokenSecretRef.key -}}
+{{- $tenantsOn := include "firstmate.tenants.enabled" . -}}
 {{- $dataDir := "/data" -}}
 {{- $paramsDir := "/etc/walkie-talkie/tenant-params" -}}
 apiVersion: apps/v1
@@ -64,8 +65,9 @@ spec:
       {{- $explicitCredential := or .Values.credentials.create.walkieTalkieToken .Values.credentials.create.githubToken (gt (len .Values.credentials.create.harness) 0) }}
       {{- $rollOnCredentials := and $explicitCredential (not .Values.credentials.existingSecret) }}
       annotations:
-        # Restart when the catalog changes; the gateway reads it at start-up.
-        checksum/tenant-params: {{ .Values.tenants.catalog | toJson | sha256sum }}
+        # Restart when the catalog or tenant parameters change; the gateway
+        # reads them at start-up.
+        checksum/tenant-params: {{ include (print $.Template.BasePath "/gateway-tenant-params.yaml") . | sha256sum }}
         {{- if $rollOnCredentials }}
         # The static tenant and legacy bridge tokens may come from the chart's
         # credential Secret; restart with the firstmate pod when it changes.
@@ -76,7 +78,12 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "firstmate.gateway.fullname" . }}
+      {{- if $tenantsOn }}
+      # The reconciler's API token, bound to a Role in the tenant namespace only.
+      automountServiceAccountToken: true
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -142,6 +149,12 @@ spec:
                 secretKeyRef:
                   name: {{ $gw.secrets.existingSecret }}
                   key: {{ required "gateway.secrets.keys.tenantTokenSecret is required" $gw.secrets.keys.tenantTokenSecret }}
+            {{- if $tenantsOn }}
+            - name: FM_WT_TENANT_PARAMS
+              value: {{ printf "%s/tenants.json" $paramsDir | quote }}
+            - name: FM_WT_INTERNAL_PORT
+              value: {{ $gw.internalPort | quote }}
+            {{- end }}
             - name: FM_WT_ADMINS
               value: {{ join "," $admins | quote }}
             - name: FM_WT_ACCESS_REQUESTS

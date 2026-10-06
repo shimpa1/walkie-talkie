@@ -302,7 +302,7 @@ test("the catalog is served to a signed-in user without its validation URLs", as
     assert.doesNotMatch(JSON.stringify(catalog), /127\.0\.0\.1|validate/);
 
     const session = await json(await w.call(w.sessions.alice, "GET", "/auth/session"));
-    assert.deepEqual(session.user, { login: "alice", admin: false, firstmate: "none", setup: true });
+    assert.deepEqual(session.user, { login: "alice", admin: false, firstmate: "none", firstmate_state: "none", setup: true });
     const owner = await json(await w.call(w.sessions.owner, "GET", "/auth/session"));
     assert.equal((owner.user as Record<string, unknown>).setup, false, "a static tenant is managed in configuration");
   } finally {

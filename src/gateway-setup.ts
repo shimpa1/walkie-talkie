@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { credentialSlots, providerById, type Catalog, type CredentialSlot } from "./catalog.js";
 import type { SessionCaller } from "./gateway-admin.js";
-import type { CredentialRecord, GatewayStore, ModelChoice } from "./gateway-store.js";
+import type { CredentialRecord, GatewayStore, ModelChoice, UserRecord } from "./gateway-store.js";
 import { readBody, sendError, sendJson } from "./http-util.js";
 import { confirmedModels, type KeyChecker } from "./key-check.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -15,8 +15,8 @@ import { wipe, type Vault } from "./vault.js";
  * Keys are write-only. A key is checked against its provider (only at the
  * catalog's validation URL), sealed by the vault, and stored; no route ever
  * returns it, any part of it, or a hash of it. Nothing here logs a key, a
- * request body or a provider's response. Nothing runs yet either: the choice
- * is recorded ahead of provisioning.
+ * request body or a provider's response. The choice and keys are what the
+ * user's managed firstmate is provisioned from.
  */
 
 export interface SetupContext {
@@ -27,6 +27,8 @@ export interface SetupContext {
   now: () => number;
   /** An owner of a declared (static) tenant: their firstmate is managed in configuration. */
   hasStaticTenant: (githubId: number) => boolean;
+  /** The user's managed firstmate lifecycle: none until they start it. */
+  firstmateState: (user: UserRecord) => string;
   /** Bounds key checks, which each make an outbound call: per user, and overall. */
   checkLimits: { perUser: RateLimiter; global: RateLimiter };
   log: (line: string) => void;
@@ -145,8 +147,8 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
       routine_available: routineAvailable,
       ready: modelAvailable && routineAvailable,
     },
-    // Provisioning a firstmate is not available yet: the choice is kept for it.
-    state: "none",
+    // The managed firstmate's lifecycle: none until it is started.
+    state: ctx.firstmateState(user),
   };
 }
 

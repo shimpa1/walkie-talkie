@@ -337,8 +337,69 @@
     },
     "tenants": {
       "type": "object",
-      "additionalProperties": true,
+      "description": "Per-user firstmates: the catalog users choose from and, with enabled, how each one runs.",
+      "additionalProperties": false,
       "properties": {
+        "enabled": { "type": "boolean", "description": "Provision per-user firstmates in gateway.tenantNamespace. Requires gateway.enabled." },
+        "maxTenants": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "firstmate": { "$ref": "#/definitions/tenantImage" },
+            "walkieTalkie": { "$ref": "#/definitions/tenantImage" }
+          }
+        },
+        "imagePullSecrets": { "type": "array", "items": { "type": "string" } },
+        "harnessCommand": { "type": "string" },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "firstmate": { "$ref": "#/definitions/tenantResources" },
+            "walkieTalkie": { "$ref": "#/definitions/tenantResources" },
+            "init": { "$ref": "#/definitions/tenantResources" }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "storageClass": { "type": ["string", "null"] },
+            "size": { "type": "string" }
+          }
+        },
+        "securityContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runAsUser": { "type": "integer", "minimum": 1 },
+            "runAsGroup": { "type": "integer", "minimum": 1 },
+            "fsGroup": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "priorityClassName": { "type": "string" },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "egressPorts": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+            "excludeCidrs": { "$ref": "#/definitions/cidrList" },
+            "excludeCidrsV6": { "$ref": "#/definitions/cidrList" },
+            "extraExcludeCidrs": { "$ref": "#/definitions/cidrList" },
+            "dns": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "namespace": { "type": "string", "minLength": 1 },
+                "podLabels": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
+          }
+        },
         "catalog": {
           "type": "object",
           "description": "The provider and model menu users set up their firstmate from. Keys are never values here.",
@@ -396,6 +457,36 @@
     }
   },
   "definitions": {
+    "tenantImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": ["string", "number"] },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "tenantQuantities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": ["string", "number"] },
+        "memory": { "type": "string" },
+        "ephemeral-storage": { "type": "string" }
+      }
+    },
+    "tenantResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/definitions/tenantQuantities" },
+        "limits": { "$ref": "#/definitions/tenantQuantities" }
+      }
+    },
+    "cidrList": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" }
+    },
     "keyValidation": {
       "type": "object",
       "description": "One GET that answers 2xx for a working key and 401/403 for a bad one. The only host the key is sent to.",

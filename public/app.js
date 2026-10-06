@@ -182,6 +182,7 @@ function renderAccount() {
 }
 
 async function signOut() {
+  if (state.gateway && state.gateway.signedIn) await dropPushSubscription();
   try {
     await fetch("/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   } catch {
@@ -284,6 +285,18 @@ function renderInvites(invites) {
   }
 }
 
+/** A user's firstmate as the admin list describes it. */
+const FIRSTMATE_STATES = {
+  ready: "has a firstmate",
+  provisioning: "firstmate provisioning",
+  starting: "firstmate starting",
+  running: "firstmate running",
+  crashloop: "firstmate failing to start",
+  stopping: "firstmate stopping",
+  stopped: "firstmate stopped",
+  none: "no firstmate yet",
+};
+
 function renderUsers(users) {
   const body = $("users-body");
   body.textContent = "";
@@ -291,7 +304,7 @@ function renderUsers(users) {
     const badges = [];
     if (user.admin) badges.push(["admin", "ok"]);
     if (user.state === "suspended") badges.push(["suspended", "bad"]);
-    const firstmate = user.firstmate === "ready" ? "has a firstmate" : "no firstmate yet";
+    const firstmate = FIRSTMATE_STATES[user.firstmate] || "no firstmate yet";
     const node = card(`@${user.login}`, `${firstmate} · ${user.sessions} device(s)`, badges);
     if (user.declared) {
       node.appendChild(el("div", "sub", "Declared in the configuration."));
@@ -619,6 +632,7 @@ async function redeemLinkCode(event) {
   renderAccount();
   showView("status");
   void loadHealth();
+  void followPushAccount();
 }
 
 function handleUnauthorized(_response, token) {
@@ -1781,22 +1795,84 @@ async function enablePush() {
     }
     const registration = await navigator.serviceWorker.ready;
     const config = await api("/api/push/config");
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(config.publicKey),
-    });
-    const json = subscription.toJSON();
-    await api("/api/push/subscribe", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        endpoint: json.endpoint,
-        keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
-      }),
-    });
+    await subscribeThisDevice(registration, config.publicKey);
     setPushStatus("Notifications are enabled on this device.", "ok");
   } catch (error) {
     setPushStatus(`Could not enable notifications: ${error.message}`, "bad");
+  }
+}
+
+/** Subscribe this device with a firstmate's push key and register it there. */
+async function subscribeThisDevice(registration, publicKey) {
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+  const json = subscription.toJSON();
+  await api("/api/push/subscribe", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+    }),
+  });
+}
+
+/** Whether a subscription was made with this push key; unknown counts as yes. */
+function subscribedWithKey(subscription, publicKey) {
+  const current = subscription.options && subscription.options.applicationServerKey;
+  if (!current) return true;
+  const have = new Uint8Array(current);
+  const wanted = urlBase64ToUint8Array(publicKey);
+  if (have.length !== wanted.length) return false;
+  for (let i = 0; i < have.length; i += 1) if (have[i] !== wanted[i]) return false;
+  return true;
+}
+
+/**
+ * Behind the gateway each user's firstmate has its own push key. A device that
+ * changed accounts may still hold a subscription made for the previous user's
+ * firstmate: it would keep showing that user's notifications and never this
+ * one's. Move it to the signed-in user's own firstmate. Nothing changes when
+ * notifications are off, the key already matches, or the firstmate cannot be
+ * reached; Settings shows the state either way.
+ */
+async function followPushAccount() {
+  if (!state.gateway || !state.gateway.signedIn || !pushSupported()) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+    const config = await api("/api/push/config");
+    if (subscribedWithKey(subscription, config.publicKey)) return;
+    await subscription.unsubscribe();
+    await subscribeThisDevice(registration, config.publicKey);
+  } catch {
+    // Left as it was: the account's firstmate may not be running yet.
+  }
+}
+
+/** On sign-out, this device stops receiving the signed-out user's notifications. */
+async function dropPushSubscription() {
+  if (!pushSupported()) return;
+  try {
+    const subscription = await currentPushSubscription();
+    if (!subscription) return;
+    const endpoint = subscription.endpoint;
+    try {
+      await api("/api/push/unsubscribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ endpoint }),
+      });
+    } catch {
+      // The local unsubscribe below is what matters; the server drops it on the next send.
+    }
+    await subscription.unsubscribe();
+  } catch {
+    // Signing out goes ahead regardless.
   }
 }
 
@@ -2094,6 +2170,7 @@ async function init() {
     // Reveals the Admin tab for an admin and swaps the token form for the account.
     renderAccount();
     if (knownGateway || !authReady() || state.view === "settings" || needsSetup()) showInitialView();
+    void followPushAccount();
   } else if (knownGateway) {
     showInitialView();
   }

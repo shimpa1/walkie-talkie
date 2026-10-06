@@ -90,7 +90,35 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-# What the gateway offers users who set up their own firstmate (tenants.*).
+{{- /* How each per-user firstmate runs (tenants.*), when provisioning is on. */ -}}
+{{- $params := dict -}}
+{{- if include "firstmate.tenants.enabled" . -}}
+{{- $t := .Values.tenants -}}
+{{- $_ := include "firstmate.tenants.podFootprint" . -}}
+{{- $gw := .Values.gateway -}}
+{{- $fmImage := include "firstmate.tenants.image" (dict "image" $t.image.firstmate "fallbackRepo" .Values.firstmate.image.repository "fallbackTag" (default .Chart.AppVersion .Values.firstmate.image.tag) "which" "firstmate") -}}
+{{- $wtImage := include "firstmate.tenants.image" (dict "image" $t.image.walkieTalkie "fallbackRepo" (default .Values.walkieTalkie.image.repository $gw.image.repository) "fallbackTag" (default (default .Chart.AppVersion .Values.walkieTalkie.image.tag) $gw.image.tag) "which" "walkieTalkie") -}}
+{{- $params = dict
+  "namespace" (required "gateway.tenantNamespace is required" $gw.tenantNamespace)
+  "maxTenants" (int $t.maxTenants)
+  "serviceAccountName" "fm-tenant"
+  "gatewayInternalUrl" (printf "http://%s-internal.%s.svc:%d" (include "firstmate.gateway.fullname" .) .Release.Namespace (int $gw.service.internalPort))
+  "home" .Values.firstmate.home
+  "herdrSession" .Values.firstmate.herdrSession
+  "harnessCommand" (default .Values.firstmate.harnessCommand $t.harnessCommand)
+  "port" (int .Values.walkieTalkie.port)
+  "images" (dict
+    "firstmate" (dict "image" $fmImage "pullPolicy" (default "IfNotPresent" $t.image.firstmate.pullPolicy))
+    "walkieTalkie" (dict "image" $wtImage "pullPolicy" (default "IfNotPresent" $t.image.walkieTalkie.pullPolicy)))
+  "imagePullSecrets" (default (list) $t.imagePullSecrets)
+  "resources" $t.resources
+  "storage" (dict "storageClass" (default "" $t.persistence.storageClass) "size" $t.persistence.size)
+  "security" (dict "runAsUser" (int $t.securityContext.runAsUser) "runAsGroup" (int $t.securityContext.runAsGroup) "fsGroup" (int $t.securityContext.fsGroup))
+  "scheduling" (dict "nodeSelector" (default (dict) $t.nodeSelector) "tolerations" (default (list) $t.tolerations) "affinity" (default (dict) $t.affinity) "priorityClassName" (default "" $t.priorityClassName))
+-}}
+{{- end -}}
+# What the gateway offers users who set up their own firstmate (tenants.*),
+# and, with provisioning on, how each user's firstmate runs.
 # The catalog's validation URLs are the only hosts a user's key is sent to.
 apiVersion: v1
 kind: ConfigMap
@@ -101,4 +129,8 @@ metadata:
 data:
   catalog.json: |-
 {{ $catalog | toPrettyJson | indent 4 }}
+  {{- if $params }}
+  tenants.json: |-
+{{ $params | toPrettyJson | indent 4 }}
+  {{- end }}
 {{- end }}

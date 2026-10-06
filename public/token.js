@@ -67,6 +67,8 @@ export function authHeaders(token, extra) {
 /** Machine-readable gateway errors, shown as a sentence instead of the code. */
 const ERROR_MESSAGES = {
   firstmate_not_provisioned: "Your firstmate is not running yet.",
+  firstmate_not_running: "Your firstmate is not running yet.",
+  capacity_reached: "Every firstmate slot is taken. Free one, or raise tenants.maxTenants.",
   key_rejected: "The provider rejected this key. Check it and try again.",
   provider_unreachable: "Could not reach the provider to check the key; try again.",
   invalid_key_format: "That does not look like a key: 8 to 512 characters, no spaces.",

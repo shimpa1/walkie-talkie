@@ -90,5 +90,41 @@ jobs:
             exit 1
           fi
 
+      - name: Per-user firstmates render their namespace, isolation and quota
+        run: |
+          chart=deploy/helm/firstmate
+          helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
+            --set gateway.enabled=true --set gateway.githubClientId=Ov23liExample \
+            --set tenants.enabled=true \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/tenants.yaml
+          grep -q '^kind: Namespace$' /tmp/tenants.yaml
+          grep -q 'pod-security.kubernetes.io/enforce: restricted' /tmp/tenants.yaml
+          grep -Pzq 'kind: ResourceQuota\n(.*\n)*?\s+pods: "5"\n\s+requests\.cpu: "1500m"' /tmp/tenants.yaml
+          grep -q '^kind: LimitRange$' /tmp/tenants.yaml
+          grep -q '^kind: Role$' /tmp/tenants.yaml
+          grep -q '^kind: RoleBinding$' /tmp/tenants.yaml
+          test "$(grep -c '^kind: NetworkPolicy$' /tmp/tenants.yaml)" -eq 5
+          grep -q 'name: firstmate-tenants-default-deny$' /tmp/tenants.yaml
+          grep -q 'cidr: 0.0.0.0/0$' /tmp/tenants.yaml
+          if grep -Eq 'pods/exec|pods/attach|pods/portforward|pods/log|kind: ClusterRole' /tmp/tenants.yaml; then
+            echo "the gateway was granted more than the design's Role" >&2
+            exit 1
+          fi
+          # Off (the atus values as committed), none of it renders.
+          helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/tenants-off.yaml
+          if grep -Eq 'firstmate-tenants|kind: (Role|RoleBinding|ResourceQuota|LimitRange|Namespace)$' /tmp/tenants-off.yaml; then
+            echo "tenant objects rendered while tenants are off" >&2
+            exit 1
+          fi
+          for bad in "--set tenants.enabled=true" \
+            "-f $chart/examples/values-atus.yaml --set gateway.enabled=true --set gateway.githubClientId=x --set tenants.enabled=true --set gateway.networkPolicy.enabled=false"; do
+            # shellcheck disable=SC2086 # the flags are word-split on purpose
+            if helm template firstmate $chart -n firstmate $bad >/dev/null 2>&1; then
+              echo "tenants rendered without their isolation: $bad" >&2
+              exit 1
+            fi
+          done
+
       - name: Entrypoint harness-start test
         run: bash deploy/kubernetes/firstmate/entrypoint.test.sh
