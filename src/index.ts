@@ -74,12 +74,6 @@ async function runGateway(config: AppConfig, log: (line: string) => void): Promi
     clientSecret: gateway.githubClientSecret,
     redirectUri: `${gateway.publicOrigin}/auth/github/callback`,
   });
-  const server = listenOn(createServer(createGatewayHandler({ config, store, oauth, log })), config, (port) => {
-    process.stdout.write(
-      `walkie-talkie gateway listening on ${describeBind(config, port)}; ` +
-        `${gateway.staticTenants.length} static tenant(s), ${gateway.admins.length} admin(s)\n`,
-    );
-  });
   const purge = setInterval(() => store.purgeExpired(Date.now()), GATEWAY_PURGE_INTERVAL_MS);
   purge.unref();
 
@@ -119,6 +113,13 @@ async function runGateway(config: AppConfig, log: (line: string) => void): Promi
       reconciler.start();
     }
   }
+
+  const server = listenOn(createServer(createGatewayHandler({ config, store, oauth, log, reconciler })), config, (port) => {
+    process.stdout.write(
+      `walkie-talkie gateway listening on ${describeBind(config, port)}; ` +
+        `${gateway.staticTenants.length} static tenant(s), ${gateway.admins.length} admin(s)\n`,
+    );
+  });
 
   const shutdown = (signal: NodeJS.Signals): void => {
     process.stderr.write(`walkie-talkie: ${signal}, shutting down\n`);

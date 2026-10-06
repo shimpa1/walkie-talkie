@@ -154,6 +154,18 @@ export function podObserved(pod: KubeObject): TenantObserved {
   return ready ? "running" : "pending";
 }
 
+/**
+ * A StatefulSet's volume claim templates are immutable: an existing tenant
+ * keeps the ones it was created with, so a storage change in the parameters
+ * applies only to tenants created afterwards and never blocks the apply.
+ */
+async function keepClaimTemplates(kube: Kube, statefulSet: KubeObject): Promise<void> {
+  const existing = await kube.get(KINDS.statefulSet, nameOf(statefulSet));
+  const templates = (existing?.spec as Record<string, unknown> | undefined)?.volumeClaimTemplates;
+  if (!Array.isArray(templates)) return;
+  (statefulSet.spec as Record<string, unknown>).volumeClaimTemplates = templates;
+}
+
 export class TenantReconciler {
   private readonly deps: ReconcilerDeps;
   private readonly intervalMs: number;
@@ -257,6 +269,7 @@ export class TenantReconciler {
       ];
       for (const [kind, object] of ordered) {
         try {
+          if (kind === KINDS.statefulSet) await keepClaimTemplates(kube, object);
           await kube.apply(kind, object);
           result.applied += 1;
         } catch (error) {

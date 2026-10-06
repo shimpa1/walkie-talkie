@@ -358,7 +358,7 @@ tenant_credentials_fetch() {  # <token>
 # the names in FM_TENANT_CREDENTIAL_ENVS are exported. The credential token is
 # unset before anything else runs, and no token or value is ever printed.
 fetch_tenant_credentials() {
-  local token="${FM_TENANT_CREDENTIALS_TOKEN:-}" body='' rc delay attempt=0 name value count=0
+  local token="${FM_TENANT_CREDENTIALS_TOKEN:-}" body='' rc delay attempt=0 line name value count=0
   local allowed=" ${FM_TENANT_CREDENTIAL_ENVS:-} "
   unset FM_TENANT_CREDENTIALS_TOKEN
   if [ -z "$token" ]; then
@@ -386,8 +386,11 @@ fetch_tenant_credentials() {
   done
   token=
   # Names and values were validated above: one NAME=value line per variable,
-  # values printable ASCII without spaces, so a line split is exact.
-  while IFS='=' read -r name value; do
+  # values printable ASCII without spaces. A name holds no `=`, so the line
+  # splits at its first one; the value keeps every `=` of its own.
+  while IFS= read -r line; do
+    name=${line%%=*}
+    value=${line#*=}
     case "$allowed" in
       *" $name "*)
         export "$name=$value"
@@ -397,6 +400,7 @@ fetch_tenant_credentials() {
     esac
   done < <(printf '%s' "$body" | jq -r '.env | to_entries[] | "\(.key)=\(.value)"')
   body=
+  line=
   value=
   log "fetched this firstmate's credentials from the gateway ($count variable(s))"
 }

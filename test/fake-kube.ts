@@ -7,7 +7,8 @@ import type { KubeObject } from "../src/tenant-objects.js";
  * namespaced get, list (equality label selectors), server-side apply and
  * delete, for any resource. It records every request, so a test can assert
  * which verbs and paths the gateway ever used, and it can be edited behind the
- * reconciler's back (drift) or seeded with pods carrying a status.
+ * reconciler's back (drift) or seeded with pods carrying a status. Like a real
+ * API server it refuses a change to a StatefulSet's volume claim templates.
  */
 
 export interface KubeCall {
@@ -72,6 +73,10 @@ function stored(body: KubeObject, previous: KubeObject | undefined): KubeObject 
   return { ...body, metadata, ...(previous?.status !== undefined ? { status: previous.status } : {}) };
 }
 
+function claimTemplates(object: KubeObject): string {
+  return JSON.stringify(((object.spec ?? {}) as Record<string, unknown>).volumeClaimTemplates ?? null);
+}
+
 function comparable(object: KubeObject | undefined): string {
   if (object === undefined) return "";
   const { status: _status, ...rest } = object;
@@ -131,6 +136,10 @@ export async function startFakeKube(namespace: string, token = "fake-sa-token"):
         const metadata = (applied.metadata ?? {}) as Record<string, unknown>;
         if (metadata.name !== call.name) return send(400, { kind: "Status", reason: "BadRequest" });
         const previous = objects.get(key);
+        if (call.resource === "statefulsets" && previous !== undefined && claimTemplates(previous) !== claimTemplates(applied)) {
+          // A StatefulSet's volume claim templates are immutable, as in a real cluster.
+          return send(422, { kind: "Status", reason: "Invalid" });
+        }
         const next = stored(applied, previous);
         if (comparable(previous) !== comparable(next)) changes += 1;
         objects.set(key, next);

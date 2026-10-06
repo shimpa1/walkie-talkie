@@ -828,7 +828,21 @@ A firstmate's lifecycle state, in `GET /api/me/firstmate` (`state`), in
 `none` → `provisioning` → `starting` → `running`, or `crashloop`, `stopping`,
 `stopped`. A suspended user's firstmate is scaled to zero and gets no
 credentials; resuming restores it. Removing a user deletes their firstmate's
-workload; the volume is kept.
+workload; the volume is kept, and its tenant id stays recorded as retained so
+the volume is never untracked.
+
+**Start and stop.** Once setup is ready (a model chosen, and the provider's key
+saved and able to use it), a user starts their own firstmate with `POST
+/api/me/firstmate/start` and stops it with `POST /api/me/firstmate/stop` (a
+same-origin write with the session, like the other `/api/me` routes). Start
+answers `409 {"error": "setup_incomplete"}` before setup is ready and `409
+{"error": "capacity_reached"}` past the cap; stop answers `409 {"error":
+"firstmate_not_started"}` when there is nothing to stop. Both answer `409
+{"error": "managed_by_config"}` for a declared firstmate's owner and `409
+{"error": "not_available"}` without tenant provisioning. Stopping scales to
+zero and keeps the volume, Secret and ConfigMap. Replacing or deleting a key
+the firstmate is delivered (the chosen provider's key or the GitHub token)
+restarts it, so it fetches the change and never keeps the old value.
 
 **Routing.** A signed-in user's API calls go only to their own firstmate's
 Service, with that firstmate's derived `api` token. While it is not running,
@@ -836,8 +850,10 @@ they answer `409 {"error": "firstmate_not_running", "state": "<state>"}`.
 
 **Admission.** `tenants.maxTenants` (in the parameters) caps the users who may
 have a managed firstmate: approving a request or inviting a login past it
-answers `409 {"error": "capacity_reached"}`. Open invites count; owners of
-declared firstmates do not. The namespace's ResourceQuota is the hard backstop.
+answers `409 {"error": "capacity_reached"}`. Open invites count, and so do
+removed users' retained volumes; owners of declared firstmates do not.
+Starting a firstmate is capped the same way: started firstmates plus retained
+volumes. The namespace's ResourceQuota is the hard backstop.
 
 **Push.** Each firstmate's sidecar keeps its own push keys and subscriptions on
 its own volume (`<home>/.walkie-talkie/push.json`). A device that switches
@@ -872,6 +888,7 @@ Gateway routes, besides the forwarded API and the web app:
 | `GET` | `/api/me/credentials` | session: this user's saved keys, metadata only |
 | `PUT` / `DELETE` | `/api/me/credentials/<key_name>` | session: check and save `{"value"}` / remove a key |
 | `GET` / `PUT` | `/api/me/firstmate` | session: this user's choice, what setup still needs and their firstmate's `state` / choose `{"provider", "model", "routine_model"?}` |
+| `POST` | `/api/me/firstmate/start`, `.../stop` | session: start this user's managed firstmate once setup is ready / stop it |
 | `GET` / `POST` | `/api/admin/invites` | admin: open invites / invite `{"login"}` |
 | `DELETE` | `/api/admin/invites/<id>` | admin: revoke an open invite |
 | `GET` | `/api/admin/requests` | admin: pending access requests |

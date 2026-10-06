@@ -424,8 +424,9 @@ fi
 # from the gateway's internal port before the herdr server starts: the token
 # goes in the Authorization header and is unset before anything inherits it, a
 # failed fetch is retried, an answer without the provider key is refused rather
-# than starting a keyless harness, only declared names are exported, and no
-# token or key is ever printed.
+# than starting a keyless harness, only declared names are exported, a value
+# ending in `=` (base64 padding) arrives intact, the token never appears on
+# curl's command line, and no token or key is ever printed.
 if ! command -v python3 >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
   echo "skip: python3 and curl are required for the credential-fetch checks" >&2
   echo "ok"
@@ -447,8 +448,21 @@ printf '#!/bin/sh\n' > "$HOME4/bin/fm-inbox.sh"
 printf 'fail\n' > "$GATEWAY_DIR/mode"
 
 CRED_TOKEN="uabc2345.test-credential-token-$$"
-PROVIDER_KEY="sk-ant-test-delivered-key-$$"
+PROVIDER_KEY="sk-ant-test-delivered-key-$$="
 GITHUB_KEY="github_pat_test_delivered-$$"
+
+# A curl in front of the real one records every command line it is given.
+CURL_SPY="$TMP/curl-spy"
+CURL_ARGV_LOG="$TMP/curl-argv.log"
+REAL_CURL="$(command -v curl)"
+mkdir -p "$CURL_SPY"
+: > "$CURL_ARGV_LOG"
+cat > "$CURL_SPY/curl" <<FAKE_CURL
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CURL_ARGV_LOG"
+exec "$REAL_CURL" "\$@"
+FAKE_CURL
+chmod +x "$CURL_SPY/curl"
 
 cat > "$GATEWAY_DIR/gateway.py" <<'FAKE_GATEWAY'
 import http.server
@@ -517,7 +531,7 @@ gateway_requests() {
   if [ -f "$GATEWAY_DIR/requests.log" ]; then grep -c '' "$GATEWAY_DIR/requests.log"; else echo 0; fi
 }
 
-PATH="$FAKE_BIN:$PATH" \
+PATH="$CURL_SPY:$FAKE_BIN:$PATH" \
   HOME="$HOME4" \
   FM_HOME="$HOME4" \
   FIRSTMATE_SEED_DIR="$SEED_DIR" \
@@ -576,6 +590,10 @@ first_ok=$(grep -n '^fetch:ok$' "$ORDER_LOG" | head -1 | cut -d: -f1)
   || fail "the herdr server did not start after the credential fetch"
 if grep -q 'auth-bad' "$GATEWAY_DIR/requests.log"; then
   fail "entrypoint presented the wrong credential token"
+fi
+grep -q 'internal/v1/credentials' "$CURL_ARGV_LOG" || fail "the credential fetch did not go through curl"
+if grep -qF "$CRED_TOKEN" "$CURL_ARGV_LOG"; then
+  fail "the credential token was on curl's command line"
 fi
 grep -q "^ANTHROPIC_API_KEY=$PROVIDER_KEY\$" "$SERVER_ENV4" \
   || fail "the delivered provider key did not reach the herdr server environment"

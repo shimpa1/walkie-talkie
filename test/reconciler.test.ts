@@ -206,7 +206,7 @@ test("a removed user's objects are pruned, but never their home volume or anythi
     h.fake.seed("configmaps", { apiVersion: "v1", kind: "ConfigMap", metadata: { name: "kube-root-ca.crt" } });
     h.fake.seed("services", { apiVersion: "v1", kind: "Service", metadata: { name: "helm-owned", labels: { [MANAGED_BY_LABEL]: "Helm", [TENANT_LABEL]: alice.tid } } });
 
-    h.store.deleteUser(alice.user.id);
+    h.store.deleteUser(alice.user.id, NOW);
     const result = await h.reconciler.reconcileOnce();
     assert.equal(result.pruned, 4);
     const names = tenantNames(alice.tid);
@@ -225,12 +225,62 @@ test("a removed user's objects are pruned, but never their home volume or anythi
   }
 });
 
+test("a storage change applies to new tenants only; existing ones keep their claim template and stay appliable", async () => {
+  const h = await harness();
+  try {
+    const alice = startedUser(h.store, 4004, "alice");
+    await h.reconciler.reconcileOnce();
+    const original = statefulSet(h.fake, alice.tid)?.spec.volumeClaimTemplates;
+    assert.equal(original?.[0]?.spec.resources.requests.storage, "10Gi");
+
+    // The operator changes the size and class; the gateway restarts with them.
+    const resized = new TenantReconciler({
+      store: h.store,
+      kube: new KubeClient({ server: h.fake.url, namespace: NAMESPACE, token: () => h.fake.token }),
+      params: tenantParams({ storage: { storageClass: "fast", size: "20Gi" } }),
+      catalog: tenantCatalog(),
+      tokens: h.tokens,
+      now: () => NOW,
+      log: (line) => h.logs.push(line),
+    });
+    const bob = startedUser(h.store, 5005, "bob");
+    h.store.setTenantDesired(alice.user.id, "stopped", NOW);
+    const result = await resized.reconcileOnce();
+    assert.equal(result.errors, 0, h.logs.join("\n"));
+    assert.equal(statefulSet(h.fake, alice.tid)?.spec.replicas, 0, "the existing tenant still scales");
+    assert.deepEqual(statefulSet(h.fake, alice.tid)?.spec.volumeClaimTemplates, original);
+    const created = statefulSet(h.fake, bob.tid)?.spec.volumeClaimTemplates[0].spec;
+    assert.equal(created?.resources.requests.storage, "20Gi");
+    assert.equal(created?.storageClassName, "fast");
+    assertOnlyGrantedCalls(h.fake);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a removed user's tenant is kept as retained until its home volume is purged", async () => {
+  const h = await harness();
+  try {
+    const alice = startedUser(h.store, 4004, "alice");
+    startedUser(h.store, 5005, "bob");
+    assert.deepEqual(h.store.listRetainedTenants(), []);
+    h.store.deleteUser(alice.user.id, NOW + 1);
+    assert.equal(h.store.tenantByTid(alice.tid), null);
+    assert.deepEqual(h.store.listRetainedTenants(), [{ tid: alice.tid, removedAt: NOW + 1 }]);
+    const nobody = h.store.createUser(6006, "carol", NOW);
+    h.store.deleteUser(nobody.id, NOW + 2);
+    assert.equal(h.store.listRetainedTenants().length, 1, "a user who never had a tenant leaves nothing behind");
+  } finally {
+    await h.close();
+  }
+});
+
 test("a failed listing prunes nothing of that kind", async () => {
   const h = await harness();
   try {
     const alice = startedUser(h.store, 4004, "alice");
     await h.reconciler.reconcileOnce();
-    h.store.deleteUser(alice.user.id);
+    h.store.deleteUser(alice.user.id, NOW);
     h.fake.fail("statefulsets", 500);
     const result = await h.reconciler.reconcileOnce();
     assert.ok(result.errors > 0);

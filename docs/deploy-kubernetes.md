@@ -734,7 +734,8 @@ passed.*
 `gateway.networkPolicy.enabled`, or the render fails) lets the gateway run a
 firstmate for every user who sets one up. The chart adds the namespace and its
 isolation; the gateway's reconciler creates each user's objects in it when they
-start their firstmate (see the README's "Per-user firstmates").
+start their firstmate with `POST /api/me/firstmate/start`, and scales them to
+zero on `POST /api/me/firstmate/stop` (see the README's "Per-user firstmates").
 
 | Resource | Purpose |
 | --- | --- |
@@ -761,12 +762,12 @@ in `tenants.image.firstmate.tag`.
 | Value | Default | What it does |
 | --- | --- | --- |
 | `tenants.enabled` | `false` | Render the above and give the gateway its token and parameters. |
-| `tenants.maxTenants` | `5` | Cap on users with a managed firstmate (approving or inviting past it is refused) and the quota multiplier. |
+| `tenants.maxTenants` | `5` | Cap on users with a managed firstmate (approving, inviting or starting past it is refused; removed users' retained home volumes count) and the quota multiplier. |
 | `tenants.image.firstmate` / `.walkieTalkie` | `firstmate.image` / the gateway image | Tenant images, pinned to immutable tags (`latest` fails the render). |
 | `tenants.imagePullSecrets` | `[]` | Pull Secrets that exist in the tenant namespace. |
 | `tenants.harnessCommand` | `firstmate.harnessCommand` | Starts each tenant's primary harness. The model comes from the generated `opencode.json`. |
 | `tenants.resources.{firstmate,walkieTalkie,init}` | 250m/512Mi requests, 2Gi and 4Gi ephemeral limits; 50m/64Mi, 256Mi; 10m/16Mi, 64Mi | Per-tenant resources. CPU in `m` or cores and memory in `Mi`/`Gi`/`Ti`, because the quota is computed from them. |
-| `tenants.persistence.storageClass` / `.size` | cluster default / `10Gi` | Each tenant's home claim. A size change applies to tenants created afterwards. |
+| `tenants.persistence.storageClass` / `.size` | cluster default / `10Gi` | Each tenant's home claim. A size or class change applies to tenants created afterwards; existing ones keep their claim template. |
 | `tenants.securityContext.{runAsUser,runAsGroup,fsGroup}` | `1000` | The ids tenant pods run as; the rest of the restricted posture is fixed. |
 | `tenants.nodeSelector`, `.tolerations`, `.affinity`, `.priorityClassName` | none | Tenant pod scheduling. |
 | `tenants.networkPolicy.dns` | `kube-system`, `k8s-app: kube-dns` | Where tenants resolve names. |

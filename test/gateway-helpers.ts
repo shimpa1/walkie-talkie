@@ -240,6 +240,7 @@ export interface GatewayOptions {
   keyCheckLimits?: { perUser: RateLimiter; global: RateLimiter };
   tenants?: TenantProvisioning | null;
   tenantUpstream?: (tid: string) => string;
+  reconciler?: { kick: () => void };
 }
 
 export async function startGateway(options: GatewayOptions): Promise<GatewayHarness> {
@@ -307,6 +308,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
       ...(options.keyChecker !== undefined ? { keyChecker: options.keyChecker } : {}),
       ...(options.keyCheckLimits !== undefined ? { keyCheckLimits: options.keyCheckLimits } : {}),
       ...(options.tenantUpstream !== undefined ? { tenantUpstream: options.tenantUpstream } : {}),
+      ...(options.reconciler !== undefined ? { reconciler: options.reconciler } : {}),
     }),
   );
   const url = await listen(server);

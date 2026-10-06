@@ -16,7 +16,9 @@ import { wipe, type Vault } from "./vault.js";
  * catalog's validation URL), sealed by the vault, and stored; no route ever
  * returns it, any part of it, or a hash of it. Nothing here logs a key, a
  * request body or a provider's response. The choice and keys are what the
- * user's managed firstmate is provisioned from.
+ * user's managed firstmate is provisioned from; once setup is ready the user
+ * starts and stops it here, and replacing or deleting a key it was delivered
+ * restarts it onto the change.
  */
 
 export interface SetupContext {
@@ -29,6 +31,13 @@ export interface SetupContext {
   hasStaticTenant: (githubId: number) => boolean;
   /** The user's managed firstmate lifecycle: none until they start it. */
   firstmateState: (user: UserRecord) => string;
+  /** Managed firstmates; null when tenant provisioning is not configured. */
+  provisioning: {
+    /** Whether the user may start theirs under the tenant cap. */
+    canStart: (userId: string) => boolean;
+    /** A desired state or a delivered credential changed: reconcile soon. */
+    kick: () => void;
+  } | null;
   /** Bounds key checks, which each make an outbound call: per user, and overall. */
   checkLimits: { perUser: RateLimiter; global: RateLimiter };
   log: (line: string) => void;
@@ -37,6 +46,8 @@ export interface SetupContext {
 /** A key: 8 to 512 printable ASCII characters, no whitespace. */
 const KEY_VALUE = /^[\x21-\x7e]{8,512}$/;
 const CREDENTIAL_PATH = /^\/api\/me\/credentials\/([A-Z_][A-Z0-9_]{0,127})$/;
+const START_PATH = "/api/me/firstmate/start";
+const STOP_PATH = "/api/me/firstmate/stop";
 const MAX_KEY_BODY = 2 * 1024;
 const MAX_CHOICE_BODY = 1024;
 
@@ -45,6 +56,8 @@ export function isSetupPath(pathname: string): boolean {
   return (
     pathname === "/api/catalog" ||
     pathname === "/api/me/firstmate" ||
+    pathname === START_PATH ||
+    pathname === STOP_PATH ||
     pathname === "/api/me/credentials" ||
     pathname.startsWith("/api/me/credentials/")
   );
@@ -120,12 +133,8 @@ function keyCanUse(keyModels: string[] | null, wanted: Array<string | null>): bo
   return keyModels === null || wanted.every((model) => model === null || keyModels.includes(model));
 }
 
-/** The user's setup as the app shows it: their choice, and what is still missing. */
-function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string, unknown> {
-  const { user } = caller;
-  if (ctx.hasStaticTenant(user.githubId)) {
-    return { managed: false, choice: null, setup: null };
-  }
+/** What the user's setup still misses; `ready` once their firstmate can be started. */
+function setupStatus(ctx: SetupContext, user: UserRecord): { choice: ModelChoice | null; setup: Record<string, boolean> } {
   const choice = ctx.store.modelChoice(user.id);
   const provider = choice === null ? null : providerById(ctx.catalog, choice.provider);
   const key = provider === null ? null : ctx.store.credential(user.id, provider.keyEnv);
@@ -137,8 +146,7 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
   const modelAvailable = usable(choice?.model ?? null);
   const routineAvailable = choice !== null && (routineModel === null ? key !== null : usable(routineModel));
   return {
-    managed: true,
-    choice: choiceView(choice),
+    choice,
     setup: {
       model_chosen: modelChosen,
       routine_chosen: routineChosen,
@@ -147,6 +155,20 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
       routine_available: routineAvailable,
       ready: modelAvailable && routineAvailable,
     },
+  };
+}
+
+/** The user's setup as the app shows it: their choice, and what is still missing. */
+function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string, unknown> {
+  const { user } = caller;
+  if (ctx.hasStaticTenant(user.githubId)) {
+    return { managed: false, choice: null, setup: null };
+  }
+  const { choice, setup } = setupStatus(ctx, user);
+  return {
+    managed: true,
+    choice: choiceView(choice),
+    setup,
     // The managed firstmate's lifecycle: none until it is started.
     state: ctx.firstmateState(user),
   };
@@ -182,6 +204,15 @@ export async function handleSetupRoute(
     return chooseModel(ctx, res, caller, body);
   }
 
+  if (pathname === START_PATH || pathname === STOP_PATH) {
+    if (method !== "POST") return sendError(res, 405, "method not allowed");
+    if (ctx.hasStaticTenant(me.githubId)) return sendError(res, 409, "managed_by_config");
+    if (ctx.provisioning === null) return sendError(res, 409, "not_available");
+    return pathname === START_PATH
+      ? startFirstmate(ctx, ctx.provisioning, res, caller)
+      : stopFirstmate(ctx, ctx.provisioning, res, caller);
+  }
+
   if (pathname === "/api/me/credentials") {
     if (!isRead) return sendError(res, 405, "method not allowed");
     const credentials = ctx.store.listCredentials(me.id).map((record) => credentialView(slots, record));
@@ -196,6 +227,7 @@ export async function handleSetupRoute(
     if (!ctx.store.deleteCredential(me.id, name)) return sendError(res, 404, "no_credential");
     ctx.store.audit({ at: ctx.now(), actor: me.id, action: "credential.deleted", subject: me.id, detail: { name } });
     ctx.log(`credential deleted: user ${me.id} ${name}`);
+    deliveredCredentialChanged(ctx, me, name);
     return sendJson(res, 200, JSON.stringify({ deleted: true }));
   }
   if (method !== "PUT") return sendError(res, 405, "method not allowed");
@@ -257,6 +289,7 @@ async function saveKey(
     detail: { name: slot.name, provider: providerId, kid: ctx.vault.activeKid },
   });
   ctx.log(`credential saved: user ${me.id} ${slot.name} (kid ${ctx.vault.activeKid})`);
+  deliveredCredentialChanged(ctx, me, slot.name);
   sendJson(
     res,
     200,
@@ -300,5 +333,49 @@ function chooseModel(ctx: SetupContext, res: ServerResponse, caller: SessionCall
     subject: me.id,
     detail: { harness, provider: provider.id, model, ...(routineModel === null ? {} : { routine_model: routineModel }) },
   });
+  ctx.provisioning?.kick();
   sendJson(res, 200, JSON.stringify(firstmateView(ctx, caller)));
+}
+
+type Provisioning = NonNullable<SetupContext["provisioning"]>;
+
+/** Start the user's managed firstmate: setup must be ready and the tenant cap leave room. */
+function startFirstmate(ctx: SetupContext, provisioning: Provisioning, res: ServerResponse, caller: SessionCaller): void {
+  const me = caller.user;
+  if (!setupStatus(ctx, me).setup.ready) return sendError(res, 409, "setup_incomplete");
+  if (!provisioning.canStart(me.id)) return sendError(res, 409, "capacity_reached");
+  const at = ctx.now();
+  const tenant = ctx.store.ensureTenant(me.id, at);
+  ctx.store.setTenantDesired(me.id, "running", at);
+  ctx.store.audit({ at, actor: me.id, action: "firstmate.started", subject: me.id, detail: { tid: tenant.tid } });
+  ctx.log(`firstmate started: user ${me.id} tenant=${tenant.tid}`);
+  provisioning.kick();
+  sendJson(res, 200, JSON.stringify(firstmateView(ctx, caller)));
+}
+
+/** Stop the user's managed firstmate: scaled to zero, its home and objects kept. */
+function stopFirstmate(ctx: SetupContext, provisioning: Provisioning, res: ServerResponse, caller: SessionCaller): void {
+  const me = caller.user;
+  const tenant = ctx.store.tenantByUser(me.id);
+  if (tenant === null || tenant.desired === "none") return sendError(res, 409, "firstmate_not_started");
+  const at = ctx.now();
+  ctx.store.setTenantDesired(me.id, "stopped", at);
+  ctx.store.audit({ at, actor: me.id, action: "firstmate.stopped", subject: me.id, detail: { tid: tenant.tid } });
+  ctx.log(`firstmate stopped: user ${me.id} tenant=${tenant.tid}`);
+  provisioning.kick();
+  sendJson(res, 200, JSON.stringify(firstmateView(ctx, caller)));
+}
+
+/**
+ * A credential the user's firstmate was delivered (the chosen provider's key,
+ * or the GitHub token) was replaced or deleted: its pod restarts and fetches
+ * again, so it never keeps the old value.
+ */
+function deliveredCredentialChanged(ctx: SetupContext, user: UserRecord, name: string): void {
+  if (ctx.provisioning === null) return;
+  const choice = ctx.store.modelChoice(user.id);
+  const provider = choice === null ? null : providerById(ctx.catalog, choice.provider);
+  if (name !== provider?.keyEnv && name !== ctx.catalog.github?.keyEnv[0]) return;
+  ctx.store.bumpTenantConfig(user.id, ctx.now());
+  ctx.provisioning.kick();
 }

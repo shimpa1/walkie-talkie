@@ -97,19 +97,34 @@ jobs:
             --set gateway.enabled=true --set gateway.githubClientId=Ov23liExample \
             --set tenants.enabled=true \
             --set credentials.create.walkieTalkieToken=tok >/tmp/tenants.yaml
-          grep -q '^kind: Namespace$' /tmp/tenants.yaml
-          grep -q 'pod-security.kubernetes.io/enforce: restricted' /tmp/tenants.yaml
-          grep -Pzq 'kind: ResourceQuota\n(.*\n)*?\s+pods: "5"\n\s+requests\.cpu: "1500m"' /tmp/tenants.yaml
-          grep -q '^kind: LimitRange$' /tmp/tenants.yaml
-          grep -q '^kind: Role$' /tmp/tenants.yaml
-          grep -q '^kind: RoleBinding$' /tmp/tenants.yaml
-          test "$(grep -c '^kind: NetworkPolicy$' /tmp/tenants.yaml)" -eq 5
-          grep -q 'name: firstmate-tenants-default-deny$' /tmp/tenants.yaml
-          grep -q 'cidr: 0.0.0.0/0$' /tmp/tenants.yaml
-          if grep -Eq 'pods/exec|pods/attach|pods/portforward|pods/log|kind: ClusterRole' /tmp/tenants.yaml; then
-            echo "the gateway was granted more than the design's Role" >&2
-            exit 1
-          fi
+          python3 - /tmp/tenants.yaml <<'CHECK'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+          def one(kind, name):
+              found = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name]
+              assert len(found) == 1, f"{kind}/{name} renders once"
+              return found[0]
+          ns = one("Namespace", "firstmate-tenants")
+          for mode in ("enforce", "audit", "warn"):
+              assert ns["metadata"]["labels"][f"pod-security.kubernetes.io/{mode}"] == "restricted", mode
+          hard = one("ResourceQuota", "firstmate-tenants")["spec"]["hard"]
+          assert hard["pods"] == "5" and hard["requests.cpu"] == "1500m", hard
+          one("LimitRange", "firstmate-tenants")
+          rules = one("Role", "firstmate-gateway")["rules"]
+          granted = {r: set(rule["verbs"]) for rule in rules for r in rule["resources"]}
+          assert not any("/" in r or r == "*" for r in granted), granted
+          assert "*" not in set().union(*granted.values()), granted
+          one("RoleBinding", "firstmate-gateway")
+          assert not [d for d in docs if d["kind"] in ("ClusterRole", "ClusterRoleBinding")]
+          policies = [d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"].get("namespace") == "firstmate-tenants"]
+          assert len(policies) == 3, [p["metadata"]["name"] for p in policies]
+          deny = one("NetworkPolicy", "firstmate-tenants-default-deny")["spec"]
+          assert deny["podSelector"] == {} and sorted(deny["policyTypes"]) == ["Egress", "Ingress"], deny
+          blocks = [peer["ipBlock"] for rule in one("NetworkPolicy", "firstmate-tenants-egress")["spec"]["egress"]
+                    for peer in rule["to"] if "ipBlock" in peer]
+          v4 = [b for b in blocks if b["cidr"] == "0.0.0.0/0"]
+          assert len(v4) == 1 and {"10.0.0.0/8", "169.254.0.0/16"} <= set(v4[0]["except"]), blocks
+          CHECK
           # Off (the atus values as committed), none of it renders.
           helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
             --set credentials.create.walkieTalkieToken=tok >/tmp/tenants-off.yaml

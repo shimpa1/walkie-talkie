@@ -142,7 +142,7 @@ test("delivery is refused without a valid token, for a suspended user, and for a
     }
 
     // A removed user's tenant is gone with them.
-    h.store.deleteUser(h.bob.user.id);
+    h.store.deleteUser(h.bob.user.id, 0);
     const removed = await h.fetchCredentials(h.tokens.credentialToken(h.bob.tid));
     assert.equal(removed.status, 403);
     assertNoSecretLogged(h);

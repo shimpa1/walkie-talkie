@@ -804,13 +804,24 @@ const TENANT_OBJECTS = [
   "ServiceAccount/fm-tenant",
 ];
 
-/** A YAML list of scalars under `key:` in one document, e.g. a Role rule's verbs. */
+/**
+ * The Role's rules as data, resource -> verbs. The chart writes each rule as
+ * one `- apiGroups:` item whose fields are flow sequences, which are JSON.
+ */
 function roleRules(role: string): Record<string, string[]> {
+  const items: Array<Record<string, unknown>> = [];
+  for (const line of role.slice(role.indexOf("\nrules:\n") + "\nrules:\n".length).split("\n")) {
+    const field = /^  (- |  )([A-Za-z]+): (.*)$/.exec(line);
+    if (field === null) break;
+    if (field[1] === "- ") items.push({});
+    const item = items.at(-1);
+    assert.ok(item, "a rule field outside a rule");
+    item[field[2] ?? ""] = JSON.parse(field[3] ?? "");
+  }
   const rules: Record<string, string[]> = {};
-  for (const block of role.split(/\n  - apiGroups:/).slice(1)) {
-    const resources = /resources: \[([^\]]*)\]/.exec(block)?.[1] ?? "";
-    const verbs = (/verbs: \[([^\]]*)\]/.exec(block)?.[1] ?? "").split(",").map((verb) => verb.trim().replace(/"/g, ""));
-    for (const resource of resources.split(",").map((entry) => entry.trim().replace(/"/g, ""))) rules[resource] = verbs;
+  for (const item of items) {
+    assert.deepEqual(Object.keys(item).sort(), ["apiGroups", "resources", "verbs"]);
+    for (const resource of item.resources as string[]) rules[resource] = item.verbs as string[];
   }
   return rules;
 }
@@ -868,7 +879,6 @@ test("tenants on: the gateway's Role is exactly the reconciler's verbs, bound to
   const role = findDoc(rendered.stdout, "Role", "firstmate-gateway");
   assert.ok(role);
   assert.deepEqual(roleRules(role), GATEWAY_ROLE);
-  assert.doesNotMatch(role.slice(role.indexOf("rules:")), /exec|attach|portforward|pods\/log|rbac|namespaces|"\*"/);
   const binding = findDoc(rendered.stdout, "RoleBinding", "firstmate-gateway");
   assert.ok(binding);
   assert.match(binding, /roleRef:\n\s+apiGroup: rbac\.authorization\.k8s\.io\n\s+kind: Role\n\s+name: firstmate-gateway/);

@@ -25,6 +25,8 @@ export interface AccountContext {
   firstmateState: (user: UserRecord) => FirstmateState | "ready";
   /** Whether another user may be admitted under the tenant cap. */
   admissionOpen: () => boolean;
+  /** A user's firstmate should change (removed, suspended, resumed): reconcile soon. */
+  kick: () => void;
   log: (line: string) => void;
 }
 
@@ -160,14 +162,16 @@ export async function handleAccountRoute(
       }
     }
     if (verb === undefined) {
-      store.deleteUser(target.id);
+      store.deleteUser(target.id, at);
       store.audit({ at, actor: me.id, action: "user.removed", subject: target.id, detail: { github_id: target.githubId } });
       ctx.log(`user ${target.id} removed by ${me.id}`);
+      ctx.kick();
       return sendJson(res, 200, JSON.stringify({ removed: true }));
     }
     const state = verb === "suspend" ? "suspended" : "active";
     store.setUserState(target.id, state);
     store.audit({ at, actor: me.id, action: verb === "suspend" ? "user.suspended" : "user.resumed", subject: target.id, detail: null });
+    ctx.kick();
     const updated = store.userById(target.id);
     return sendJson(res, 200, JSON.stringify({ user: updated === null ? null : userView(ctx, updated) }));
   }

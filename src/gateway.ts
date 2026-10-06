@@ -64,6 +64,8 @@ export interface GatewayDeps {
   keyChecker?: KeyChecker;
   /** Overrides where a managed tenant is reached (its in-cluster Service); tests point it at a local fake. */
   tenantUpstream?: (tid: string) => string;
+  /** The tenant reconciler, kicked on every desired-state change; absent outside a cluster. */
+  reconciler?: { kick: () => void } | null;
 }
 
 /** Who a request acts for. */
@@ -165,15 +167,31 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     return tenantState(store.tenantByUser(user.id));
   };
 
+  const kick = (): void => deps.reconciler?.kick();
+
   /**
    * Admission: with provisioning on, every user without a declared firstmate
    * may get a managed one, so approving or inviting past `maxTenants` is
-   * refused. Open invites count, since each becomes a user on sign-in.
+   * refused. Open invites count, since each becomes a user on sign-in, and so
+   * do removed users' tenants whose home volume is still in the cluster.
    */
   const admissionOpen = (): boolean => {
     if (managed === null) return true;
     const users = store.listUsers().filter((user) => !tenants.has(user.githubId)).length;
-    return users + store.listInvites(now()).length < managed.params.maxTenants;
+    const held = users + store.listInvites(now()).length + store.listRetainedTenants().length;
+    return held < managed.params.maxTenants;
+  };
+
+  /**
+   * Starting: a tenant that already holds its resources may always start
+   * again; a new one needs room beside every other tenant and every retained
+   * home volume.
+   */
+  const canStart = (userId: string): boolean => {
+    if (managed === null) return false;
+    const own = store.tenantByUser(userId);
+    if (own !== null && own.desired !== "none") return true;
+    return store.countActiveTenants() + store.listRetainedTenants().length < managed.params.maxTenants;
   };
 
   const account: AccountContext = {
@@ -183,6 +201,7 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     isDeclared: (githubId) => declared.has(githubId),
     firstmateState,
     admissionOpen,
+    kick,
     log,
   };
   // Setup (catalog, keys, model choice) is on when a catalog is configured;
@@ -201,6 +220,7 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
             const state = firstmateState(user);
             return state === "ready" ? "running" : state;
           },
+          provisioning: managed === null ? null : { canStart, kick },
           checkLimits: deps.keyCheckLimits ?? defaultKeyCheckLimits(now),
           log,
         };

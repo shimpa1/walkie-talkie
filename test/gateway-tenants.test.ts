@@ -4,11 +4,17 @@ import { randomBytes } from "node:crypto";
 
 import { SESSION_COOKIE } from "../src/cookies.js";
 import type { TenantObserved, UserRecord } from "../src/gateway-store.js";
+import type { KeyChecker } from "../src/key-check.js";
+import { KubeClient } from "../src/kube.js";
 import { RateLimiter } from "../src/rate-limit.js";
+import { TenantReconciler } from "../src/reconciler.js";
+import { CONFIG_VERSION_ANNOTATION, tenantNames } from "../src/tenant-objects.js";
 import { TenantTokens } from "../src/tenant-tokens.js";
 import { Vault } from "../src/vault.js";
+import { startFakeKube } from "./fake-kube.js";
 import {
   ORIGIN,
+  readAudit,
   signIn,
   startFakeGithub,
   startFakeUpstream,
@@ -33,6 +39,10 @@ interface World {
   sessions: { admin: string; alice: string; bob: string };
   users: { alice: UserRecord; bob: UserRecord };
   call: (session: string | null, method: string, path: string, body?: unknown) => Promise<Response>;
+  /** How often the gateway kicked the reconciler. */
+  kicks: () => number;
+  /** Give a user a saved provider key and a model choice, so their setup is ready. */
+  ready: (user: UserRecord) => void;
   /** Start a user's managed firstmate as the reconciler would see it. */
   start: (user: UserRecord, observed: TenantObserved) => Promise<{ tid: string; upstream: FakeUpstream }>;
   close: () => Promise<void>;
@@ -44,14 +54,24 @@ async function world(maxTenants = 5): Promise<World> {
   const upstreams = new Map<string, FakeUpstream>();
   const tokens = new TenantTokens(TENANT_MASTER);
   const generous = (): RateLimiter => new RateLimiter({ capacity: 1000, refillPerMinute: 1000 });
+  const vault = Vault.fromSettings(KEYRING, "k1");
+  let kicks = 0;
+  const checker = { check: async () => ({ status: "valid", listed: null }) } as unknown as KeyChecker;
   const gateway = await startGateway({
     github,
     admins: [ADMIN.id],
     staticTenants: [{ githubId: ADMIN.id, upstream: captainPod.url, token: "captain-token" }],
     catalog: tenantCatalog(),
-    vault: Vault.fromSettings(KEYRING, "k1"),
+    vault,
+    keyChecker: checker,
+    keyCheckLimits: { perUser: generous(), global: generous() },
     tenants: { params: tenantParams({ maxTenants }), tokens, internalPort: 8788 },
     tenantUpstream: (tid) => upstreams.get(tid)?.url ?? "http://127.0.0.1:9",
+    reconciler: {
+      kick: () => {
+        kicks += 1;
+      },
+    },
     signInLimits: { perClient: generous(), global: generous() },
   });
   const call: World["call"] = (session, method, path, body) =>
@@ -75,6 +95,11 @@ async function world(maxTenants = 5): Promise<World> {
   const aliceUser = gateway.store.userByGithubId(ALICE.id);
   const bobUser = gateway.store.userByGithubId(BOB.id);
   assert.ok(aliceUser && bobUser);
+  const ready: World["ready"] = (user) => {
+    const sealed = vault.seal(user.id, "ANTHROPIC_API_KEY", Buffer.from("sk-ant-ready-key-0001"));
+    gateway.store.putCredential(user.id, "ANTHROPIC_API_KEY", "anthropic", sealed, null, 0);
+    gateway.store.setModelChoice(user.id, { harness: "opencode", provider: "anthropic", model: "claude-sonnet-5-5", routineModel: null }, 0);
+  };
   const start: World["start"] = async (user, observed) => {
     gateway.store.setModelChoice(user.id, { harness: "opencode", provider: "anthropic", model: "claude-sonnet-5-5", routineModel: null }, 0);
     const tenant = gateway.store.ensureTenant(user.id, 0);
@@ -93,6 +118,8 @@ async function world(maxTenants = 5): Promise<World> {
     sessions: { admin, alice, bob },
     users: { alice: aliceUser, bob: bobUser },
     call,
+    kicks: () => kicks,
+    ready,
     start,
     close: async () => {
       await gateway.close();
@@ -213,6 +240,182 @@ test("approving or inviting past maxTenants is refused; a declared firstmate's o
     assert.equal((await w.call(w.sessions.admin, "DELETE", `/api/admin/invites/${carol.id}`)).status, 200);
     assert.equal((await w.call(w.sessions.admin, "POST", `/api/admin/requests/${erin.id}/approve`)).status, 200);
   } finally {
+    await w.close();
+  }
+});
+
+test("a user starts and stops their own managed firstmate once setup is ready; each change kicks the reconciler", async () => {
+  const w = await world();
+  try {
+    const notReady = await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start");
+    assert.equal(notReady.status, 409);
+    assert.deepEqual(await notReady.json(), { error: "setup_incomplete" });
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id), null, "nothing is provisioned before setup is ready");
+
+    // A key alone is not enough; a chosen model makes setup ready.
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/credentials/ANTHROPIC_API_KEY", { value: "sk-ant-alice-key-1" })).status, 200);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 409);
+    assert.equal((await w.call(w.sessions.alice, "PUT", "/api/me/firstmate", { provider: "anthropic", model: "claude-sonnet-5-5" })).status, 200);
+
+    const kicksBefore = w.kicks();
+    const started = await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start");
+    assert.equal(started.status, 200);
+    assert.equal(((await started.json()) as Record<string, unknown>).state, "provisioning");
+    const tenant = w.gateway.store.tenantByUser(w.users.alice.id);
+    assert.equal(tenant?.desired, "running");
+    assert.equal(w.kicks(), kicksBefore + 1);
+    const audit = await readAudit(w.gateway.config.gateway?.dbPath ?? "");
+    assert.ok(audit.some((entry) => entry.action === "firstmate.started" && entry.subject === w.users.alice.id));
+
+    // A cross-site write and a read are refused.
+    const crossSite = await fetch(`${w.gateway.url}/api/me/firstmate/stop`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${w.sessions.alice}`, origin: "https://evil.example" },
+    });
+    assert.equal(crossSite.status, 403);
+    assert.equal((await w.call(w.sessions.alice, "GET", "/api/me/firstmate/start")).status, 405);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "running");
+
+    const stopped = await w.call(w.sessions.alice, "POST", "/api/me/firstmate/stop");
+    assert.equal(stopped.status, 200);
+    assert.equal(((await stopped.json()) as Record<string, unknown>).state, "stopping");
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.desired, "stopped");
+    assert.equal(w.kicks(), kicksBefore + 2);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    assert.equal(w.gateway.store.tenantByUser(w.users.alice.id)?.tid, tenant?.tid, "the same tenant starts again");
+
+    // Bob never started one; the captain's is declared in configuration.
+    const bobStop = await w.call(w.sessions.bob, "POST", "/api/me/firstmate/stop");
+    assert.equal(bobStop.status, 409);
+    assert.deepEqual(await bobStop.json(), { error: "firstmate_not_started" });
+    const captain = await w.call(w.sessions.admin, "POST", "/api/me/firstmate/start");
+    assert.equal(captain.status, 409);
+    assert.deepEqual(await captain.json(), { error: "managed_by_config" });
+  } finally {
+    await w.close();
+  }
+});
+
+test("without tenant provisioning configured, start and stop are not available", async () => {
+  const github = await startFakeGithub();
+  const generous = (): RateLimiter => new RateLimiter({ capacity: 1000, refillPerMinute: 1000 });
+  const gateway = await startGateway({
+    github,
+    admins: [ADMIN.id],
+    catalog: tenantCatalog(),
+    vault: Vault.fromSettings(KEYRING, "k1"),
+    signInLimits: { perClient: generous(), global: generous() },
+  });
+  try {
+    const admin = (await signIn(gateway, github, ADMIN)).session;
+    assert.ok(admin);
+    const response = await fetch(`${gateway.url}/api/me/firstmate/start`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${admin}`, origin: ORIGIN },
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "not_available" });
+  } finally {
+    await gateway.close();
+    await github.close();
+  }
+});
+
+test("starting past maxTenants is refused, counting removed users' retained home volumes; a held tenant may always start again", async () => {
+  const w = await world(3);
+  try {
+    // Two removed users whose home volumes are still in the cluster.
+    for (const [id, login] of [[8008, "dave"], [9009, "erin"]] as const) {
+      const user = w.gateway.store.createUser(id, login, 0);
+      w.gateway.store.ensureTenant(user.id, 0);
+      w.gateway.store.deleteUser(user.id, 0);
+    }
+    assert.equal(w.gateway.store.listRetainedTenants().length, 2);
+
+    // alice and bob plus two retained volumes exceed the cap of three.
+    const invite = await w.call(w.sessions.admin, "POST", "/api/admin/invites", { login: "carol" });
+    assert.equal(invite.status, 409);
+    assert.deepEqual(await invite.json(), { error: "capacity_reached" });
+
+    w.ready(w.users.alice);
+    w.ready(w.users.bob);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    const full = await w.call(w.sessions.bob, "POST", "/api/me/firstmate/start");
+    assert.equal(full.status, 409);
+    assert.deepEqual(await full.json(), { error: "capacity_reached" });
+    assert.equal(w.gateway.store.tenantByUser(w.users.bob.id), null);
+
+    // Alice's tenant already holds its slot: stopping and starting again is fine.
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/stop")).status, 200);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+  } finally {
+    await w.close();
+  }
+});
+
+test("removing a user keeps their tenant as retained, so its home volume stays tracked", async () => {
+  const w = await world();
+  try {
+    w.ready(w.users.alice);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    const tid = w.gateway.store.tenantByUser(w.users.alice.id)?.tid;
+    assert.ok(tid);
+    const kicksBefore = w.kicks();
+    assert.equal((await w.call(w.sessions.admin, "DELETE", `/api/admin/users/${w.users.alice.id}`)).status, 200);
+    assert.equal(w.gateway.store.tenantByTid(tid), null);
+    assert.deepEqual(
+      w.gateway.store.listRetainedTenants().map((retained) => retained.tid),
+      [tid],
+    );
+    assert.equal(w.kicks(), kicksBefore + 1, "the reconciler prunes the removed tenant's objects soon");
+  } finally {
+    await w.close();
+  }
+});
+
+test("replacing or deleting a delivered key restarts the running firstmate; an unrelated key does not", async () => {
+  const w = await world();
+  const fake = await startFakeKube("firstmate-tenants");
+  const reconciler = new TenantReconciler({
+    store: w.gateway.store,
+    kube: new KubeClient({ server: fake.url, namespace: "firstmate-tenants", token: () => fake.token }),
+    params: tenantParams(),
+    catalog: tenantCatalog(),
+    tokens: w.tokens,
+    now: () => 0,
+    log: () => {},
+  });
+  try {
+    w.ready(w.users.alice);
+    assert.equal((await w.call(w.sessions.alice, "POST", "/api/me/firstmate/start")).status, 200);
+    const tid = w.gateway.store.tenantByUser(w.users.alice.id)?.tid ?? "";
+    const rollout = async (): Promise<string> => {
+      await reconciler.reconcileOnce();
+      const set = fake.get("statefulsets", tenantNames(tid).workload) as { spec: { template: { metadata: { annotations: Record<string, string> } } } };
+      return set.spec.template.metadata.annotations[CONFIG_VERSION_ANNOTATION] ?? "";
+    };
+    const version = (): number => w.gateway.store.tenantByUser(w.users.alice.id)?.configVersion ?? 0;
+    assert.equal(await rollout(), "1");
+
+    const steps: Array<[string, string, number]> = [
+      ["PUT", "ANTHROPIC_API_KEY", 2],
+      ["PUT", "OPENROUTER_API_KEY", 2],
+      ["PUT", "GH_TOKEN", 3],
+      ["DELETE", "GH_TOKEN", 4],
+      ["DELETE", "OPENROUTER_API_KEY", 4],
+      ["DELETE", "ANTHROPIC_API_KEY", 5],
+    ];
+    for (const [method, name, expected] of steps) {
+      const [kicksBefore, versionBefore] = [w.kicks(), version()];
+      const body = method === "PUT" ? { value: `replacement-${name.toLowerCase()}` } : undefined;
+      assert.equal((await w.call(w.sessions.alice, method, `/api/me/credentials/${name}`, body)).status, 200, `${method} ${name}`);
+      assert.equal(version(), expected, `${method} ${name}`);
+      assert.equal(w.kicks() - kicksBefore, expected > versionBefore ? 1 : 0, `${method} ${name} kicks only when delivered`);
+      assert.equal(await rollout(), String(expected), `the pod template follows ${method} ${name}`);
+    }
+  } finally {
+    await reconciler.stop();
+    await fake.close();
     await w.close();
   }
 });

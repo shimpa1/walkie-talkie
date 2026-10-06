@@ -137,6 +137,12 @@ export interface TenantRecord {
   updatedAt: number;
 }
 
+/** A removed user's tenant: its objects are pruned, its home volume is kept until purged. */
+export interface RetainedTenant {
+  tid: string;
+  removedAt: number;
+}
+
 /** A tenant with what the reconciler and delivery need about its owner. */
 export interface TenantOwner extends TenantRecord {
   githubId: number;
@@ -266,6 +272,10 @@ const MIGRATIONS: Record<number, string> = {
       observed_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE retained_tenants (
+      tid TEXT PRIMARY KEY,
+      removed_at INTEGER NOT NULL
     );
   `,
 };
@@ -442,10 +452,19 @@ export class GatewayStore {
     });
   }
 
-  /** Remove a user; their sessions, link codes, credentials and model choice go with them. */
-  deleteUser(userId: string): boolean {
-    const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(userId);
-    return asNumber(result.changes) > 0;
+  /**
+   * Remove a user; their sessions, link codes, credentials, model choice and
+   * tenant go with them. A tenant's home volume outlives it in the cluster, so
+   * its id is kept as retained until that volume is purged.
+   */
+  deleteUser(userId: string, now: number): boolean {
+    return this.transaction(() => {
+      this.db
+        .prepare("INSERT OR IGNORE INTO retained_tenants (tid, removed_at) SELECT tid, ? FROM tenants WHERE user_id = ?")
+        .run(now, userId);
+      const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+      return asNumber(result.changes) > 0;
+    });
   }
 
   // ---- sessions ----------------------------------------------------------
@@ -901,6 +920,14 @@ export class GatewayStore {
       | Record<string, unknown>
       | undefined;
     return row === undefined ? 0 : asNumber(row.n);
+  }
+
+  /** Removed users' tenants whose home volume is still in the cluster, oldest first. */
+  listRetainedTenants(): RetainedTenant[] {
+    const rows = this.db.prepare("SELECT tid, removed_at FROM retained_tenants ORDER BY removed_at, tid").all() as Array<
+      Record<string, unknown>
+    >;
+    return rows.map((row) => ({ tid: String(row.tid), removedAt: asNumber(row.removed_at) }));
   }
 
   // ---- login attempts ----------------------------------------------------
