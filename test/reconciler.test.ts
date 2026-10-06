@@ -160,12 +160,16 @@ test("a suspended user's firstmate is scaled to zero while their choice is kept"
   const h = await harness();
   try {
     const { user, tid } = startedUser(h.store, 4004, "alice");
+    await h.reconciler.reconcileOnce();
     h.store.setUserState(user.id, "suspended");
+    assert.equal(tenantState(h.store.tenantByUser(user.id)), "stopping");
     await h.reconciler.reconcileOnce();
     assert.equal(statefulSet(h.fake, tid)?.spec.replicas, 0);
+    assert.equal(tenantState(h.store.tenantByUser(user.id)), "stopped");
     h.store.setUserState(user.id, "active");
     await h.reconciler.reconcileOnce();
     assert.equal(statefulSet(h.fake, tid)?.spec.replicas, 1);
+    assert.equal(tenantState(h.store.tenantByUser(user.id)), "starting");
   } finally {
     await h.close();
   }

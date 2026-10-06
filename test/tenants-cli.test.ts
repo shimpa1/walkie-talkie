@@ -121,6 +121,24 @@ test("tenants render --user prints one user's firstmate, case-insensitively", as
   assert.match(missing.err.join("\n"), /@nobody has no managed firstmate/);
 });
 
+test("tenants render says what is applied for a firstmate whose choice left the catalog", async () => {
+  const s = await setup();
+  const store = GatewayStore.open(await import("node:sqlite"), s.env.FM_WT_GATEWAY_DB ?? "");
+  for (const owner of store.listTenants()) {
+    store.setModelChoice(owner.userId, { harness: "opencode", provider: "retired", model: "gone", routineModel: null }, NOW);
+  }
+  store.close();
+  const unresolved = capture(s.env, s.dir);
+  assert.equal(await runTenantsCommand(["render"], unresolved.io), 0);
+  assert.deepEqual(unresolved.out, []);
+  assert.ok(unresolved.err.includes(`tenant ${s.tids.alice} (@alice): its model choice is not in the catalog; nothing is applied`));
+  assert.ok(
+    unresolved.err.includes(
+      `tenant ${s.tids.bob} (@Bob): its model choice is not in the catalog; its StatefulSet is scaled to zero, nothing else is applied`,
+    ),
+  );
+});
+
 test("tenants render refuses bad usage and missing settings, and runs from the real entrypoint", async () => {
   const s = await setup();
   assert.equal(await runTenantsCommand(["apply"], capture(s.env, s.dir).io), 2);

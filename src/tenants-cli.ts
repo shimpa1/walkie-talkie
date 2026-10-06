@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { ConfigError, configFilePath, readConfigFile } from "./config.js";
 import { GatewayConfigError, resolveCatalog, resolveGatewayDbPath, resolveTenantParams } from "./gateway-config.js";
 import { openGatewayStore, type TenantOwner } from "./gateway-store.js";
-import { tenantSpec } from "./reconciler.js";
+import { tenantRuns, tenantSpec } from "./reconciler.js";
 import { buildTenantObjects, type KubeObject } from "./tenant-objects.js";
 import type { CliIo } from "./vault-cli.js";
 
@@ -87,7 +87,8 @@ export async function runTenantsCommand(args: string[], io: CliIo): Promise<numb
       }
       const spec = tenantSpec(owner, store.modelChoice(owner.userId), catalog, { api: REDACTED, credentials: REDACTED });
       if (spec === null) {
-        io.err(`tenant ${owner.tid} (@${owner.login}): its model choice is not in the catalog; nothing is applied`);
+        const applied = tenantRuns(owner) ? "nothing is applied" : "its StatefulSet is scaled to zero, nothing else is applied";
+        io.err(`tenant ${owner.tid} (@${owner.login}): its model choice is not in the catalog; ${applied}`);
         continue;
       }
       const header = `# tenant ${owner.tid} (@${owner.login}): desired ${owner.desired}, user ${owner.userState}`;

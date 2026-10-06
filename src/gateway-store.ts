@@ -852,9 +852,14 @@ export class GatewayStore {
 
   // ---- managed tenants -------------------------------------------------------
 
-  tenantByUser(userId: string): TenantRecord | null {
-    const row = this.db.prepare("SELECT * FROM tenants WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
-    return row === undefined ? null : toTenant(row);
+  /** The user's tenant, with its owner. */
+  tenantByUser(userId: string): TenantOwner | null {
+    const row = this.db
+      .prepare(
+        "SELECT t.*, u.github_id, u.login, u.state AS user_state FROM tenants t JOIN users u ON u.id = t.user_id WHERE t.user_id = ?",
+      )
+      .get(userId) as Record<string, unknown> | undefined;
+    return row === undefined ? null : toTenantOwner(row);
   }
 
   /** A tenant by its cluster id, with its owner. */

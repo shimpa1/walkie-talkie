@@ -1,5 +1,5 @@
 import { providerById, type Catalog } from "./catalog.js";
-import type { GatewayStore, ModelChoice, TenantObserved, TenantOwner, TenantRecord } from "./gateway-store.js";
+import type { GatewayStore, ModelChoice, TenantObserved, TenantOwner } from "./gateway-store.js";
 import { KINDS, type Kube, type KubeKind } from "./kube.js";
 import {
   buildTenantObjects,
@@ -72,11 +72,13 @@ export type FirstmateState = "none" | "provisioning" | "starting" | "running" | 
 
 /**
  * Desired plus observed, as one word: `provisioning` before the reconciler has
- * applied anything, `starting` until the pod is Ready, then `running`.
+ * applied anything, `starting` until the pod is Ready, then `running`. A
+ * tenant that must not run (stopped, or its owner suspended) is `stopping`
+ * until it is scaled to zero, then `stopped`.
  */
-export function tenantState(tenant: TenantRecord | null): FirstmateState {
+export function tenantState(tenant: TenantOwner | null): FirstmateState {
   if (tenant === null || tenant.desired === "none") return "none";
-  if (tenant.desired === "stopped") return tenant.observed === "stopped" ? "stopped" : "stopping";
+  if (!tenantRuns(tenant)) return tenant.observed === "stopped" ? "stopped" : "stopping";
   switch (tenant.observed) {
     case "none":
       return "provisioning";
