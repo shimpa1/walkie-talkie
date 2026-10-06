@@ -38,14 +38,19 @@ async function setup(): Promise<Setup> {
   writeFileSync(join(dir, "tenants.json"), JSON.stringify(TENANT_PARAMS_DOC));
   writeFileSync(join(dir, "catalog.json"), JSON.stringify(CATALOG_DOC));
   const store = GatewayStore.open(await import("node:sqlite"), join(dir, "gateway.db"));
-  const started = (githubId: number, login: string, desired: "running" | "stopped" | "none"): string => {
-    const user = store.createUser(githubId, login, NOW);
-    store.setModelChoice(user.id, { harness: "opencode", provider: "anthropic", model: "claude-sonnet-5-5", routineModel: "claude-haiku-4-5" }, NOW);
-    const tid = store.ensureTenant(user.id, NOW).tid;
-    store.setTenantDesired(user.id, desired, NOW);
+  // Distinct creation times: tenants render oldest first.
+  const started = (githubId: number, login: string, desired: "running" | "stopped" | "none", at: number): string => {
+    const user = store.createUser(githubId, login, at);
+    store.setModelChoice(user.id, { harness: "opencode", provider: "anthropic", model: "claude-sonnet-5-5", routineModel: "claude-haiku-4-5" }, at);
+    const tid = store.ensureTenant(user.id, at).tid;
+    store.setTenantDesired(user.id, desired, at);
     return tid;
   };
-  const tids = { alice: started(4004, "alice", "running"), bob: started(5005, "Bob", "stopped"), carol: started(6006, "carol", "none") };
+  const tids = {
+    alice: started(4004, "alice", "running", NOW),
+    bob: started(5005, "Bob", "stopped", NOW + 1),
+    carol: started(6006, "carol", "none", NOW + 2),
+  };
   store.close();
   return {
     dir,
