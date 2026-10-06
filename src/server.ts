@@ -10,7 +10,7 @@ import { correctReadiness, readLiveState, readPrimary } from "./firstmate-live.j
 import { HerdrError, isValidPaneId } from "./herdr.js";
 import { readBody, sendError, sendJson, serveStatic } from "./http-util.js";
 import { composeNoteText, parseNoteContext } from "./note-context.js";
-import type { PushApi } from "./push-service.js";
+import { parseNotice, type PushApi } from "./push-service.js";
 import { withTimeout } from "./timeout.js";
 import {
   isValidPushEndpoint,
@@ -387,6 +387,31 @@ export function createRequestHandler(deps: AppDeps): (req: IncomingMessage, res:
         }
         const removed = deps.push.removeSubscription(endpoint);
         sendJson(res, 200, JSON.stringify({ removed }));
+        return;
+      }
+
+      // A notice for this firstmate's own devices, sent by the multi-user
+      // gateway (which holds this service's bearer token): for example "a new
+      // access request is waiting" for an admin. The gateway never forwards
+      // this route from a browser.
+      if (pathname === "/api/push/notify") {
+        if (req.method !== "POST") {
+          sendError(res, 405, "method not allowed");
+          return;
+        }
+        if (deps.push === undefined) {
+          sendError(res, 503, "push is not configured");
+          return;
+        }
+        const body = await readJsonObjectBody(req, res, MAX_PUSH_BODY_BYTES);
+        if (body === null) return;
+        const message = parseNotice(body);
+        if (message === null) {
+          sendError(res, 400, "invalid notice");
+          return;
+        }
+        const summary = await deps.push.notify(message);
+        sendJson(res, 200, JSON.stringify(summary));
         return;
       }
 

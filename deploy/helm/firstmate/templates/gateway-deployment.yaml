@@ -73,6 +73,10 @@ spec:
         # credential Secret; restart with the firstmate pod when it changes.
         checksum/secret: {{ include "firstmate.secretChecksum" . | sha256sum }}
         {{- end }}
+        {{- with $gw.secrets.rotation }}
+        # Bumped after a Doppler change to a gateway secret: restart onto it.
+        walkie-talkie.atus.hr/secrets-rotation: {{ . | quote }}
+        {{- end }}
         {{- with $gw.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

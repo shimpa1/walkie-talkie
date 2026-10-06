@@ -54,6 +54,8 @@ export interface TenantParams {
     affinity: Record<string, unknown> | null;
     priorityClassName: string | null;
   };
+  /** Days a removed user's home volume is kept for recovery before it is deleted. */
+  purgeAfterDays: number;
 }
 
 export class TenantParamsError extends Error {
@@ -68,6 +70,8 @@ const QUANTITY = /^[0-9]+(\.[0-9]+)?(m|k|M|G|T|Ki|Mi|Gi|Ti)?$/;
 const RESOURCE_NAMES = new Set(["cpu", "memory", "ephemeral-storage"]);
 const PULL_POLICIES: readonly PullPolicy[] = ["Always", "IfNotPresent", "Never"];
 const MAX_TENANTS_CAP = 100;
+export const DEFAULT_PURGE_AFTER_DAYS = 30;
+const MAX_PURGE_AFTER_DAYS = 3650;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -236,6 +240,10 @@ export function parseTenantParams(value: unknown): TenantParams {
       affinity: isRecord(affinity) && Object.keys(affinity).length > 0 ? affinity : null,
       priorityClassName: priorityClassName === "" ? null : priorityClassName,
     },
+    purgeAfterDays:
+      value.purgeAfterDays === undefined
+        ? DEFAULT_PURGE_AFTER_DAYS
+        : int(value.purgeAfterDays, "purgeAfterDays", 0, MAX_PURGE_AFTER_DAYS),
   };
 }
 

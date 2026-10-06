@@ -101,7 +101,8 @@
           },
           "annotations": {
             "walkie-talkie.atus.hr/config-version": "3",
-            "checksum/agents": "c86b768844eae253ed32db6153965665bd7da7a14d59face3f5dd34dc8930683"
+            "checksum/agents": "c86b768844eae253ed32db6153965665bd7da7a14d59face3f5dd34dc8930683",
+            "walkie-talkie.atus.hr/token-epoch": "epoch-0"
           }
         },
         "spec": {

@@ -709,20 +709,40 @@ tenants:
 
 ### Vault key rotation
 
+A rotation is a Doppler change and a values change. No command is run.
+
 1. In the gateway's Doppler config, append a new key to `WT_VAULT_KEYS`:
    `k1:<old>,k2:<openssl rand -base64 32>`.
 2. In a values PR, set `gateway.vault.activeKey: k2` and deploy. The gateway
-   restarts; new keys are encrypted under `k2`, and old ones still decrypt
-   under `k1`.
-3. Re-encrypt the stored keys in the gateway's own container:
+   restarts. At start-up it re-encrypts every stored credential still under
+   `k1` with `k2`, in one transaction, and logs
+   `vault: re-sealed <n> credential(s) under k2 at start-up` (counts and key ids
+   only). New keys are encrypted under `k2` from then on.
+3. Remove `k1` from `WT_VAULT_KEYS` in Doppler. To restart the gateway onto the
+   shorter keyring, bump `gateway.secrets.rotation` in a values PR (see below).
 
-   ```sh
-   kubectl -n firstmate exec deploy/firstmate-gateway -- node dist/src/index.js vault rotate
-   ```
+If a credential cannot be decrypted at start-up (for example `k1` was removed
+before the gateway restarted with `k2` active), the re-seal changes nothing,
+logs the owner and slot that failed, and the gateway keeps running. Put `k1`
+back and restart. `node dist/src/index.js vault rotate` in the gateway's
+container does the same re-seal by hand, for audit or recovery.
 
-   It prints counts and key ids only. A failure changes nothing.
-4. Once it reports every credential current, remove `k1` from
-   `WT_VAULT_KEYS`.
+### Restarting the gateway onto changed secrets
+
+A Doppler change to `WT_GITHUB_CLIENT_SECRET`, `WT_VAULT_KEYS` or
+`WT_TENANT_TOKEN_SECRET` updates the Secret but not the running gateway. Set
+`gateway.secrets.rotation` to any new string (a date works) in a values PR. It
+renders as the pod annotation `walkie-talkie.atus.hr/secrets-rotation`, so the
+deploy restarts the gateway onto the new values. Left empty, it adds nothing.
+
+**Rotating the tenant-token master** is exactly that: put a new
+`openssl rand -base64 32` in `WT_TENANT_TOKEN_SECRET`, then bump
+`gateway.secrets.rotation`. Every per-user firstmate's derived tokens change, and
+so does the master's fingerprint in each tenant pod template
+(`walkie-talkie.atus.hr/token-epoch`). The reconciler re-applies every tenant's
+Secret, and each tenant restarts once onto its new tokens. Until a tenant has
+restarted, the gateway cannot reach it (502), and it fetches its keys again as
+it starts.
 
 ### Per-user firstmates
 
@@ -734,8 +754,24 @@ passed.*
 `gateway.networkPolicy.enabled`, or the render fails) lets the gateway run a
 firstmate for every user who sets one up. The chart adds the namespace and its
 isolation; the gateway's reconciler creates each user's objects in it when they
-start their firstmate with `POST /api/me/firstmate/start`, and scales them to
-zero on `POST /api/me/firstmate/stop` (see the README's "Per-user firstmates").
+start their firstmate with `POST /api/me/firstmate/start` (the **Start** button
+under **Setup** in the app), and scales them to zero on
+`POST /api/me/firstmate/stop` (see the README's "Per-user firstmates").
+
+Lifecycle, all in the app:
+
+- **Start / Stop**: the user, under Setup. Stopping keeps the home, Secret and
+  agents config.
+- **Key or model change**: the firstmate restarts onto it. A key change bumps
+  its config version, and a model change changes its agents config. The app
+  warns that work in flight restarts with it.
+- **Suspend / Resume**: an admin. A suspended user's firstmate is scaled to zero
+  and gets no credentials. Resuming restores what the user had.
+- **Remove**: an admin. The workload is deleted at once. The home volume is kept
+  for `tenants.purgeAfterDays` (30 by default), then deleted. It shows under
+  Admin → **Removed users' homes**, where **Purge now** (tapped twice, sent with
+  the volume's id as confirmation) deletes it sooner. Until it is deleted it
+  still holds a firstmate slot.
 
 | Resource | Purpose |
 | --- | --- |
@@ -763,6 +799,7 @@ in `tenants.image.firstmate.tag`.
 | --- | --- | --- |
 | `tenants.enabled` | `false` | Render the above and give the gateway its token and parameters. |
 | `tenants.maxTenants` | `5` | Cap on users with a managed firstmate (approving, inviting or starting past it is refused; removed users' retained home volumes count) and the quota multiplier. |
+| `tenants.purgeAfterDays` | `30` | Days a removed user's home volume is kept for recovery before the gateway deletes it. `0` deletes it at the next sweep. |
 | `tenants.image.firstmate` / `.walkieTalkie` | `firstmate.image` / the gateway image | Tenant images, pinned to immutable tags (`latest` fails the render). |
 | `tenants.imagePullSecrets` | `[]` | Pull Secrets that exist in the tenant namespace. |
 | `tenants.harnessCommand` | `firstmate.harnessCommand` | Starts each tenant's primary harness. The model comes from the generated `opencode.json`. |
@@ -771,6 +808,7 @@ in `tenants.image.firstmate.tag`.
 | `tenants.securityContext.{runAsUser,runAsGroup,fsGroup}` | `1000` | The ids tenant pods run as; the rest of the restricted posture is fixed. |
 | `tenants.nodeSelector`, `.tolerations`, `.affinity`, `.priorityClassName` | none | Tenant pod scheduling. |
 | `tenants.networkPolicy.dns` | `kube-system`, `k8s-app: kube-dns` | Where tenants resolve names. |
+| `tenants.networkPolicy.dns.extraCidrs` | `[]` (atus: `169.254.25.10/32`) | Other addresses that answer DNS for pods on port 53, such as a node-local DNS cache. The cache's link-local address is otherwise excluded from tenant egress. |
 | `tenants.networkPolicy.egressPorts` | `443, 80, 22` | Internet ports tenants may use. |
 | `tenants.networkPolicy.excludeCidrs` / `excludeCidrsV6` / `extraExcludeCidrs` | RFC 1918, `100.64.0.0/10`, link-local, loopback; `fc00::/7`, `fe80::/10`; none | Ranges tenants may never reach. Add the cluster's pod and service CIDRs to `extraExcludeCidrs` if they fall outside the defaults. |
 
@@ -843,6 +881,28 @@ kubectl -n kube-system get daemonsets
 The policies also have to admit kubelet probes. If they did not, the firstmate
 pod would go un-Ready behind its new policy. If the CNI blocks probes, set
 `gateway.networkPolicy.enabled: false` in the enable PR and fix the CNI first.
+
+An enforcing CNI is not enough on its own: a **cluster-wide policy can
+override** a namespace's NetworkPolicies. With Calico, a GlobalNetworkPolicy
+that selects every workload and ends in an unconditional `Allow` decides
+before (or tied with, at order 1000) the Kubernetes policies. That Allow lets
+tenants' egress past their default-deny. Check before enabling tenants:
+
+```sh
+kubectl get globalnetworkpolicies.crd.projectcalico.org
+```
+
+**atus, 2026-10-06:** the check above ran in throwaway namespaces with the
+chart's own tenant policies. It found Calico v3.30 **enforcing ingress**: other
+tenants and non-gateway pods are refused, only tenants reach the gateway's
+internal port, and probes pass. **Egress is not enforced:** the
+GlobalNetworkPolicy `akash-guard-threatintel-egress-deny` ends in an
+unconditional `Allow`, and a test tenant reached the Kubernetes API and other
+pods. Per-user firstmates must stay off on atus until that policy no longer
+allows tenant egress, for example by moving it to a tier ahead of `default`
+that ends in `Pass`, and this check passes. atus pods also resolve names
+through node-local DNS at `169.254.25.10`, which the atus values admit through
+`tenants.networkPolicy.dns.extraCidrs`.
 
 ### Cutover (the enable PR)
 

@@ -171,6 +171,8 @@ function firstmateView(ctx: SetupContext, caller: SessionCaller): Record<string,
     setup,
     // The managed firstmate's lifecycle: none until it is started.
     state: ctx.firstmateState(user),
+    // Whether this gateway runs per-user firstmates, so Start is offered.
+    provisioning: ctx.provisioning !== null,
   };
 }
 

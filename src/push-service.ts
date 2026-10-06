@@ -134,11 +134,34 @@ export function notificationFor(event: PushEvent): PushMessage {
   }
 }
 
+const NOTICE_TEXT = /^[^\x00-\x1f\x7f]*$/;
+
+/**
+ * A notice another trusted caller (the gateway) asks this service to push:
+ * short single-line text, an in-app path to open, and an optional tag. Null
+ * when anything is out of shape, so nothing malformed reaches a device.
+ */
+export function parseNotice(body: Record<string, unknown>): PushMessage | null {
+  const { title, body: text, url, tag } = body;
+  if (typeof title !== "string" || title.length === 0 || title.length > 80 || !NOTICE_TEXT.test(title)) return null;
+  if (typeof text !== "string" || text.length > 240 || !NOTICE_TEXT.test(text)) return null;
+  let path = "/";
+  if (url !== undefined) {
+    // A path in this app only: never another origin, never a protocol-relative URL.
+    if (typeof url !== "string" || !/^\/(?!\/)[\x21-\x7e]{0,199}$/.test(url)) return null;
+    path = url;
+  }
+  if (tag !== undefined && (typeof tag !== "string" || !/^[a-z0-9-]{1,64}$/.test(tag))) return null;
+  return { title, body: text, url: path, ...(typeof tag === "string" ? { tag } : {}) };
+}
+
 export interface PushApi {
   publicKey(): string;
   addSubscription(subscription: PushSubscription): { ok: true; replaced: boolean };
   removeSubscription(endpoint: string): boolean;
   sendTest(): Promise<PushSendSummary>;
+  /** Send one message to every subscribed device (the gateway's admin notices). */
+  notify(message: PushMessage): Promise<PushSendSummary>;
 }
 
 export interface PushServiceOptions {
@@ -189,6 +212,10 @@ export class PushService implements PushApi {
       url: "/?view=settings",
       tag: "test",
     });
+  }
+
+  notify(message: PushMessage): Promise<PushSendSummary> {
+    return this.broadcast(message);
   }
 
   private async broadcast(message: PushMessage): Promise<PushSendSummary> {

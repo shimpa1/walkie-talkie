@@ -6,7 +6,7 @@ import type { AppConfig } from "./config.js";
 import { clearCookie, LOGIN_COOKIE, parseCookies, serializeCookie, SESSION_COOKIE } from "./cookies.js";
 import { handleAccountRoute, isAccountPath, type AccountContext, type SessionCaller } from "./gateway-admin.js";
 import type { GatewayConfig, StaticTenant } from "./gateway-config.js";
-import { matchProxyRoute, proxyToTenant } from "./gateway-proxy.js";
+import { matchProxyRoute, notifyFirstmate, proxyToTenant, type FirstmateNotice, type ProxyTarget } from "./gateway-proxy.js";
 import { handleSetupRoute, isSetupPath, type SetupContext } from "./gateway-setup.js";
 import {
   LOGIN_ATTEMPT_MS,
@@ -66,6 +66,10 @@ export interface GatewayDeps {
   tenantUpstream?: (tid: string) => string;
   /** The tenant reconciler, kicked on every desired-state change; absent outside a cluster. */
   reconciler?: { kick: () => void } | null;
+  /** Sends a push notice to a firstmate's own devices; tests record it. */
+  notifyFirstmate?: (target: ProxyTarget, notice: FirstmateNotice) => Promise<number>;
+  /** Bounds the push notices to admins about new access requests. */
+  adminNoticeLimit?: RateLimiter;
 }
 
 /** Who a request acts for. */
@@ -170,6 +174,46 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
   const kick = (): void => deps.reconciler?.kick();
 
   /**
+   * A user's own firstmate: the declared upstream, or the managed tenant's
+   * in-cluster Service with its derived token; else its lifecycle state.
+   */
+  const firstmateTarget = (githubId: number, userId: string | null): ProxyTarget | FirstmateState => {
+    const declaredTenant = tenants.get(githubId);
+    if (declaredTenant !== undefined) return { upstream: declaredTenant.upstream, token: declaredTenant.token };
+    if (managed === null || userId === null) return "none";
+    const tenant = store.tenantByUser(userId);
+    const state = tenantState(tenant);
+    if (tenant === null || state !== "running") return state;
+    const upstream = deps.tenantUpstream?.(tenant.tid) ?? tenantUpstream(managed.params, tenant.tid);
+    return { upstream, token: managed.tokens.apiToken(tenant.tid) };
+  };
+
+  const sendNotice = deps.notifyFirstmate ?? notifyFirstmate;
+  const adminNoticeLimit = deps.adminNoticeLimit ?? new RateLimiter({ capacity: 10, refillPerMinute: 10, now });
+
+  /**
+   * Tell every admin, on their own devices, that someone asked for access: the
+   * gateway asks each admin's own firstmate to push the notice to the devices
+   * subscribed there. Best effort and bounded; it never delays the sign-in.
+   */
+  const noticeAccessRequest = (login: string): void => {
+    if (!adminNoticeLimit.allow("*")) return;
+    const notice: FirstmateNotice = {
+      title: "Access request",
+      body: `@${login} asked to use walkie-talkie.`,
+      url: "/?view=admin",
+      tag: "access-request",
+    };
+    for (const adminId of gw.admins) {
+      const target = firstmateTarget(adminId, store.userByGithubId(adminId)?.id ?? null);
+      if (typeof target === "string") continue;
+      void sendNotice(target, notice).then((status) => {
+        log(`access request notice: admin github ${adminId} -> ${status === 0 ? "unreachable" : `HTTP ${status}`}`);
+      });
+    }
+  };
+
+  /**
    * Admission: with provisioning on, every user without a declared firstmate
    * may get a managed one, so approving or inviting past `maxTenants` is
    * refused. Open invites count, since each becomes a user on sign-in, and so
@@ -202,6 +246,7 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     firstmateState,
     admissionOpen,
     kick,
+    purgeGraceMs: managed === null ? null : managed.params.purgeAfterDays * 24 * 60 * 60 * 1000,
     log,
   };
   // Setup (catalog, keys, model choice) is on when a catalog is configured;
@@ -422,9 +467,11 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     }
     if (gw.accessRequests) {
       const outcome = store.recordAccessRequest(identity.id, identity.login, at);
-      if (outcome === "pending") {
+      if (outcome === "created" || outcome === "pending") {
         store.audit({ at, actor: null, action: "access.requested", subject: null, detail: { github_id: identity.id } });
         log(`access requested: github ${identity.id}`);
+        // Only a new request notifies; a repeat sign-in while it waits does not.
+        if (outcome === "created") noticeAccessRequest(identity.login);
         return "pending";
       }
       store.audit({ at, actor: null, action: "signin.refused", subject: null, detail: { github_id: identity.id, reason: outcome === "denied" ? "denied" : "requests_full" } });
@@ -495,15 +542,8 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
    * or the managed tenant's in-cluster Service with its derived token. A
    * managed firstmate that is not running yet answers with its state instead.
    */
-  function upstreamFor(principal: Principal): { upstream: string; token: string } | FirstmateState {
-    const declaredTenant = tenants.get(principal.githubId);
-    if (declaredTenant !== undefined) return { upstream: declaredTenant.upstream, token: declaredTenant.token };
-    if (managed === null || principal.userId === null) return "none";
-    const tenant = store.tenantByUser(principal.userId);
-    const state = tenantState(tenant);
-    if (tenant === null || state !== "running") return state;
-    const upstream = deps.tenantUpstream?.(tenant.tid) ?? tenantUpstream(managed.params, tenant.tid);
-    return { upstream, token: managed.tokens.apiToken(tenant.tid) };
+  function upstreamFor(principal: Principal): ProxyTarget | FirstmateState {
+    return firstmateTarget(principal.githubId, principal.userId);
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {

@@ -466,6 +466,11 @@ gateway:
       # Master secret the per-tenant internal tokens derive from
       # (FM_WT_TENANT_TOKEN_SECRET).
       tenantTokenSecret: WT_TENANT_TOKEN_SECRET
+    # Change this (any new string, e.g. a date) in the same values PR that
+    # follows a Doppler change to one of these keys: it restarts the gateway
+    # onto the new value. Rotating the tenant-token master this way restarts
+    # each per-user firstmate once onto its new tokens. Empty adds nothing.
+    rotation: ""
 
   # Id of the keyring entry new credentials are encrypted under
   # (FM_WT_VAULT_ACTIVE_KEY). Not secret.
@@ -563,6 +568,11 @@ tenants:
   # and the namespace ResourceQuota is computed as maxTenants x one tenant.
   maxTenants: 5
 
+  # Days a removed user's home volume is kept for recovery before the gateway
+  # deletes it (it counts against maxTenants and the quota until then). An
+  # admin can purge one sooner under Admin -> Removed users' homes.
+  purgeAfterDays: 30
+
   # Images of a tenant pod, pinned to immutable tags. Empty fields fall back to
   # firstmate.image (the runtime) and the gateway's image (the walkie-talkie
   # sidecar). The runtime must be a build whose entrypoint fetches credentials
@@ -655,6 +665,10 @@ tenants:
       namespace: kube-system
       podLabels:
         k8s-app: kube-dns
+      # Addresses outside the cluster's pod network that also answer DNS for
+      # pods, such as a node-local DNS cache (kubespray's nodelocaldns listens
+      # on 169.254.25.10, which `excludeCidrs` otherwise blocks). Port 53 only.
+      extraCidrs: []
 
   # The provider and model menu. The admin decides what is offered; each user
   # picks a provider and model from it and brings their own key. A key is sent

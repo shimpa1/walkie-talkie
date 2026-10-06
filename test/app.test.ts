@@ -43,6 +43,7 @@ interface FakeElement {
   value: string;
   placeholder: string;
   hidden: boolean;
+  disabled?: boolean;
   dataset: Record<string, string>;
   classList: { toggle: () => void; add: () => void; remove: () => void };
   setAttribute: () => void;
@@ -2043,6 +2044,10 @@ interface SavedSetup {
   choice: Record<string, unknown> | null;
   /** When set, GET /api/me/firstmate answers these setup flags instead of deriving them. */
   setup?: Record<string, boolean>;
+  /** Whether the gateway runs per-user firstmates (Start is offered). */
+  provisioning?: boolean;
+  /** The managed firstmate's lifecycle state. */
+  state?: string;
 }
 
 function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
@@ -2061,7 +2066,8 @@ function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
         routine_available: chosen && key,
         ready: chosen && key,
       },
-      state: "none",
+      state: saved.state ?? "none",
+      provisioning: saved.provisioning ?? false,
     };
   };
   const routes: GatewayRoutes = (path, init) => {
@@ -2091,6 +2097,14 @@ function setupRoutes(): { routes: GatewayRoutes; saved: SavedSetup } {
       }
       saved.credentials = saved.credentials.filter((entry) => entry.name !== name);
       return jsonResponse({ deleted: true });
+    }
+    if (path === "/api/me/firstmate/start" && method === "POST") {
+      saved.state = "running";
+      return jsonResponse(view());
+    }
+    if (path === "/api/me/firstmate/stop" && method === "POST") {
+      saved.state = "stopped";
+      return jsonResponse(view());
     }
     if (path === "/api/me/firstmate") {
       if (method === "PUT") {
@@ -2298,6 +2312,114 @@ test("signing out stops this device's notifications from the signed-out user's f
     const order = gateway.requests.map((request) => request.path);
     assert.ok(order.indexOf("/api/push/unsubscribe") < order.indexOf("/auth/logout"), "the server is told while still signed in");
     assert.equal(device.current(), null);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a ready user starts and stops their own firstmate from Setup, warned that changes restart it", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const { routes, saved } = setupRoutes();
+  saved.choice = { harness: "opencode", provider: "anthropic", model: "claude-opus-5-5", routine_model: null };
+  saved.credentials = [{ name: "ANTHROPIC_API_KEY", provider: "anthropic", added_at: "2026-10-05T10:00:00Z", validated_at: "2026-10-05T10:00:00Z", status: "valid" }];
+  saved.provisioning = true;
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, routes);
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=setup");
+    await waitFor(() => getElement("setup-run-line").textContent !== "");
+    assert.equal(getElement("setup-run").hidden, false);
+    assert.equal(getElement("setup-run-line").textContent, "Not started yet.");
+    assert.equal(getElement("setup-start").hidden, false);
+    assert.equal(getElement("setup-start").disabled, false);
+    assert.equal(getElement("setup-stop").hidden, true);
+    assert.equal(getElement("setup-run-warning").hidden, true);
+
+    getElement("setup-start").dispatch("click");
+    await waitFor(() => getElement("setup-run-line").textContent === "Running.");
+    assert.ok(gateway.requests.some((request) => request.method === "POST" && request.path === "/api/me/firstmate/start"));
+    assert.equal(getElement("setup-start").hidden, true);
+    assert.equal(getElement("setup-stop").hidden, false);
+    assert.equal(getElement("setup-run-warning").hidden, false, "a running firstmate warns that key or model changes restart it");
+
+    // Saving a model while it runs says it restarts onto it.
+    getElement("setup-model").value = "claude-opus-5-5";
+    getElement("setup-model-form").dispatch("submit", { preventDefault: () => {} });
+    await waitFor(() => getElement("setup-status").textContent.includes("restarts onto it"));
+
+    getElement("setup-stop").dispatch("click");
+    await waitFor(() => getElement("setup-run-line").textContent.startsWith("Stopped."));
+    assert.equal(getElement("setup-start").hidden, false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Start is not offered where per-user firstmates are off, and waits for a ready setup", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  try {
+    const off = setupRoutes();
+    const plain = gatewayDouble(server, { signedIn: true, admin: false, login: "alice", firstmate: "none", setup: true }, off.routes);
+    const first = await bootApp(new MemoryStorage(), plain.fetchImpl, "?view=setup");
+    await waitFor(() => first.getElement("setup-summary").textContent !== "");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(first.getElement("setup-run").hidden, true);
+
+    const notReady = setupRoutes();
+    notReady.saved.provisioning = true;
+    const pending = gatewayDouble(server, { signedIn: true, admin: false, login: "bob", firstmate: "none", setup: true }, notReady.routes);
+    const second = await bootApp(new MemoryStorage(), pending.fetchImpl, "?view=setup");
+    await waitFor(() => second.getElement("setup-run-line").textContent !== "");
+    assert.equal(second.getElement("setup-run").hidden, false);
+    assert.equal(second.getElement("setup-start").disabled, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the Admin view lists removed users' homes and purges one only on a second tap, confirming it by name", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const base = adminRoutes();
+  const purges: string[] = [];
+  const routes: GatewayRoutes = (path, init, double) => {
+    if (path === "/api/admin/retained") {
+      return jsonResponse({
+        retained: [
+          { tid: "uk7m2p9q", login: "gone-user", removed_at: "2026-10-01T10:00:00Z", purge_at: "2026-10-31T10:00:00Z", purge_requested: false },
+        ],
+      });
+    }
+    if (path.startsWith("/api/admin/retained/")) {
+      purges.push(`${path} ${String(init?.body)}`);
+      return jsonResponse({ purge: "requested" });
+    }
+    return base(path, init, double);
+  };
+  const gateway = gatewayDouble(server, { signedIn: true }, routes);
+  try {
+    const { created, getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=admin");
+    await waitFor(() => actionButton(created, "purge", "uk7m2p9q") !== undefined);
+    assert.equal(getElement("retained-section").hidden, false);
+    const purge = actionButton(created, "purge", "uk7m2p9q");
+    assert.ok(purge);
+    purge.dispatch("click");
+    assert.equal(purge.textContent, "Tap again to delete for good");
+    assert.deepEqual(purges, [], "one tap deletes nothing");
+    purge.dispatch("click");
+    await waitFor(() => purges.length === 1);
+    assert.deepEqual(purges, ['/api/admin/retained/uk7m2p9q/purge {"confirm":"uk7m2p9q"}']);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the removed users' homes section stays hidden where per-user firstmates are off", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const gateway = gatewayDouble(server, { signedIn: true }, adminRoutes());
+  try {
+    const { created, getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=admin");
+    await waitFor(() => actionButton(created, "approve", "3003") !== undefined);
+    assert.equal(getElement("retained-section").hidden, true);
+    assert.equal(getElement("admin-status").textContent.startsWith("Could not load"), false);
   } finally {
     await server.close();
   }

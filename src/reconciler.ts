@@ -47,9 +47,13 @@ export interface ReconcilerDeps {
 export interface ReconcileResult {
   applied: number;
   pruned: number;
+  /** Removed users' home volumes deleted (or found gone) this run. */
+  purged: number;
   errors: number;
   observed: Record<string, TenantObserved>;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_SWEEP_MS = 60_000;
 export const DEFAULT_TRANSITION_SWEEP_MS = 5_000;
@@ -111,7 +115,7 @@ export function tenantSpec(
   owner: TenantOwner,
   choice: ModelChoice | null,
   catalog: Catalog,
-  tokens: { api: string; credentials: string },
+  tokens: { api: string; credentials: string; epoch: string },
 ): TenantSpec | null {
   const resolved = resolveChoice(catalog, choice);
   if (resolved === null) return null;
@@ -121,7 +125,8 @@ export function tenantSpec(
     configVersion: owner.configVersion,
     choice: resolved,
     githubKeyEnv: catalog.github?.keyEnv ?? [],
-    tokens,
+    tokens: { api: tokens.api, credentials: tokens.credentials },
+    tokenEpoch: tokens.epoch,
   };
 }
 
@@ -273,7 +278,7 @@ export class TenantReconciler {
 
   private async run(): Promise<ReconcileResult> {
     const { store, kube, params, catalog, tokens, now, log } = this.deps;
-    const result: ReconcileResult = { applied: 0, pruned: 0, errors: 0, observed: {} };
+    const result: ReconcileResult = { applied: 0, pruned: 0, purged: 0, errors: 0, observed: {} };
     const owners = store.listTenants().filter((owner) => owner.desired !== "none");
     const keep = new Set(owners.map((owner) => owner.tid));
 
@@ -282,6 +287,7 @@ export class TenantReconciler {
       const spec = tenantSpec(owner, store.modelChoice(owner.userId), catalog, {
         api: tokens.apiToken(owner.tid),
         credentials: tokens.credentialToken(owner.tid),
+        epoch: tokens.epoch(),
       });
       if (spec === null) {
         // Its provider or model left the catalog: leave what runs as it is,
@@ -344,6 +350,43 @@ export class TenantReconciler {
       }
     }
 
+    // 2b. Purge removed users' home volumes once their grace period is over,
+    //     or at once when an admin asked. A claim is deleted only after its
+    //     workload is gone, and the record is dropped only once the claim is
+    //     gone from the cluster, so no home volume is ever left untracked.
+    let purging = false;
+    for (const retained of store.listRetainedTenants()) {
+      if (keep.has(retained.tid)) continue;
+      const due = retained.purgeRequestedAt !== null || now() >= retained.removedAt + params.purgeAfterDays * DAY_MS;
+      if (!due) continue;
+      const names = tenantNames(retained.tid);
+      try {
+        const claim = await kube.get(KINDS.persistentVolumeClaim, names.claim);
+        if (claim === null) {
+          store.deleteRetainedTenant(retained.tid);
+          store.audit({
+            at: now(),
+            actor: null,
+            action: "tenant.purged",
+            subject: null,
+            detail: { tid: retained.tid, reason: retained.purgeRequestedAt !== null ? "purge_now" : "grace_elapsed" },
+          });
+          result.purged += 1;
+          log(`tenant ${retained.tid}: home volume purged`);
+          continue;
+        }
+        purging = true;
+        if (await kube.get(KINDS.statefulSet, names.workload)) continue;
+        const terminating = typeof (claim.metadata as Record<string, unknown> | undefined)?.deletionTimestamp === "string";
+        if (!terminating && (await kube.delete(KINDS.persistentVolumeClaim, names.claim))) {
+          log(`tenant ${retained.tid}: deleting home volume ${names.claim}`);
+        }
+      } catch (error) {
+        result.errors += 1;
+        log(`tenant ${retained.tid}: purge failed: ${error instanceof Error ? error.message : "error"}`);
+      }
+    }
+
     // 3. Read pod status back as each tenant's observed state.
     let pods: KubeObject[] | null = null;
     try {
@@ -377,7 +420,7 @@ export class TenantReconciler {
         store.recordTenantObserved(owner.tid, observed, at);
       }
     }
-    this.transitional = transitional;
+    this.transitional = transitional || purging;
     return result;
   }
 }

@@ -12,6 +12,7 @@ import {
   MANAGED_BY_LABEL,
   ROUTINE_RULE,
   TENANT_LABEL,
+  TOKEN_EPOCH_ANNOTATION,
   tenantAgentsConfig,
   tenantNames,
   tenantUpstream,
@@ -42,6 +43,7 @@ function spec(overrides: Partial<TenantSpec> = {}): TenantSpec {
     choice: choice(),
     githubKeyEnv: ["GH_TOKEN", "GITHUB_TOKEN"],
     tokens: { api: tokens.apiToken(TID), credentials: tokens.credentialToken(TID) },
+    tokenEpoch: tokens.epoch(),
     ...overrides,
   };
 }
@@ -54,7 +56,7 @@ function podSpec(objects: ReturnType<typeof buildTenantObjects>): Json {
 
 test("the tenant objects match the reviewed snapshot", () => {
   // Placeholder tokens: the snapshot holds the shape, not anything derived from a secret.
-  const objects = buildTenantObjects(tenantParams(), spec({ tokens: { api: "api-token", credentials: `${TID}.credential-token` } }));
+  const objects = buildTenantObjects(tenantParams(), spec({ tokens: { api: "api-token", credentials: `${TID}.credential-token` }, tokenEpoch: "epoch-0" }));
   const actual = `${JSON.stringify(objects, null, 2)}\n`;
   if (process.env.UPDATE_SNAPSHOTS === "1") writeFileSync(SNAPSHOT, actual);
   assert.equal(actual, readFileSync(SNAPSHOT, "utf8"), "run with UPDATE_SNAPSHOTS=1 and review the diff");
@@ -153,6 +155,21 @@ test("a stopped tenant keeps every object at zero replicas", () => {
   assert.deepEqual(stopped.configMap, running.configMap);
 });
 
+test("rotating the tenant-token master rolls every tenant once, onto new tokens", () => {
+  const before = new TenantTokens(TENANT_MASTER);
+  const after = new TenantTokens(`${TENANT_MASTER}-rotated`);
+  const build = (tokens: TenantTokens): Record<string, any> =>
+    buildTenantObjects(tenantParams(), spec({ tokens: { api: tokens.apiToken(TID), credentials: tokens.credentialToken(TID) }, tokenEpoch: tokens.epoch() })) as Record<string, any>;
+  const old = build(before);
+  const rotated = build(after);
+  assert.notEqual(rotated.statefulSet.spec.template.metadata.annotations[TOKEN_EPOCH_ANNOTATION], old.statefulSet.spec.template.metadata.annotations[TOKEN_EPOCH_ANNOTATION]);
+  assert.notDeepEqual(rotated.secret.data, old.secret.data);
+  // The same master builds the same objects: no restart without a rotation.
+  assert.deepEqual(build(before), old);
+  assert.match(before.epoch(), /^[0-9a-f]{16}$/);
+  assert.equal(before.epoch().includes(TENANT_MASTER.slice(0, 8)), false);
+});
+
 test("a key change (config version) and a model change both roll the pod template", () => {
   const annotations = (s: TenantSpec): Record<string, string> =>
     (buildTenantObjects(tenantParams(), s).statefulSet as Json).spec.template.metadata.annotations as Record<string, string>;
@@ -217,3 +234,10 @@ for (const [label, change, message] of [
     });
   });
 }
+
+test("the purge grace defaults to 30 days and stays within bounds", () => {
+  assert.equal(tenantParams().purgeAfterDays, 30);
+  assert.equal(tenantParams({ purgeAfterDays: 0 }).purgeAfterDays, 0);
+  assert.throws(() => tenantParams({ purgeAfterDays: -1 }), TenantParamsError);
+  assert.throws(() => tenantParams({ purgeAfterDays: 1.5 }), TenantParamsError);
+});

@@ -19,7 +19,7 @@ import { createDeliveryHandler } from "./tenant-delivery.js";
 import { runTenantsCommand } from "./tenants-cli.js";
 import { FirstmateEventSource, PushService } from "./push-service.js";
 import { describeBind, listenOn, startServer } from "./server.js";
-import { runVaultCommand } from "./vault-cli.js";
+import { resealOnStart, runVaultCommand } from "./vault-cli.js";
 import {
   generateVapidKeys,
   HttpPushSender,
@@ -69,6 +69,9 @@ async function runGateway(config: AppConfig, log: (line: string) => void): Promi
   const gateway = config.gateway;
   if (gateway === null) throw new ConfigError("gateway mode is missing its configuration");
   const store = await openGatewayStore(gateway.dbPath);
+  // A vault key rotation is a values + Doppler change: move any credential
+  // still sealed under an older key to the active one before serving.
+  if (gateway.vault !== null) resealOnStart(store, gateway.vault, log, Date.now());
   const oauth = new GithubOAuth({
     clientId: gateway.githubClientId,
     clientSecret: gateway.githubClientSecret,

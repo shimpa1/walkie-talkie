@@ -4,7 +4,7 @@ import { createECDH, randomBytes } from "node:crypto";
 
 import type { PushApi } from "../src/push-service.js";
 import type { PushSendSummary } from "../src/push-service.js";
-import type { PushSubscription } from "../src/webpush.js";
+import type { PushMessage, PushSubscription } from "../src/webpush.js";
 import { getJson, startTestServer } from "./helpers.js";
 
 function validSubscription(endpoint = "https://push.example.net/abc"): PushSubscription {
@@ -22,14 +22,17 @@ function validSubscription(endpoint = "https://push.example.net/abc"): PushSubsc
 interface StubPush extends PushApi {
   added: PushSubscription[];
   removed: string[];
+  notices: PushMessage[];
 }
 
 function stubPush(publicKey = "test-vapid-public-key"): StubPush {
   const added: PushSubscription[] = [];
   const removed: string[] = [];
+  const notices: PushMessage[] = [];
   return {
     added,
     removed,
+    notices,
     publicKey: () => publicKey,
     addSubscription: (subscription: PushSubscription) => {
       added.push(subscription);
@@ -40,6 +43,10 @@ function stubPush(publicKey = "test-vapid-public-key"): StubPush {
       return true;
     },
     sendTest: async (): Promise<PushSendSummary> => ({ sent: 2, failed: 0, removed: 1 }),
+    notify: async (message: PushMessage): Promise<PushSendSummary> => {
+      notices.push(message);
+      return { sent: 1, failed: 0, removed: 0 };
+    },
   };
 }
 
@@ -174,6 +181,37 @@ test("unsubscribe rejects a missing or invalid endpoint", async () => {
       400,
     );
     assert.deepEqual(push.removed, []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a notice is pushed to this firstmate's devices only for the bearer, and only in shape", async () => {
+  const push = stubPush();
+  const server = await startTestServer({ token: "t", push });
+  try {
+    const notice = { title: "Access request", body: "@octo asked to use walkie-talkie.", url: "/?view=admin", tag: "access-request" };
+    assert.equal((await postJson(server.url, "/api/push/notify", undefined, notice)).status, 401);
+    assert.equal((await postJson(server.url, "/api/push/notify", "wrong", notice)).status, 401);
+    const sent = await postJson(server.url, "/api/push/notify", "t", notice);
+    assert.equal(sent.status, 200);
+    assert.deepEqual(sent.body, { sent: 1, failed: 0, removed: 0 });
+    assert.deepEqual(push.notices, [notice]);
+
+    for (const bad of [
+      { ...notice, title: "" },
+      { ...notice, title: "x".repeat(81) },
+      { ...notice, body: "line\nbreak" },
+      { ...notice, url: "https://evil.example/" },
+      { ...notice, url: "//evil.example/" },
+      { ...notice, tag: "Not A Tag" },
+      { body: "no title" },
+    ]) {
+      assert.equal((await postJson(server.url, "/api/push/notify", "t", bad)).status, 400, JSON.stringify(bad));
+    }
+    assert.equal(push.notices.length, 1);
+    const wrongMethod = await fetch(`${server.url}/api/push/notify`, { headers: { authorization: "Bearer t" } });
+    assert.equal(wrongMethod.status, 405);
   } finally {
     await server.close();
   }

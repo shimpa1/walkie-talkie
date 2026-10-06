@@ -85,7 +85,7 @@ export async function runTenantsCommand(args: string[], io: CliIo): Promise<numb
         io.err(`tenant ${owner.tid} (@${owner.login}): not started, nothing is applied`);
         continue;
       }
-      const spec = tenantSpec(owner, store.modelChoice(owner.userId), catalog, { api: REDACTED, credentials: REDACTED });
+      const spec = tenantSpec(owner, store.modelChoice(owner.userId), catalog, { api: REDACTED, credentials: REDACTED, epoch: REDACTED });
       if (spec === null) {
         const applied = tenantRuns(owner) ? "nothing is applied" : "its StatefulSet is scaled to zero, nothing else is applied";
         io.err(`tenant ${owner.tid} (@${owner.login}): its model choice is not in the catalog; ${applied}`);

@@ -20,6 +20,9 @@ interface Harness {
   reconciler: TenantReconciler;
   logs: string[];
   tokens: TenantTokens;
+  /** A reconciler over the same cluster and store with another token master. */
+  withTokens: (tokens: TenantTokens) => TenantReconciler;
+  advance: (ms: number) => void;
   close: () => Promise<void>;
 }
 
@@ -29,21 +32,28 @@ async function harness(): Promise<Harness> {
   const logs: string[] = [];
   const tokens = new TenantTokens(TENANT_MASTER);
   const kube = new KubeClient({ server: fake.url, namespace: NAMESPACE, token: () => fake.token });
-  const reconciler = new TenantReconciler({
-    store,
-    kube,
-    params: tenantParams(),
-    catalog: tenantCatalog(),
-    tokens,
-    now: () => NOW,
-    log: (line) => logs.push(line),
-  });
+  let clock = NOW;
+  const withTokens = (master: TenantTokens): TenantReconciler =>
+    new TenantReconciler({
+      store,
+      kube,
+      params: tenantParams(),
+      catalog: tenantCatalog(),
+      tokens: master,
+      now: () => clock,
+      log: (line) => logs.push(line),
+    });
+  const reconciler = withTokens(tokens);
   return {
     fake,
     store,
     reconciler,
     logs,
     tokens,
+    withTokens,
+    advance: (ms) => {
+      clock += ms;
+    },
     close: async () => {
       await reconciler.stop();
       store.close();
@@ -270,10 +280,15 @@ test("a removed user's tenant is kept as retained until its home volume is purge
     assert.deepEqual(h.store.listRetainedTenants(), []);
     h.store.deleteUser(alice.user.id, NOW + 1);
     assert.equal(h.store.tenantByTid(alice.tid), null);
-    assert.deepEqual(h.store.listRetainedTenants(), [{ tid: alice.tid, removedAt: NOW + 1 }]);
+    assert.deepEqual(h.store.listRetainedTenants(), [{ tid: alice.tid, removedAt: NOW + 1, login: "alice", purgeRequestedAt: null }]);
     const nobody = h.store.createUser(6006, "carol", NOW);
     h.store.deleteUser(nobody.id, NOW + 2);
     assert.equal(h.store.listRetainedTenants().length, 1, "a user who never had a tenant leaves nothing behind");
+    // A tenant that was never started has no home volume, so nothing is retained.
+    const never = h.store.createUser(7007, "dan", NOW);
+    h.store.ensureTenant(never.id, NOW);
+    h.store.deleteUser(never.id, NOW + 3);
+    assert.equal(h.store.listRetainedTenants().length, 1, "a never-started tenant leaves nothing behind");
   } finally {
     await h.close();
   }
@@ -418,6 +433,100 @@ test("kick runs the reconciler soon after a desired-state change", async () => {
     h.reconciler.kick();
     for (let i = 0; i < 100 && statefulSet(h.fake, bob.tid) === undefined; i += 1) await new Promise((r) => setTimeout(r, 10));
     assert.ok(statefulSet(h.fake, bob.tid));
+  } finally {
+    await h.close();
+  }
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+
+function homeClaim(tid: string): KubeObject {
+  return {
+    apiVersion: "v1",
+    kind: "PersistentVolumeClaim",
+    metadata: { name: tenantNames(tid).claim, labels: { [MANAGED_BY_LABEL]: MANAGED_BY, [TENANT_LABEL]: tid } },
+  };
+}
+
+test("a removed user's home volume is kept for the grace period, then deleted and no longer tracked", async () => {
+  const h = await harness();
+  try {
+    const alice = startedUser(h.store, 4004, "alice");
+    await h.reconciler.reconcileOnce();
+    h.fake.seed("persistentvolumeclaims", homeClaim(alice.tid));
+    h.store.deleteUser(alice.user.id, NOW);
+
+    // Within the 30-day grace: the workload goes, the home stays.
+    h.advance(29 * DAY);
+    const kept = await h.reconciler.reconcileOnce();
+    assert.equal(kept.purged, 0);
+    assert.equal(statefulSet(h.fake, alice.tid), undefined);
+    assert.ok(h.fake.get("persistentvolumeclaims", tenantNames(alice.tid).claim));
+    assert.equal(h.store.listRetainedTenants().length, 1);
+
+    // Past it: the claim is deleted, and the record goes once the claim is gone.
+    h.advance(2 * DAY);
+    await h.reconciler.reconcileOnce();
+    assert.equal(h.fake.get("persistentvolumeclaims", tenantNames(alice.tid).claim), undefined);
+    const done = await h.reconciler.reconcileOnce();
+    assert.equal(done.purged, 1);
+    assert.deepEqual(h.store.listRetainedTenants(), []);
+    assert.equal(h.store.recentAudit(1)[0]?.action, "tenant.purged");
+    assert.deepEqual(h.store.recentAudit(1)[0]?.detail, { tid: alice.tid, reason: "grace_elapsed" });
+    assertOnlyGrantedCalls(h.fake);
+  } finally {
+    await h.close();
+  }
+});
+
+test("purge-now deletes a removed user's home at once, but only after its workload is gone", async () => {
+  const h = await harness();
+  try {
+    const alice = startedUser(h.store, 4004, "alice");
+    const bob = startedUser(h.store, 5005, "bob");
+    await h.reconciler.reconcileOnce();
+    h.fake.seed("persistentvolumeclaims", homeClaim(alice.tid));
+    h.fake.seed("persistentvolumeclaims", homeClaim(bob.tid));
+    h.store.deleteUser(alice.user.id, NOW);
+    assert.equal(h.store.requestPurge(alice.tid, NOW), true);
+    assert.equal(h.store.requestPurge("uzzzzzzz", NOW), false);
+    // Its StatefulSet is still there (say its listing failed): the claim is not touched yet.
+    h.fake.fail("statefulsets", 500);
+    await h.reconciler.reconcileOnce();
+    assert.ok(h.fake.get("persistentvolumeclaims", tenantNames(alice.tid).claim));
+    h.fake.fail("statefulsets", null);
+
+    await h.reconciler.reconcileOnce();
+    await h.reconciler.reconcileOnce();
+    assert.equal(h.fake.get("persistentvolumeclaims", tenantNames(alice.tid).claim), undefined);
+    assert.deepEqual(h.store.listRetainedTenants(), []);
+    assert.deepEqual(h.store.recentAudit(1)[0]?.detail, { tid: alice.tid, reason: "purge_now" });
+    assert.ok(h.fake.get("persistentvolumeclaims", tenantNames(bob.tid).claim), "another user's home is never touched");
+    assert.ok(statefulSet(h.fake, bob.tid));
+  } finally {
+    await h.close();
+  }
+});
+
+test("rotating the tenant-token master restarts each tenant once onto new tokens", async () => {
+  const h = await harness();
+  try {
+    const alice = startedUser(h.store, 4004, "alice");
+    const bob = startedUser(h.store, 5005, "bob");
+    await h.reconciler.reconcileOnce();
+    const epoch = (tid: string): string => statefulSet(h.fake, tid)?.spec.template.metadata.annotations["walkie-talkie.atus.hr/token-epoch"];
+    const secret = (tid: string): unknown => (h.fake.get("secrets", tenantNames(tid).tokens) as Json | undefined)?.data;
+    const before = { alice: [epoch(alice.tid), secret(alice.tid)], bob: [epoch(bob.tid), secret(bob.tid)] };
+
+    const rotated = h.withTokens(new TenantTokens(`${TENANT_MASTER}-rotated`));
+    await rotated.reconcileOnce();
+    for (const [tid, old] of [[alice.tid, before.alice], [bob.tid, before.bob]] as const) {
+      assert.notEqual(epoch(tid), old[0], "the pod template changes, so the pod restarts");
+      assert.notDeepEqual(secret(tid), old[1], "the Secret carries the new tokens");
+    }
+    const changes = h.fake.changes();
+    await rotated.reconcileOnce();
+    assert.equal(h.fake.changes(), changes, "once: the new master applies no further change");
   } finally {
     await h.close();
   }

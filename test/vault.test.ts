@@ -199,3 +199,39 @@ test("the vault rotate command re-seals through the gateway's settings and print
   const output = [...lines, run.stdout, run.stderr].join("\n");
   for (const secret of [CANARY, K1, K2]) assert.equal(output.includes(secret), false);
 });
+
+test("the gateway re-seals credentials under an older key at start-up, and a failure changes nothing", async () => {
+  const { resealOnStart } = await import("../src/vault-cli.js");
+  const store = openStore(":memory:");
+  const now = Date.parse("2026-10-06T12:00:00Z");
+  const alice = store.createUser(2001, "alice", now);
+  const bob = store.createUser(2002, "bob", now);
+  const v1 = Vault.fromSettings(`k1:${K1}`, "k1");
+  store.putCredential(alice.id, "A_KEY", "a", v1.seal(alice.id, "A_KEY", plain(CANARY)), null, now);
+  store.putCredential(bob.id, "B_KEY", "b", v1.seal(bob.id, "B_KEY", plain(`${CANARY}-b`)), null, now);
+  const logs: string[] = [];
+
+  // The new key is active but k1 has left the keyring too early: nothing moves.
+  assert.equal(resealOnStart(store, Vault.fromSettings(`k2:${K2}`, "k2"), (line) => logs.push(line), now), null);
+  assert.equal(store.countCredentialsNotUnder("k2"), 2);
+  assert.match(logs.at(-1) ?? "", /^vault: re-seal at start-up failed, nothing changed: cannot rotate the credential /);
+
+  // Both keys in the keyring, k2 active: every row moves at start-up.
+  const v2 = Vault.fromSettings(`k1:${K1},k2:${K2}`, "k2");
+  assert.deepEqual(resealOnStart(store, v2, (line) => logs.push(line), now), { rotated: 2, current: 0 });
+  assert.equal(store.countCredentialsNotUnder("k2"), 0);
+  assert.equal(logs.at(-1), "vault: re-sealed 2 credential(s) under k2 at start-up");
+  assert.deepEqual(store.recentAudit(1)[0]?.detail, { kid: "k2", rotated: 2 });
+  // Now k1 can leave the keyring: the rows open under k2 alone.
+  const only2 = Vault.fromSettings(`k2:${K2}`, "k2");
+  const sealed = store.sealedCredential(alice.id, "A_KEY");
+  assert.ok(sealed);
+  assert.equal(only2.open(alice.id, "A_KEY", sealed).toString("utf8"), CANARY);
+
+  // Nothing stale: no write, no audit.
+  const audits = store.recentAudit(100).length;
+  assert.deepEqual(resealOnStart(store, only2, (line) => logs.push(line), now), { rotated: 0, current: 0 });
+  assert.equal(store.recentAudit(100).length, audits);
+  assert.equal(logs.join("\n").includes(CANARY), false);
+  store.close();
+});

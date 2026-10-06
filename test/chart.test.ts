@@ -1001,3 +1001,30 @@ for (const [label, args, message] of [
     assert.match(rendered.stderr, message);
   });
 }
+
+test("tenants on: the purge grace, node-local DNS and the gateway's rotation marker render as declared", { skip: skipHelm }, async () => {
+  const { parseTenantParams } = await import("../src/tenant-params.js");
+  const rendered = render([...TENANTS_ON, "--set", "tenants.purgeAfterDays=7"]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.equal(parseTenantParams(JSON.parse(blockScalar(rendered.stdout, "tenants.json") ?? "{}")).purgeAfterDays, 7);
+
+  // The atus example lets tenants resolve through kubespray's node-local DNS
+  // cache, which sits in the link-local range the internet rule excludes.
+  const egress = findDoc(rendered.stdout, "NetworkPolicy", "firstmate-tenants-egress");
+  assert.ok(egress);
+  assert.match(egress, /- to:\n\s+- ipBlock:\n\s+cidr: 169\.254\.25\.10\/32\n\s+ports:\n\s+- protocol: UDP\n\s+port: 53\n\s+- protocol: TCP\n\s+port: 53\n/);
+  const plain = render([...TENANTS_ON, "--set", "tenants.networkPolicy.dns.extraCidrs=null"]);
+  assert.doesNotMatch(findDoc(plain.stdout, "NetworkPolicy", "firstmate-tenants-egress") ?? "", /169\.254\.25\.10/);
+
+  // A rotation marker restarts the gateway onto changed Doppler values; empty adds nothing.
+  const deployment = (args: string[]): string => findDoc(render(args).stdout, "Deployment", "firstmate-gateway") ?? "";
+  assert.doesNotMatch(deployment(TENANTS_ON), /secrets-rotation/);
+  assert.match(deployment([...TENANTS_ON, "--set", "gateway.secrets.rotation=2026-10-06"]), /walkie-talkie\.atus\.hr\/secrets-rotation: "2026-10-06"/);
+});
+
+test("the default purge grace is 30 days and a negative one fails the render", { skip: skipHelm }, async () => {
+  const { parseTenantParams } = await import("../src/tenant-params.js");
+  const rendered = render(TENANTS_ON);
+  assert.equal(parseTenantParams(JSON.parse(blockScalar(rendered.stdout, "tenants.json") ?? "{}")).purgeAfterDays, 30);
+  assert.notEqual(render([...TENANTS_ON, "--set", "tenants.purgeAfterDays=-1"]).status, 0);
+});
