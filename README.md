@@ -3,11 +3,15 @@
 A mobile companion for [firstmate](https://github.com/kunchenguid/firstmate):
 reach your fleet and direct it from a phone.
 
-The first slice, **Walkie-Talkie**, let you see what the fleet is doing and drop an
-instruction into firstmate's existing intake, end to end. This slice adds
-**push notifications**: firstmate can ping the phone when a pull request is
-ready for review, a decision is waiting, or a worker is blocked, plus a
-**Conversations** view of the fleet's live sessions and instruction threads.
+Read fleet status and conversations, send typed or dictated instructions, and
+receive push notifications when work needs attention. Run it beside one
+firstmate, or use the multi-user gateway for GitHub sign-in, invite-only access,
+device sessions, and independently configured per-user firstmates.
+
+The detailed [documentation index](docs/README.md) links user, admin,
+architecture, operations, and security guides. The merged atus configuration
+enables the gateway and the existing firstmate as a static tenant; managed
+per-user firstmates remain disabled pending the network-policy prerequisites.
 
 ## What it does
 
@@ -46,7 +50,7 @@ ready for review, a decision is waiting, or a worker is blocked, plus a
   pair and delivers to the browser's own push endpoint. There is no
   third-party account or hosted service to sign up for.
 
-It is deliberately narrow. The service:
+The standalone firstmate API is deliberately narrow. It:
 
 - invokes firstmate **only** through its documented scripts, using
   `child_process.execFile` with an argument array and `shell: false`;
@@ -58,14 +62,15 @@ It is deliberately narrow. The service:
   with `PRAGMA query_only`) to render a full conversation, never writing to it,
   and degrades to the terminal read when the store is absent;
 - never changes a project and never performs crew, merge, or deploy actions;
-- has exactly one write: it queues a note through `fm-inbox note`, exactly as
-  firstmate already accepts one;
+- has one firstmate write: it queues a note through `fm-inbox note`, exactly as
+  firstmate already accepts one (push subscriptions have their own store);
 - reads the fleet on a configurable interval and pushes an event notification
   exactly once per new event.
 
-It does **not** ship a native app, terminate TLS, steer or type into individual
-workers, carry notification actions, or perform any decision/approval/merge
-action. By default it serves one firstmate to whoever holds its token; the
+The companion does **not** ship a native app, terminate TLS, steer or type into
+individual workers, carry notification actions, or approve/merge fleet work.
+The gateway separately manages access and optional tenant provisioning. By
+default the standalone API serves one firstmate to whoever holds its token; the
 opt-in [multi-user gateway](#multi-user-gateway) mode signs people in with
 GitHub instead and routes each of them to their own firstmate.
 
@@ -125,9 +130,15 @@ cp walkie-talkie.config.example.json walkie-talkie.config.json
 
 The VAPID key pair and the phone subscriptions are written to
 `walkie-talkie.push.json`, which is **also gitignored** and created `0600` (owner
-only). The private key never leaves that file. Leave both VAPID keys unset and
-the service generates and persists a pair on first run; set them (together) only
+only). The private key remains server-side and is never returned by the API.
+Leave both VAPID keys unset and the service generates and persists a pair on
+first run; set them (together) only
 if you want to supply your own pair.
+
+In a container, set `FM_WT_PUSH_STORE` to a writable path on a persistent
+mount. The static chart and Compose do not override the default `/app`-relative
+store; managed tenant sidecars put it on their own home PVC. See
+[push persistence](docs/operations.md#persistence-backups-and-rollback).
 
 ### Generate a token
 
@@ -311,9 +322,10 @@ address.
 
 - **HTTPS only.** Caddy redirects HTTP to HTTPS and manages certificate renewal;
   the service never handles TLS itself.
-- **Token-gated.** Every endpoint except `/api/health` requires the bearer token.
-  Generate it with `openssl rand -hex 32`; it is compared in constant time and
-  stored only in the phone's browser.
+- **Token-gated API.** Standalone API endpoints require the bearer except
+  `/api/health` and `/api/push/config`; static assets are public. Generate the
+  token with `openssl rand -hex 32`; it is compared in constant time and kept
+  by the service as well as the phone's browser.
 - **No public app port.** In Compose the app port is only `expose`d on the
   private network, never `ports`-published. Under systemd it binds loopback. Only
   ports 80 and 443 face the internet.
@@ -437,7 +449,7 @@ phone. Its list holds two kinds of entry:
   and scrollable back through the whole session, with a timestamp on every
   message.
 
-**Composer** (changed 2026-10-03). Every open conversation - a thread or a live
+**Composer.** Every open conversation - a thread or a live
 session - has a message box pinned to the bottom of the pane, and a full-width
 **+ New conversation** button at the top of the list opens the same pane for a
 fresh thread. Every send queues a note to firstmate through the one existing
@@ -597,22 +609,23 @@ each with their own firstmate. In this mode it:
   - An admin invited its GitHub login.
   - An admin approved the **access request** that its first sign-in recorded.
 
-  With access requests turned off, any other account is refused and nothing is
-  recorded for it;
+  With access requests turned off, any other account is refused without
+  creating an access request; a refusal audit entry is still recorded;
 - keeps a **session** in an HttpOnly, `Secure`, `SameSite=Lax` cookie named
   `__Host-wt_session`. The server stores only its SHA-256 hash. A session ends
   after 30 idle days and after 90 days in any case, and on sign-out;
 - forwards each signed-in user's firstmate API calls (`/api/health`,
   `/api/status`, `/api/firstmate`, `/api/receipts`, `/api/sessions[/<id>]`,
-  `/api/note`, `/api/push/*`) **only to that user's own firstmate**, adding that
+  `/api/note`, and the push config/subscribe/unsubscribe/test routes)
+  **only to that user's own firstmate**, adding that
   firstmate's bearer token. The upstream comes from the session alone; no
   header, path or query parameter can choose it;
 - never runs firstmate scripts, never reads a firstmate home, and never stores
   or logs what it forwards.
 
 Each declared firstmate is an ordinary standalone walkie-talkie service, which
-keeps its own bearer token. The gateway is the only caller that holds that
-token.
+keeps its own bearer token. Keep its API private behind the gateway; during
+migration a legacy device may still hold the same shared token.
 
 | Setting | Environment variable | Config file key | Default |
 | --- | --- | --- | --- |
@@ -634,8 +647,10 @@ token.
 
 Registering the GitHub OAuth App:
 
-- Set the **Authorization callback URL** to
-  `<FM_WT_PUBLIC_ORIGIN>/auth/github/callback`.
+- Set the **Redirect URI** (older forms: Authorization callback URL) to
+  `<FM_WT_PUBLIC_ORIGIN>/auth/github/callback`. On atus it must be exactly
+  `https://walkie-talkie.atus.hr/auth/github/callback`. Keep wildcard matching
+  off, device flow off, and expiring user tokens on.
 - The client id is not secret.
 - Keep the client secret in your secret manager and pass it only through the
   environment.
@@ -644,7 +659,7 @@ A static tenant names its upstream as a bare origin, for example
 `http://firstmate.firstmate.svc.cluster.local:8787`. `tokenEnv` names the
 environment variable that holds that upstream's bearer token, so the token
 itself never sits in a config file. Find a GitHub numeric id with
-`gh api users/<login> --jq .id`.
+`gh-axi api users/<login> --jq .id`.
 
 `FM_WT_LEGACY_BEARER=1` is a migration bridge for a phone that still holds the
 old shared token:
@@ -826,7 +841,8 @@ server, the runtime's entrypoint calls the gateway's internal port:
 **The reconciler** keeps the cluster matching the store. It applies each
 desired firstmate with server-side apply (`fieldManager=walkie-talkie-gateway`,
 `force`), so a hand edit is reverted on the next sweep. It deletes the objects
-of a firstmate no longer desired, but never a volume claim. It reads pod status
+of a firstmate no longer desired, keeping its home claim for the separate
+retained-home purge described below. It reads pod status
 back as each firstmate's observed state. It runs every minute, every few seconds
 while one is starting or stopping, and uses only get, list, patch and delete in
 the tenant namespace. If a firstmate's chosen provider or model leaves the
@@ -953,8 +969,8 @@ These are the standalone service's endpoints. In gateway mode the gateway
 forwards the `/api/*` ones listed in [Multi-user gateway](#multi-user-gateway),
 with the session cookie in place of the bearer token.
 
-Every endpoint except `/api/health` and `/api/push/config` requires
-`Authorization: Bearer <token>`.
+Every standalone API endpoint except `/api/health` and `/api/push/config`
+requires `Authorization: Bearer <token>`. Static assets are public.
 
 | Method | Path | What it runs |
 | --- | --- | --- |
@@ -1113,5 +1129,7 @@ transitive supply-chain surface in production.
   `content-type`/`content-length` are dropped, so a firstmate cannot set a
   cookie on the gateway's origin.
 - The VAPID private key is written only to the gitignored, owner-only
-  (`0600`) push state file. Notifications contain a fixed title and body, a
-  deep link, and a tag - never a note body or record free text.
+  (`0600`) push state file. Fleet notifications contain a fixed title and body, a
+  deep link, and a tag - never a note body or record free text. The separate
+  authenticated `/api/push/notify` route accepts bounded notice text; admin
+  access-request notices include the requesting GitHub login.

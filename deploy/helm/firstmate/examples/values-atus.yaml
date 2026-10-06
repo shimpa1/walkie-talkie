@@ -2,13 +2,13 @@
 # StorageClass `beta3` (Rook-Ceph), TLS terminated at the shared Gateway with
 # the wildcard `*.atus.hr` certificate.
 #
-# Fresh install (the GitHub PAT is added to Doppler as key `GH_TOKEN`, not
-# passed on the command line):
+# Install or upgrade after OAuth registration and dedicated gateway secret
+# sync (docs/operations.md). The GitHub PAT is added to Doppler as `GH_TOKEN`.
+# A fresh install generates the static bearer; an upgrade preserves it:
 #
 #   helm upgrade --install firstmate deploy/helm/firstmate \
 #     --namespace firstmate --create-namespace \
-#     -f deploy/helm/firstmate/examples/values-atus.yaml \
-#     --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)"
+#     -f deploy/helm/firstmate/examples/values-atus.yaml
 #
 # The atus deployment takes no credentials from `--set`: the Doppler operator
 # syncs them into Secret `firstmate-doppler-secrets`, wired in as
@@ -136,17 +136,16 @@ credentials:
   create:
     walkieTalkieToken: ""
     githubToken: ""
-    # Pass harness credentials with --set (shown above) rather than committing
-    # them here, e.g. DEEPSEEK_API_KEY / OPENROUTER_API_KEY for the default
-    # opencode harness, or ANTHROPIC_API_KEY for a Claude harness.
+    # Static harness credentials come from firstmate-doppler-secrets above.
+    # Keep real keys out of values files and Helm command arguments.
     harness: {}
 
 # Declarative agents: opencode is the harness, and DeepSeek and OpenRouter are
 # API-key providers. The routine tier routes to Qwen3.8-27B on OpenRouter
 # (`qwen/qwen3.8-27b`), the same model the retired 3090 box self-hosted. Adding
 # or removing an agent is a change to these values, not an image rebuild.
-# Provider keys reach the container through the credential Secret:
-#   credentials.create.harness.DEEPSEEK_API_KEY=... etc.
+# Provider keys reach this static runtime through firstmate-doppler-secrets
+# in firstmate.extraEnvFrom above, not the gateway Secret or user vault.
 agents:
   enabled: true
   harnesses:

@@ -8,18 +8,21 @@ covers in-namespace termination.
 
 Full documentation, prerequisites, credentials, and the atus example live in
 [`docs/deploy-kubernetes.md`](../../../docs/deploy-kubernetes.md).
+The [documentation index](../../../docs/README.md) includes user/admin guides
+and [operations](../../../docs/operations.md) procedures. The atus values
+enable the gateway; its OAuth App and dedicated gateway Secret must already
+be configured. Routine upgrades preserve the static bearer. A fresh install
+generates it when none is supplied.
 
 ```sh
 helm upgrade --install firstmate deploy/helm/firstmate \
   --namespace firstmate --create-namespace \
-  -f deploy/helm/firstmate/examples/values-atus.yaml \
-  --set credentials.create.walkieTalkieToken="$(openssl rand -hex 32)"
+  -f deploy/helm/firstmate/examples/values-atus.yaml
 ```
 
 The firstmate runtime image is built from
 [`deploy/kubernetes/firstmate`](../../kubernetes/firstmate). The walkie-talkie
-image is built from the repository-root `Dockerfile` provided by the sibling
-Docker/Compose deploy slice, which is a prerequisite (merge it first).
+image is built from the repository-root `Dockerfile`.
 
 See [`values.yaml`](values.yaml) for every setting: images, the firstmate home
 path, `storageClass` (empty by default; the atus example sets `beta3`), storage
@@ -54,7 +57,7 @@ rather than silently overwriting the built-in credential.
 Deployment in front of the firstmate pod: GitHub sign-in, invite-only access, and
 per-user routing. The firstmate pod becomes a static tenant that only the gateway
 may reach, and the HTTPRoute moves to the gateway. The StatefulSet itself is
-unchanged. Secret values are accepted only as Secret references, and an inline
-value fails the render. See "Multi-user gateway" in
+unchanged. Gateway secret values are accepted only as Secret references, and
+an inline gateway secret value fails the render. See "Multi-user gateway" in
 [`docs/deploy-kubernetes.md`](../../../docs/deploy-kubernetes.md) for the GitHub
 OAuth App, the Doppler keys, the cutover and rollback.
