@@ -6,6 +6,7 @@ import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
   TENANT_LABEL,
+  tenantNames,
   type KubeObject,
   type TenantChoice,
   type TenantSpec,
@@ -166,6 +167,31 @@ async function keepClaimTemplates(kube: Kube, statefulSet: KubeObject): Promise<
   (statefulSet.spec as Record<string, unknown>).volumeClaimTemplates = templates;
 }
 
+/**
+ * Re-apply an existing StatefulSet exactly as stored but with no replicas: for
+ * a tenant that must not run but whose objects can no longer be built. Only
+ * server-populated fields are dropped. False when there is none.
+ */
+async function scaleToZero(kube: Kube, name: string): Promise<boolean> {
+  const existing = await kube.get(KINDS.statefulSet, name);
+  if (existing === null) return false;
+  const metadata = (existing.metadata ?? {}) as Record<string, unknown>;
+  const annotations = { ...((metadata.annotations ?? {}) as Record<string, unknown>) };
+  delete annotations["kubectl.kubernetes.io/last-applied-configuration"];
+  const spec = { ...((existing.spec ?? {}) as Record<string, unknown>), replicas: 0 };
+  await kube.apply(KINDS.statefulSet, {
+    apiVersion: existing.apiVersion,
+    kind: existing.kind,
+    metadata: {
+      name: metadata.name,
+      ...(metadata.labels !== undefined ? { labels: metadata.labels } : {}),
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+    },
+    spec,
+  });
+  return true;
+}
+
 export class TenantReconciler {
   private readonly deps: ReconcilerDeps;
   private readonly intervalMs: number;
@@ -256,8 +282,19 @@ export class TenantReconciler {
         credentials: tokens.credentialToken(owner.tid),
       });
       if (spec === null) {
-        // Its provider or model left the catalog: leave what runs as it is.
-        log(`tenant ${owner.tid}: its model choice is not in the catalog; left unchanged`);
+        // Its provider or model left the catalog: leave what runs as it is,
+        // but a stop or suspension still scales it to zero.
+        if (tenantRuns(owner)) {
+          log(`tenant ${owner.tid}: its model choice is not in the catalog; left unchanged`);
+          continue;
+        }
+        try {
+          if (await scaleToZero(kube, tenantNames(owner.tid).workload)) result.applied += 1;
+          log(`tenant ${owner.tid}: its model choice is not in the catalog; scaled to zero, otherwise unchanged`);
+        } catch (error) {
+          result.errors += 1;
+          log(`tenant ${owner.tid}: scale StatefulSet to zero failed: ${error instanceof Error ? error.message : "error"}`);
+        }
         continue;
       }
       const objects = buildTenantObjects(params, spec);

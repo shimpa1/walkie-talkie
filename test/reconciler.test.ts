@@ -329,6 +329,34 @@ test("a tenant whose choice left the catalog is left exactly as it is", async ()
   }
 });
 
+for (const how of ["suspended by an admin", "stopped by its user"] as const) {
+  test(`a tenant whose choice left the catalog is still scaled to zero when ${how}, and otherwise left as it is`, async () => {
+    const h = await harness();
+    try {
+      const { user, tid } = startedUser(h.store, 4004, "alice");
+      await h.reconciler.reconcileOnce();
+      h.store.setModelChoice(user.id, { harness: "opencode", provider: "retired", model: "gone", routineModel: null }, NOW);
+      const before = statefulSet(h.fake, tid);
+      await h.reconciler.reconcileOnce();
+      assert.deepEqual(statefulSet(h.fake, tid), before, "left untouched while it should run");
+
+      if (how === "suspended by an admin") h.store.setUserState(user.id, "suspended");
+      else h.store.setTenantDesired(user.id, "stopped", NOW);
+      const result = await h.reconciler.reconcileOnce();
+      assert.equal(result.errors, 0, h.logs.join("\n"));
+      const after = statefulSet(h.fake, tid);
+      assert.equal(after?.spec.replicas, 0);
+      assert.deepEqual({ ...after?.spec, replicas: 1 }, before?.spec, "nothing but the replicas changed");
+      assert.deepEqual(after?.metadata.labels, before?.metadata.labels);
+      assert.equal(result.observed[tid], "stopped");
+      assert.ok(h.fake.get("configmaps", tenantNames(tid).agents), "nothing is pruned");
+      assertOnlyGrantedCalls(h.fake);
+    } finally {
+      await h.close();
+    }
+  });
+}
+
 test("a tenant nobody started has no objects", async () => {
   const h = await harness();
   try {
