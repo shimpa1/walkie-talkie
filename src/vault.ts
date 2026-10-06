@@ -7,8 +7,9 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  * Keys come from a keyring, `FM_WT_VAULT_KEYS="k1:<base64 32 bytes>[,k2:...]"`,
  * held in a Secret injected only into the gateway. New writes use the active
  * key id (`FM_WT_VAULT_ACTIVE_KEY`); every sealed value records the id it was
- * sealed under, so an old key keeps decrypting until `vault rotate` re-seals
- * every row under the active one and the old id can leave the keyring.
+ * sealed under, so an old key keeps decrypting until the gateway's start-up
+ * re-seal (or `vault rotate`) moves every row to the active one and the old id
+ * can leave the keyring.
  *
  * Each value is bound to its owner and slot through the additional
  * authenticated data: "walkie-talkie/credential/v1" 0x00 user_id 0x00 name

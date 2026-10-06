@@ -17,8 +17,8 @@ import { wipe, type Vault } from "./vault.js";
  * returns it, any part of it, or a hash of it. Nothing here logs a key, a
  * request body or a provider's response. The choice and keys are what the
  * user's managed firstmate is provisioned from; once setup is ready the user
- * starts and stops it here, and replacing or deleting a key it was delivered
- * restarts it onto the change.
+ * starts and stops it here. Replacing a key it was delivered restarts it onto
+ * the change; deleting the chosen provider's key stops it.
  */
 
 export interface SetupContext {
