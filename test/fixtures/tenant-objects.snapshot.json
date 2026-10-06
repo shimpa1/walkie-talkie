@@ -81,7 +81,7 @@
     "spec": {
       "serviceName": "fm-uk7m2p9q",
       "replicas": 1,
-      "podManagementPolicy": "OrderedReady",
+      "podManagementPolicy": "Parallel",
       "updateStrategy": {
         "type": "RollingUpdate"
       },

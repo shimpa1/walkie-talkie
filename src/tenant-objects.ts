@@ -304,7 +304,10 @@ export function buildTenantObjects(params: TenantParams, spec: TenantSpec): Tena
     spec: {
       serviceName: names.workload,
       replicas: spec.running ? 1 : 0,
-      podManagementPolicy: "OrderedReady",
+      // One replica, so ordering buys nothing; Parallel lets a rolling update
+      // replace a pod that is not Ready (OrderedReady would wait on it forever).
+      // The field is immutable, but no tenant StatefulSet exists before this.
+      podManagementPolicy: "Parallel",
       updateStrategy: { type: "RollingUpdate" },
       selector: { matchLabels: { ...selector } },
       template: {

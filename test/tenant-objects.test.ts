@@ -146,6 +146,9 @@ test("a stopped tenant keeps every object at zero replicas", () => {
   const stopped = buildTenantObjects(tenantParams(), spec({ running: false }));
   assert.equal((running.statefulSet as Json).spec.replicas, 1);
   assert.equal((stopped.statefulSet as Json).spec.replicas, 0);
+  // A not-Ready pod never blocks a corrected template from rolling out.
+  assert.equal((running.statefulSet as Json).spec.podManagementPolicy, "Parallel");
+  assert.equal((running.statefulSet as Json).spec.updateStrategy.type, "RollingUpdate");
   assert.deepEqual(stopped.secret, running.secret);
   assert.deepEqual(stopped.configMap, running.configMap);
 });
