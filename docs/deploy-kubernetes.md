@@ -584,13 +584,13 @@ cluster.
 | 2026-10-03 | `e4dc8b5e7db3` (rebuilt) | `6eb5b4543933` (unchanged) | main at `e4dc8b5` (merge of PR #26). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `e4dc8b5`, so the running runtime image already matches main and was not rebuilt. |
 | 2026-10-04 | `d9702fcbf9d9` (rebuilt) | `6eb5b4543933` (unchanged) | main at `d9702fc` (merge of PR #28). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `d9702fc`, so the running runtime image already matches main and was not rebuilt. |
 | 2026-10-04 | `36ac8b81ad5b` (rebuilt) | `6eb5b4543933` (unchanged) | main at `36ac8b8` (merge of PR #30). The runtime build context `deploy/kubernetes/firstmate` is identical between `6eb5b45` and `36ac8b8`, so the running runtime image already matches main and was not rebuilt. |
+| 2026-10-06 | sidecar `36ac8b81ad5b` (unchanged); gateway `b9c3cf045ff9` (new) | `6eb5b4543933` (unchanged); tenant runtime `b9c3cf045ff9` pinned, unused (tenants off) | main at `ca818fe` (merge of PR #38): multi-user gateway on, Helm revision 20. Before it: Doppler config `walkie-talkie`/`gateway`, token Secret `doppler-token-gateway`, and DopplerSecret `doppler-firstmate-gateway` (atus `deployments/firstmate/`, PR #76) applied, with `firstmate-gateway-secrets` synced. The StatefulSet rendered identical to revision 19, so `firstmate-0` did not restart. Verified: `/healthz` ok; `/auth/session` reports gateway mode with the legacy bridge; the old phone token loads Status and Conversations (`x-wt-legacy-auth: deprecated`); `/auth/github/start` redirects with the OAuth App's client id and callback; only gateway pods reach `firstmate:8787` (a probe pod times out); and `firstmate-0` carries no `GH_OAUTH_*` or `WT_*` variable. |
 
 ## Multi-user gateway
 
-*Written 2026-10-05. The chart support is merged, and since 2026-10-06 the
-atus values set `gateway.enabled: true` (see [Cutover](#cutover-the-enable-pr)).
-A merged values change is not a deploy: the gateway runs on atus only once the
-captain has it deployed.*
+*Written 2026-10-05. Deployed on atus 2026-10-06 (Helm revision 20) with
+`gateway.enabled: true` and per-user firstmates off; see the
+[atus deploy record](#atus-deploy-record).*
 
 `gateway.enabled: true` adds walkie-talkie's multi-user gateway
 (`FM_WT_MODE=gateway`, see the README's "Multi-user gateway") as its own
