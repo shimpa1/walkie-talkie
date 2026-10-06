@@ -19,6 +19,8 @@ import { newCodeVerifier, OAuthError, type GithubIdentity } from "./github-oauth
 import { readBody, sendError, sendJson, serveStatic } from "./http-util.js";
 import { KeyChecker } from "./key-check.js";
 import { clientAddress, RateLimiter } from "./rate-limit.js";
+import { tenantState, type FirstmateState } from "./reconciler.js";
+import { tenantUpstream } from "./tenant-objects.js";
 
 /**
  * The multi-user gateway: the public front door in front of many firstmates.
@@ -32,6 +34,11 @@ import { clientAddress, RateLimiter } from "./rate-limit.js";
  * (an admin, or the owner of a declared tenant), when an admin invited its
  * login, or when an admin approved the access request its first sign-in
  * recorded.
+ *
+ * A user's firstmate is either declared (a static tenant the operator runs) or
+ * managed: provisioned by the gateway's reconciler from the user's own choice,
+ * when tenant provisioning is configured. Either way the upstream comes only
+ * from the session's user.
  */
 
 /** The sign-in client the gateway needs; GithubOAuth implements it. */
@@ -55,6 +62,10 @@ export interface GatewayDeps {
   keyCheckLimits?: { perUser: RateLimiter; global: RateLimiter };
   /** Overrides the key checker; tests bound its timeout. */
   keyChecker?: KeyChecker;
+  /** Overrides where a managed tenant is reached (its in-cluster Service); tests point it at a local fake. */
+  tenantUpstream?: (tid: string) => string;
+  /** The tenant reconciler, kicked on every desired-state change; absent outside a cluster. */
+  reconciler?: { kick: () => void } | null;
 }
 
 /** Who a request acts for. */
@@ -70,6 +81,9 @@ interface Principal {
 type SignInOutcome = "failed" | "expired" | "denied" | "not_invited" | "pending" | "suspended" | "busy";
 
 export const SESSION_SCHEMA = "walkie-talkie-session.v1";
+
+/** A firstmate the user has (declared, or managed and desired running). */
+const STARTED_STATES = new Set<string>(["ready", "provisioning", "starting", "running", "crashloop"]);
 
 const MAX_CODE_LENGTH = 512;
 const MAX_STATE_LENGTH = 512;
@@ -143,13 +157,51 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
   const declared = new Set<number>([...gw.admins, ...tenants.keys()]);
   const legacyAdmin = gw.admins[0];
 
+  const managed = gw.tenants;
   const isAdmin = (githubId: number): boolean => gw.admins.includes(githubId);
+
+  /** A managed user's firstmate lifecycle; a declared one is always ready. */
+  const firstmateState = (user: UserRecord): FirstmateState | "ready" => {
+    if (tenants.has(user.githubId)) return "ready";
+    if (managed === null) return "none";
+    return tenantState(store.tenantByUser(user.id));
+  };
+
+  const kick = (): void => deps.reconciler?.kick();
+
+  /**
+   * Admission: with provisioning on, every user without a declared firstmate
+   * may get a managed one, so approving or inviting past `maxTenants` is
+   * refused. Open invites count, since each becomes a user on sign-in, and so
+   * do removed users' tenants whose home volume is still in the cluster.
+   */
+  const admissionOpen = (): boolean => {
+    if (managed === null) return true;
+    const users = store.listUsers().filter((user) => !tenants.has(user.githubId)).length;
+    const held = users + store.listInvites(now()).length + store.listRetainedTenants().length;
+    return held < managed.params.maxTenants;
+  };
+
+  /**
+   * Starting: a tenant that already holds its resources may always start
+   * again; a new one needs room beside every other tenant and every retained
+   * home volume.
+   */
+  const canStart = (userId: string): boolean => {
+    if (managed === null) return false;
+    const own = store.tenantByUser(userId);
+    if (own !== null && own.desired !== "none") return true;
+    return store.countActiveTenants() + store.listRetainedTenants().length < managed.params.maxTenants;
+  };
+
   const account: AccountContext = {
     store,
     now,
     isAdmin,
     isDeclared: (githubId) => declared.has(githubId),
-    hasFirstmate: (githubId) => tenants.has(githubId),
+    firstmateState,
+    admissionOpen,
+    kick,
     log,
   };
   // Setup (catalog, keys, model choice) is on when a catalog is configured;
@@ -164,6 +216,11 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
           checker: deps.keyChecker ?? new KeyChecker({ allowedOrigins: validationOrigins(gw.catalog) }),
           now,
           hasStaticTenant: (githubId) => tenants.has(githubId),
+          firstmateState: (user) => {
+            const state = firstmateState(user);
+            return state === "ready" ? "running" : state;
+          },
+          provisioning: managed === null ? null : { canStart, kick },
           checkLimits: deps.keyCheckLimits ?? defaultKeyCheckLimits(now),
           log,
         };
@@ -266,24 +323,28 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
 
   /** Open probe the app uses to learn the mode and whether it is signed in. */
   function sessionInfo(req: IncomingMessage, res: ServerResponse): void {
-    const principal = sessionPrincipal(req);
-    const user =
-      principal === null
-        ? null
-        : {
-            login: principal.login,
-            admin: isAdmin(principal.githubId),
-            firstmate: tenants.has(principal.githubId) ? "ready" : "none",
-            // Whether this user sets up their own firstmate (provider, key, model).
-            setup: setup !== null && !tenants.has(principal.githubId),
-          };
+    const caller = sessionCaller(req);
+    let user: Record<string, unknown> | null = null;
+    if (caller !== null) {
+      const state = firstmateState(caller.user);
+      user = {
+        login: caller.user.login,
+        admin: isAdmin(caller.user.githubId),
+        // "ready": the app opens on Status (a declared firstmate, or a managed
+        // one the user started); "none": it opens on Setup.
+        firstmate: STARTED_STATES.has(state) ? "ready" : "none",
+        firstmate_state: state === "ready" ? "running" : state,
+        // Whether this user sets up their own firstmate (provider, key, model).
+        setup: setup !== null && !tenants.has(caller.user.githubId),
+      };
+    }
     sendJson(
       res,
       200,
       JSON.stringify({
         schema: SESSION_SCHEMA,
         mode: "gateway",
-        signed_in: principal !== null,
+        signed_in: caller !== null,
         user,
         legacy_bearer: gw.legacyBearer,
       }),
@@ -429,6 +490,22 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
     sendJson(res, 200, JSON.stringify({ ok: true }));
   }
 
+  /**
+   * The caller's own firstmate, from the session alone: a declared upstream,
+   * or the managed tenant's in-cluster Service with its derived token. A
+   * managed firstmate that is not running yet answers with its state instead.
+   */
+  function upstreamFor(principal: Principal): { upstream: string; token: string } | FirstmateState {
+    const declaredTenant = tenants.get(principal.githubId);
+    if (declaredTenant !== undefined) return { upstream: declaredTenant.upstream, token: declaredTenant.token };
+    if (managed === null || principal.userId === null) return "none";
+    const tenant = store.tenantByUser(principal.userId);
+    const state = tenantState(tenant);
+    if (tenant === null || state !== "running") return state;
+    const upstream = deps.tenantUpstream?.(tenant.tid) ?? tenantUpstream(managed.params, tenant.tid);
+    return { upstream, token: managed.tokens.apiToken(tenant.tid) };
+  }
+
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     if (isSetupPath(url.pathname)) {
       // Like the account routes: a real GitHub session only, never the shared token.
@@ -467,14 +544,17 @@ export function createGatewayHandler(deps: GatewayDeps): (req: IncomingMessage, 
       return sendError(res, 403, "cross-site request refused");
     }
 
-    const tenant = tenants.get(principal.githubId);
-    if (tenant === undefined) return sendError(res, 409, "firstmate_not_provisioned");
+    const target = upstreamFor(principal);
+    if (typeof target === "string") {
+      if (target === "none") return sendError(res, 409, "firstmate_not_provisioned");
+      return sendJson(res, 409, JSON.stringify({ error: "firstmate_not_running", state: target }));
+    }
 
     if (principal.via === "legacy") res.setHeader("x-wt-legacy-auth", "deprecated");
     await proxyToTenant(
       req,
       res,
-      { upstream: tenant.upstream, token: tenant.token },
+      target,
       { pathname: url.pathname, search: url.search },
       route,
       {

@@ -784,3 +784,220 @@ for (const [label, mutate, message] of [
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Per-user firstmates (tenants.enabled)
+// ---------------------------------------------------------------------------
+
+/** The atus example with the gateway and per-user firstmates on. */
+const TENANTS_ON = [...GATEWAY_ON, "--set", "tenants.enabled=true"];
+
+const TENANT_OBJECTS = [
+  "LimitRange/firstmate-tenants",
+  "Namespace/firstmate-tenants",
+  "NetworkPolicy/firstmate-tenants-default-deny",
+  "NetworkPolicy/firstmate-tenants-egress",
+  "NetworkPolicy/firstmate-tenants-from-gateway",
+  "ResourceQuota/firstmate-tenants",
+  "Role/firstmate-gateway",
+  "RoleBinding/firstmate-gateway",
+  "ServiceAccount/fm-tenant",
+];
+
+/**
+ * The Role's rules as data, resource -> verbs. The chart writes each rule as
+ * one `- apiGroups:` item whose fields are flow sequences, which are JSON.
+ */
+function roleRules(role: string): Record<string, string[]> {
+  const items: Array<Record<string, unknown>> = [];
+  for (const line of role.slice(role.indexOf("\nrules:\n") + "\nrules:\n".length).split("\n")) {
+    const field = /^  (- |  )([A-Za-z]+): (.*)$/.exec(line);
+    if (field === null) break;
+    if (field[1] === "- ") items.push({});
+    const item = items.at(-1);
+    assert.ok(item, "a rule field outside a rule");
+    item[field[2] ?? ""] = JSON.parse(field[3] ?? "");
+  }
+  const rules: Record<string, string[]> = {};
+  for (const item of items) {
+    assert.deepEqual(Object.keys(item).sort(), ["apiGroups", "resources", "verbs"]);
+    for (const resource of item.resources as string[]) rules[resource] = item.verbs as string[];
+  }
+  return rules;
+}
+
+test("tenants off: the gateway renders no tenant namespace, no Role and no API token", { skip: skipHelm }, () => {
+  const rendered = render(GATEWAY_ON);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  for (const object of TENANT_OBJECTS) assert.equal(inventory(rendered.stdout).includes(object), false, object);
+  const deployment = findDoc(rendered.stdout, "Deployment", "firstmate-gateway");
+  assert.ok(deployment);
+  assert.match(deployment, /automountServiceAccountToken: false/);
+  assert.doesNotMatch(deployment, /FM_WT_TENANT_PARAMS|FM_WT_INTERNAL_PORT/);
+  assert.equal(blockScalar(rendered.stdout, "tenants.json"), null);
+});
+
+test("tenants on: the tenant namespace, its isolation and the gateway's Role render, and nothing else changes", { skip: skipHelm }, () => {
+  const off = render(GATEWAY_ON);
+  const on = render(TENANTS_ON);
+  assert.equal(on.status, 0, on.stderr);
+  assert.deepEqual(inventory(on.stdout), [...inventory(off.stdout), ...TENANT_OBJECTS].sort());
+  // The captain's pod is still untouched.
+  assert.equal(findDoc(on.stdout, "StatefulSet", "firstmate"), findDoc(off.stdout, "StatefulSet", "firstmate"));
+  for (const object of TENANT_OBJECTS.filter((entry) => !entry.startsWith("Namespace/"))) {
+    const [kind = "", name = ""] = object.split("/");
+    assert.match(findDoc(on.stdout, kind, name) ?? "", /^  namespace: firstmate-tenants$/m, `${object} lives in the tenant namespace`);
+  }
+
+  const namespace = findDoc(on.stdout, "Namespace", "firstmate-tenants");
+  assert.ok(namespace);
+  for (const label of ["enforce", "audit", "warn"]) {
+    assert.match(namespace, new RegExp(`pod-security\\.kubernetes\\.io/${label}: restricted`));
+  }
+  assert.match(namespace, /helm\.sh\/resource-policy: keep/);
+
+  const account = findDoc(on.stdout, "ServiceAccount", "fm-tenant");
+  assert.ok(account);
+  assert.match(account, /automountServiceAccountToken: false/);
+
+  const deployment = findDoc(on.stdout, "Deployment", "firstmate-gateway");
+  assert.ok(deployment);
+  assert.match(deployment, /automountServiceAccountToken: true/);
+  assert.match(deployment, /name: FM_WT_TENANT_PARAMS\n\s+value: "\/etc\/walkie-talkie\/tenant-params\/tenants\.json"/);
+  assert.match(deployment, /name: FM_WT_INTERNAL_PORT\n\s+value: "8788"/);
+  assert.notEqual(
+    /checksum\/tenant-params: (\S+)/.exec(deployment)?.[1],
+    /checksum\/tenant-params: (\S+)/.exec(findDoc(off.stdout, "Deployment", "firstmate-gateway") ?? "")?.[1],
+    "turning tenants on restarts the gateway onto its parameters",
+  );
+});
+
+test("tenants on: the gateway's Role is exactly the reconciler's verbs, bound to the gateway only", { skip: skipHelm }, async () => {
+  const { GATEWAY_ROLE } = await import("./fake-kube.js");
+  const rendered = render(TENANTS_ON);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const role = findDoc(rendered.stdout, "Role", "firstmate-gateway");
+  assert.ok(role);
+  assert.deepEqual(roleRules(role), GATEWAY_ROLE);
+  const binding = findDoc(rendered.stdout, "RoleBinding", "firstmate-gateway");
+  assert.ok(binding);
+  assert.match(binding, /roleRef:\n\s+apiGroup: rbac\.authorization\.k8s\.io\n\s+kind: Role\n\s+name: firstmate-gateway/);
+  assert.match(binding, /subjects:\n\s+- kind: ServiceAccount\n\s+name: firstmate-gateway\n\s+namespace: firstmate$/);
+  assert.doesNotMatch(rendered.stdout, /kind: ClusterRole/);
+});
+
+test("tenants on: the quota is maxTenants times one tenant pod, and the limit range sets defaults", { skip: skipHelm }, () => {
+  const rendered = render(TENANTS_ON);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const quota = findDoc(rendered.stdout, "ResourceQuota", "firstmate-tenants");
+  assert.ok(quota);
+  // (250m + 50m) CPU, (512 + 64) MiB requested and (2048 + 256) MiB limited per pod; 10Gi each.
+  assert.match(
+    quota,
+    /hard:\n\s+pods: "5"\n\s+requests\.cpu: "1500m"\n\s+requests\.memory: "2880Mi"\n\s+limits\.memory: "11520Mi"\n\s+requests\.storage: "51200Mi"\n\s+persistentvolumeclaims: "5"/,
+  );
+  const limits = findDoc(rendered.stdout, "LimitRange", "firstmate-tenants");
+  assert.ok(limits);
+  assert.match(limits, /type: Container\n\s+default:\n\s+memory: "256Mi"\n\s+defaultRequest:\n\s+cpu: "50m"\n\s+memory: "64Mi"\n\s+max:\n\s+memory: "2Gi"/);
+  assert.match(limits, /type: PersistentVolumeClaim\n\s+max:\n\s+storage: "10Gi"/);
+
+  const custom = render([
+    ...TENANTS_ON,
+    "-f",
+    valuesFile({
+      tenants: {
+        maxTenants: 2,
+        persistence: { size: "1Ti" },
+        resources: {
+          firstmate: { requests: { cpu: 1.5, memory: "1Gi" }, limits: { memory: "4Gi" } },
+          init: { requests: { cpu: "2", memory: "16Mi" }, limits: { memory: "64Mi" } },
+        },
+      },
+    }),
+  ]);
+  assert.equal(custom.status, 0, custom.stderr);
+  // The init container's 2 CPUs outweigh the app containers' 1.55, so a pod counts 2000m.
+  assert.match(
+    findDoc(custom.stdout, "ResourceQuota", "firstmate-tenants") ?? "",
+    /pods: "2"\n\s+requests\.cpu: "4000m"\n\s+requests\.memory: "2176Mi"\n\s+limits\.memory: "8704Mi"\n\s+requests\.storage: "2097152Mi"/,
+  );
+});
+
+test("tenants on: tenants are default-deny, reachable only from the gateway, and reach only DNS, the gateway and the internet", { skip: skipHelm }, () => {
+  const rendered = render([...TENANTS_ON, "--set", "tenants.networkPolicy.extraExcludeCidrs={198.18.0.0/15,fd00:10::/64}"]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const deny = findDoc(rendered.stdout, "NetworkPolicy", "firstmate-tenants-default-deny");
+  assert.ok(deny);
+  assert.match(deny, /spec:\n\s+podSelector: \{\}\n\s+policyTypes:\n\s+- Ingress\n\s+- Egress/);
+
+  const ingress = findDoc(rendered.stdout, "NetworkPolicy", "firstmate-tenants-from-gateway");
+  assert.ok(ingress);
+  assert.match(
+    ingress,
+    /- from:\n\s+- namespaceSelector:\n\s+matchLabels:\n\s+kubernetes\.io\/metadata\.name: firstmate\n\s+podSelector:\n\s+matchLabels:\n\s+app\.kubernetes\.io\/name: firstmate-gateway\n\s+app\.kubernetes\.io\/instance: firstmate\n\s+app\.kubernetes\.io\/component: gateway\n\s+ports:\n\s+- protocol: TCP\n\s+port: 8787$/,
+  );
+
+  const egress = findDoc(rendered.stdout, "NetworkPolicy", "firstmate-tenants-egress");
+  assert.ok(egress);
+  assert.match(egress, /kubernetes\.io\/metadata\.name: kube-system\n\s+podSelector:\n\s+matchLabels:\n\s+k8s-app: kube-dns\n\s+ports:\n\s+- protocol: UDP\n\s+port: 53\n\s+- protocol: TCP\n\s+port: 53/);
+  assert.match(egress, /app\.kubernetes\.io\/component: gateway\n\s+ports:\n\s+- protocol: TCP\n\s+port: 8788\n/);
+  const v4 = /cidr: 0\.0\.0\.0\/0\n\s+except:\n((?:\s+- \S+\n)+)/.exec(egress)?.[1] ?? "";
+  for (const cidr of ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8", "198.18.0.0/15"]) {
+    assert.ok(v4.includes(`- ${cidr}\n`), `IPv4 egress excludes ${cidr}`);
+  }
+  assert.equal(v4.includes("fd00"), false);
+  const v6 = /cidr: ::\/0\n\s+except:\n((?:\s+- \S+\n)+)/.exec(egress)?.[1] ?? "";
+  for (const cidr of ["fc00::/7", "fe80::/10", "fd00:10::/64"]) assert.ok(v6.includes(`- ${cidr}\n`), `IPv6 egress excludes ${cidr}`);
+  assert.match(egress, /ports:\n\s+- protocol: TCP\n\s+port: 443\n\s+- protocol: TCP\n\s+port: 80\n\s+- protocol: TCP\n\s+port: 22$/);
+
+  // The gateway's internal port admits the tenant namespace only (phase 3's policy).
+  assert.match(
+    findDoc(rendered.stdout, "NetworkPolicy", "firstmate-gateway") ?? "",
+    /kubernetes\.io\/metadata\.name: firstmate-tenants\n\s+ports:\n\s+- protocol: TCP\n\s+port: internal/,
+  );
+});
+
+test("tenants on: the rendered tenant parameters are what the gateway's own parser accepts", { skip: skipHelm }, async () => {
+  const { parseTenantParams } = await import("../src/tenant-params.js");
+  const rendered = render([...TENANTS_ON, "--set", "tenants.persistence.storageClass=beta3"]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  const raw = blockScalar(rendered.stdout, "tenants.json");
+  assert.ok(raw, "tenants.json is rendered");
+  const params = parseTenantParams(JSON.parse(raw));
+  assert.equal(params.namespace, "firstmate-tenants");
+  assert.equal(params.maxTenants, 5);
+  assert.equal(params.gatewayInternalUrl, "http://firstmate-gateway-internal.firstmate.svc:8788");
+  assert.equal(params.home, "/home/firstmate");
+  assert.equal(params.port, 8787);
+  // Images fall back to the firstmate runtime and the gateway's (here walkieTalkie's) image.
+  assert.equal(params.images.firstmate.image, "shimpa/firstmate-runtime:6eb5b4543933");
+  assert.equal(params.images.walkieTalkie.image, "shimpa/walkie-talkie:36ac8b81ad5b");
+  assert.equal(params.harnessCommand, `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"`);
+  assert.deepEqual(params.storage, { storageClass: "beta3", size: "10Gi" });
+  assert.deepEqual(params.security, { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 });
+
+  const pinned = render([
+    ...TENANTS_ON,
+    "--set", "tenants.image.firstmate.tag=abc123def456",
+    "--set", "tenants.image.walkieTalkie.repository=example/wt",
+    "--set", "tenants.image.walkieTalkie.tag=fedcba654321",
+  ]);
+  const pinnedParams = parseTenantParams(JSON.parse(blockScalar(pinned.stdout, "tenants.json") ?? "{}"));
+  assert.equal(pinnedParams.images.firstmate.image, "shimpa/firstmate-runtime:abc123def456");
+  assert.equal(pinnedParams.images.walkieTalkie.image, "example/wt:fedcba654321");
+});
+
+for (const [label, args, message] of [
+  ["without the gateway", ["--set", "tenants.enabled=true"], /tenants\.enabled requires gateway\.enabled/],
+  ["without the gateway's network policies", [...TENANTS_ON, "--set", "gateway.networkPolicy.enabled=false"], /requires gateway\.networkPolicy\.enabled/],
+  ["with a latest image", [...TENANTS_ON, "--set", "tenants.image.firstmate.tag=latest"], /immutable tag/],
+  ["with a CPU the quota cannot add up", [...TENANTS_ON, "--set", "tenants.resources.firstmate.requests.cpu=1e3"], /must be millicores/],
+  ["with memory in decimal units", [...TENANTS_ON, "--set", "tenants.resources.walkieTalkie.limits.memory=256M"], /must be in Mi, Gi or Ti/],
+  ["without a memory request", [...TENANTS_ON, "--set", "tenants.resources.init.requests.memory=null"], /requests\.memory is required/],
+] as const) {
+  test(`tenants fail the render ${label}`, { skip: skipHelm }, () => {
+    const rendered = render([...args]);
+    assert.notEqual(rendered.status, 0, `${label} rendered`);
+    assert.match(rendered.stderr, message);
+  });
+}

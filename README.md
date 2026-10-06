@@ -628,6 +628,9 @@ token.
 | provider and model catalog (JSON file; turns on [Setup](#setup-provider-key-and-model)) | `FM_WT_CATALOG` | `catalog` | *(none: Setup off)* |
 | credential vault keyring, `k1:<base64 32 bytes>[,k2:…]` | `FM_WT_VAULT_KEYS` | — (environment only) | *(required with a catalog)* |
 | keyring id new credentials are encrypted under | `FM_WT_VAULT_ACTIVE_KEY` | `vaultActiveKey` | `k1` |
+| per-user firstmate parameters (JSON file; turns on [per-user firstmates](#per-user-firstmates)) | `FM_WT_TENANT_PARAMS` | `tenantParams` | *(none: provisioning off)* |
+| master secret the per-tenant internal tokens derive from | `FM_WT_TENANT_TOKEN_SECRET` | — (environment only) | *(required with tenant parameters)* |
+| internal port for credential delivery (never public) | `FM_WT_INTERNAL_PORT` | `internalPort` | `8788` |
 
 Registering the GitHub OAuth App:
 
@@ -706,8 +709,9 @@ declared in the configuration gets a **Setup** tab. There they:
 4. optionally save a **GitHub token** (a fine-grained PAT) so their firstmate
    can push and open pull requests as them.
 
-Nothing runs yet: the choice is recorded for when per-user firstmates are
-provisioned. Owners of declared firstmates are not offered Setup.
+The choice and keys are what the user's own firstmate runs on once
+[per-user firstmates](#per-user-firstmates) are provisioned. Owners of declared
+firstmates are not offered Setup.
 
 The catalog is a JSON file; the Helm chart renders it from `tenants.catalog`.
 Each provider has an `id`, a display `name`, the `keyEnv` its key travels under
@@ -770,12 +774,111 @@ transaction, then prints counts and key ids only. When it reports every
 credential current, drop the old key from `FM_WT_VAULT_KEYS`. A row that
 cannot be decrypted aborts the rotation and nothing changes.
 
+### Per-user firstmates
+
+With tenant parameters (`FM_WT_TENANT_PARAMS`, rendered by the Helm chart from
+`tenants.*`), the gateway runs a firstmate for each user who sets one up, in its
+own Kubernetes namespace. Each is today's pod shape: the firstmate runtime, a
+walkie-talkie sidecar in standalone mode, and its own volume. Its cluster
+objects are a pure function of the chart's parameters and the user's choice:
+
+- `StatefulSet` and `Service` `fm-<tid>`, `ConfigMap` `fm-<tid>-agents` and
+  `Secret` `fm-<tid>-tokens`, all labelled
+  `app.kubernetes.io/managed-by: walkie-talkie-gateway` and
+  `walkie-talkie.atus.hr/tenant: <tid>`. `<tid>` is an opaque random id
+  (`u` and 7 symbols), never derived from the GitHub login;
+- the PVC `home-fm-<tid>-0`, the user's firstmate home;
+- the agents config generated from the user's provider and model:
+  `opencode.json` sets `model`, `small_model` (the routine model, else the
+  main one), `enabled_providers` and the provider's `apiKey` as
+  `{env:<keyEnv>}`; `crew-dispatch.json` sets the default profile and, with a
+  routine model, a routine rule. No setting is left on a model the user did
+  not pick, and no key is ever in a ConfigMap.
+
+**Credentials are pulled, never stored in a Secret.** The token Secret holds
+only two derived internal tokens: `api` (what the gateway presents to the
+sidecar) and `credentials` (what the runtime presents to fetch its keys). Both
+are HMAC-SHA256 of the tenant id under `FM_WT_TENANT_TOKEN_SECRET`, so a
+tenant's Secret can be re-rendered from nothing. At start, before the herdr
+server, the runtime's entrypoint calls the gateway's internal port:
+
+- `GET /internal/v1/credentials` with `Authorization: Bearer <tid>.<HMAC>`
+  answers `{"env": {"<keyEnv>": "<key>", "GH_TOKEN": …, "GITHUB_TOKEN": …}}`,
+  `no-store`: the chosen provider's key, plus the user's GitHub token under
+  every catalog name if they saved one. The tenant id inside the token is the
+  only thing that selects whose keys are opened.
+- It is refused with `401` for a token that does not verify, `403` when the
+  user is suspended or the firstmate is not desired running, and `409
+  {"error": "key_missing"}` when the provider key is gone. Only
+  `tenant=<tid> delivered n=<count>` is logged.
+- The entrypoint unsets the token, exports only the declared names, retries
+  with backoff, and never starts the harness without the provider key: the pod
+  stays un-Ready instead.
+
+**The reconciler** keeps the cluster matching the store. It applies each
+desired firstmate with server-side apply (`fieldManager=walkie-talkie-gateway`,
+`force`), so a hand edit is reverted on the next sweep. It deletes the objects
+of a firstmate no longer desired, but never a volume claim. It reads pod status
+back as each firstmate's observed state. It runs every minute, every few seconds
+while one is starting or stopping, and uses only get, list, patch and delete in
+the tenant namespace. If a firstmate's chosen provider or model leaves the
+catalog, its objects are left as they are, except that a stop or suspension
+still scales it to zero.
+
+A firstmate's lifecycle state, in `GET /api/me/firstmate` (`state`), in
+`/auth/session` (`user.firstmate_state`) and in the admin's user list:
+`none` → `provisioning` → `starting` → `running`, or `crashloop`, `stopping`,
+`stopped`. A suspended user's firstmate is scaled to zero (it reads
+`stopping`, then `stopped`) and gets no credentials; resuming restores it. Removing a user deletes their firstmate's
+workload; the volume is kept, and its tenant id stays recorded as retained so
+the volume is never untracked.
+
+**Start and stop.** Once setup is ready (a model chosen, and the provider's key
+saved and able to use it), a user starts their own firstmate with `POST
+/api/me/firstmate/start` and stops it with `POST /api/me/firstmate/stop` (a
+same-origin write with the session, like the other `/api/me` routes). Start
+answers `409 {"error": "setup_incomplete"}` before setup is ready and `409
+{"error": "capacity_reached"}` past the cap; stop answers `409 {"error":
+"firstmate_not_started"}` when there is nothing to stop. Both answer `409
+{"error": "managed_by_config"}` for a declared firstmate's owner and `409
+{"error": "not_available"}` without tenant provisioning. Stopping scales to
+zero and keeps the volume, Secret and ConfigMap. Replacing or deleting a key
+the firstmate is delivered (the chosen provider's key or the GitHub token)
+restarts it, so it fetches the change and never keeps the old value.
+
+**Routing.** A signed-in user's API calls go only to their own firstmate's
+Service, with that firstmate's derived `api` token. While it is not running,
+they answer `409 {"error": "firstmate_not_running", "state": "<state>"}`.
+
+**Admission.** `tenants.maxTenants` (in the parameters) caps the users who may
+have a managed firstmate: approving a request or inviting a login past it
+answers `409 {"error": "capacity_reached"}`. Open invites count, and so do
+removed users' retained volumes; owners of declared firstmates do not.
+Starting a firstmate is capped the same way: started firstmates plus retained
+volumes. The namespace's ResourceQuota is the hard backstop.
+
+**Push.** Each firstmate's sidecar keeps its own push keys and subscriptions on
+its own volume (`<home>/.walkie-talkie/push.json`). A device that switches
+accounts moves its subscription to the new user's firstmate, and signing out
+removes the device's subscription.
+
+**Review what is applied:**
+
+```sh
+walkie-talkie tenants render [--user <login>]   # or: node dist/src/index.js tenants render
+```
+
+It reads the same settings and store the gateway does, changes nothing, and
+prints every started firstmate's objects as JSON documents separated by `---`
+(valid YAML). The two tokens in each Secret are printed as `<redacted>`, so it
+needs no secret.
+
 Gateway routes, besides the forwarded API and the web app:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz` | the gateway's own liveness, open; no firstmate data |
-| `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate", "setup"} \| null, "legacy_bearer"}` |
+| `GET` | `/auth/session` | open probe: `{"schema": "walkie-talkie-session.v1", "mode": "gateway", "signed_in", "user": {"login", "admin", "firstmate", "firstmate_state", "setup"} \| null, "legacy_bearer"}` |
 | `GET` | `/auth/github/start` | begins GitHub sign-in (rate-limited) |
 | `GET` | `/auth/github/callback` | finishes it; redirects to `/`, or to `/?signin=<failed\|expired\|denied\|not_invited\|pending\|suspended\|busy>` |
 | `POST` | `/auth/logout` | ends this session |
@@ -786,12 +889,13 @@ Gateway routes, besides the forwarded API and the web app:
 | `GET` | `/api/catalog` | session: providers (`id`, `name`, `key_name`, `models`), harnesses, and whether a GitHub token is offered |
 | `GET` | `/api/me/credentials` | session: this user's saved keys, metadata only |
 | `PUT` / `DELETE` | `/api/me/credentials/<key_name>` | session: check and save `{"value"}` / remove a key |
-| `GET` / `PUT` | `/api/me/firstmate` | session: this user's choice and what setup still needs / choose `{"provider", "model", "routine_model"?}` |
+| `GET` / `PUT` | `/api/me/firstmate` | session: this user's choice, what setup still needs and their firstmate's `state` / choose `{"provider", "model", "routine_model"?}` |
+| `POST` | `/api/me/firstmate/start`, `.../stop` | session: start this user's managed firstmate once setup is ready / stop it |
 | `GET` / `POST` | `/api/admin/invites` | admin: open invites / invite `{"login"}` |
 | `DELETE` | `/api/admin/invites/<id>` | admin: revoke an open invite |
 | `GET` | `/api/admin/requests` | admin: pending access requests |
 | `POST` | `/api/admin/requests/<github-id>/approve`, `.../deny` | admin: decide a request |
-| `GET` | `/api/admin/users` | admin: every user, with role, state, device count and whether they have a firstmate |
+| `GET` | `/api/admin/users` | admin: every user, with role, state, device count and their firstmate (`ready` when declared, else its lifecycle state) |
 | `POST` | `/api/admin/users/<id>/suspend`, `.../resume` | admin: suspend or resume a user |
 | `DELETE` | `/api/admin/users/<id>` | admin: remove a user |
 | `GET` | `/api/admin/audit` | admin: the latest 100 audit entries (ids and outcomes, never secrets) |
@@ -801,8 +905,9 @@ retiring shared token never reaches them, and a non-admin gets 403 on the admin
 routes.
 
 Without a session, a forwarded API call answers `401 {"error": "signed_out"}`.
-A signed-in user with no declared firstmate gets
-`409 {"error": "firstmate_not_provisioned"}`. If that firstmate refuses the
+A signed-in user with no firstmate gets
+`409 {"error": "firstmate_not_provisioned"}`, and one whose managed firstmate is
+not running yet gets `409 {"error": "firstmate_not_running", "state"}`. If that firstmate refuses the
 gateway's token, is down, or does not answer, the response is 502 or 504,
 never a 401. Any cookie-authenticated write must come from the app's own
 origin: the gateway checks `Origin`, or `Sec-Fetch-Site: same-origin`. The web

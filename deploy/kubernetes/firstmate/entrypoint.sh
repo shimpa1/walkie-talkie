@@ -12,7 +12,9 @@
 # soon as the command is typed, so a harness that exits (a bad credential, a
 # crash, a quit, an auto-update restart) is started again in the same pane. The
 # server stays in the foreground, so the session stays attachable with
-# `herdr session attach <session>`.
+# `herdr session attach <session>`. A per-user firstmate run by the multi-user
+# gateway first fetches its own credentials from the gateway (step 2c), so no
+# provider key ever sits in a Kubernetes Secret.
 set -euo pipefail
 
 HOME_DIR="${FM_HOME:-/home/firstmate}"
@@ -38,6 +40,14 @@ HARNESS_CHECK_INTERVAL="${FM_HARNESS_SUPERVISION_INTERVAL:-5}"
 # coming up; without this pause the supervisor would type the command a second
 # time into a harness that is still starting.
 HARNESS_START_GRACE="${FM_HARNESS_SUPERVISION_GRACE:-30}"
+# Written once the herdr server runs (and, for a gateway-managed firstmate,
+# after its credentials arrived), so a readiness probe can tell a pod that is
+# still waiting for its keys from one that is up. Empty writes nothing.
+READY_FILE="${FM_READY_FILE:-}"
+# Credential fetch backoff for a gateway-managed firstmate, in whole seconds:
+# the first retry waits RETRY_DELAY, doubling up to RETRY_MAX.
+TENANT_CREDENTIALS_RETRY_DELAY="${FM_TENANT_CREDENTIALS_RETRY_DELAY:-2}"
+TENANT_CREDENTIALS_RETRY_MAX="${FM_TENANT_CREDENTIALS_RETRY_MAX:-60}"
 SERVER_PID=
 SUPERVISOR_PID=
 HARNESS_STARTED_AT=
@@ -321,6 +331,80 @@ supervise_primary_harness() {
   done
 }
 
+# One fetch of this firstmate's credentials from the gateway. The token goes to
+# curl on stdin (`-H @-`), never on a command line where another process could
+# read it. Prints the delivery on success; returns 1 when the request failed or
+# the answer is malformed, and 2 when it lacks the required provider key.
+tenant_credentials_fetch() {  # <token>
+  local body
+  body=$(printf 'Authorization: Bearer %s\n' "$1" \
+    | curl -sS --fail --max-time 15 --proto '=http,https' --max-redirs 0 \
+        -H @- -H 'Accept: application/json' "$FM_TENANT_CREDENTIALS_URL" 2>/dev/null) || return 1
+  printf '%s' "$body" | jq -e '
+      (.env | type == "object")
+      and all(.env | keys[]; test("^[A-Z_][A-Z0-9_]{0,127}$"))
+      and all(.env[]; type == "string" and test("^[!-~]{1,8192}$"))' >/dev/null 2>&1 || return 1
+  if [ -n "${FM_TENANT_REQUIRED_ENV:-}" ]; then
+    printf '%s' "$body" | jq -e --arg need "$FM_TENANT_REQUIRED_ENV" '(.env[$need] // "") != ""' \
+      >/dev/null 2>&1 || return 2
+  fi
+  printf '%s' "$body"
+}
+
+# Fetch this firstmate's credentials and export them for the herdr server (and
+# so every pane) to inherit, the way the chart's Secret env reaches the captain's
+# own pod. Retries with backoff until the gateway answers with the provider key:
+# the harness never starts keyless, and the pod stays un-Ready meanwhile. Only
+# the names in FM_TENANT_CREDENTIAL_ENVS are exported. The credential token is
+# unset before anything else runs, and no token or value is ever printed.
+fetch_tenant_credentials() {
+  local token="${FM_TENANT_CREDENTIALS_TOKEN:-}" body='' rc delay attempt=0 line name value count=0
+  local allowed=" ${FM_TENANT_CREDENTIAL_ENVS:-} "
+  unset FM_TENANT_CREDENTIALS_TOKEN
+  if [ -z "$token" ]; then
+    log "FM_TENANT_CREDENTIALS_TOKEN is empty; refusing to start a harness without its credentials"
+    return 1
+  fi
+  delay="$TENANT_CREDENTIALS_RETRY_DELAY"
+  while :; do
+    attempt=$((attempt + 1))
+    rc=0
+    body=$(tenant_credentials_fetch "$token") || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      break
+    fi
+    if [ "$rc" -eq 2 ]; then
+      log "the gateway delivered no ${FM_TENANT_REQUIRED_ENV} for this firstmate; refusing to start a keyless harness (attempt $attempt), retrying in ${delay}s"
+    else
+      log "could not fetch this firstmate's credentials from the gateway (attempt $attempt); retrying in ${delay}s"
+    fi
+    sleep "$delay"
+    delay=$((delay * 2))
+    if [ "$delay" -gt "$TENANT_CREDENTIALS_RETRY_MAX" ]; then
+      delay="$TENANT_CREDENTIALS_RETRY_MAX"
+    fi
+  done
+  token=
+  # Names and values were validated above: one NAME=value line per variable,
+  # values printable ASCII without spaces. A name holds no `=`, so the line
+  # splits at its first one; the value keeps every `=` of its own.
+  while IFS= read -r line; do
+    name=${line%%=*}
+    value=${line#*=}
+    case "$allowed" in
+      *" $name "*)
+        export "$name=$value"
+        count=$((count + 1))
+        ;;
+      *) log "ignored a delivered credential under an undeclared name: $name" ;;
+    esac
+  done < <(printf '%s' "$body" | jq -r '.env | to_entries[] | "\(.key)=\(.value)"')
+  body=
+  line=
+  value=
+  log "fetched this firstmate's credentials from the gateway ($count variable(s))"
+}
+
 # 1. Seed the persistent home on first start. A home that already carries the
 #    distro (from a previous run or a migration) is left untouched.
 if [ ! -e "$HOME_DIR/bin/fm-inbox.sh" ]; then
@@ -461,6 +545,18 @@ fi
 export FM_PRIMARY_SESSION_START_PROMPT="$PRIMARY_SESSION_START_PROMPT"
 log "primary harness will open with firstmate's session-start prompt"
 
+# 2c. A per-user firstmate run by the multi-user gateway has no key in its
+#     environment yet: fetch it from the gateway's internal port before the
+#     herdr server starts, because the server passes its startup environment to
+#     every pane it creates (fetch_tenant_credentials above). The captain's own
+#     pod sets no FM_TENANT_CREDENTIALS_URL and skips this.
+if [ -n "$READY_FILE" ]; then
+  rm -f "$READY_FILE" 2>/dev/null || true
+fi
+if [ -n "${FM_TENANT_CREDENTIALS_URL:-}" ]; then
+  fetch_tenant_credentials || exit 1
+fi
+
 # 3. Start the herdr headless server in the background so the entrypoint can
 #    make control calls (create the home workspace, start the harness) against
 #    it. firstmate's adapter reuses a running server for this session, and you
@@ -480,6 +576,9 @@ if ! herdr_server_running; then
   log "herdr server for session '$SESSION' did not report running; exiting"
   shutdown
   exit 1
+fi
+if [ -n "$READY_FILE" ]; then
+  : > "$READY_FILE" 2>/dev/null || log "warning: could not write the readiness marker $READY_FILE"
 fi
 
 # 4. Start firstmate's primary harness inside the session and supervise it. The

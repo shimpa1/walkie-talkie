@@ -55,6 +55,7 @@ test("gateway mode needs no shared token and resolves its settings", () => {
     accessRequests: true,
     catalog: null,
     vault: null,
+    tenants: null,
   });
 });
 
@@ -200,4 +201,60 @@ test("a catalog turns setup on and needs the vault keyring from the environment"
       (error: unknown) => error instanceof ConfigError && message.test(error.message) && !error.message.includes(key),
     );
   }
+});
+
+test("tenant parameters turn provisioning on and need the catalog and the token master from the environment", async () => {
+  const { TENANT_MASTER, TENANT_PARAMS_DOC } = await import("./tenant-fixtures.js");
+  const dir = emptyDir();
+  writeFileSync(
+    join(dir, "catalog.json"),
+    JSON.stringify({
+      harnesses: [{ name: "opencode" }],
+      providers: [
+        { id: "deepseek", keyEnv: "DEEPSEEK_API_KEY", validate: { url: "https://api.deepseek.com/models", auth: "bearer" }, models: ["deepseek-chat"] },
+      ],
+    }),
+  );
+  writeFileSync(join(dir, "tenants.json"), JSON.stringify(TENANT_PARAMS_DOC));
+  const key = Buffer.alloc(32, 7).toString("base64");
+  const setup = { FM_WT_CATALOG: "catalog.json", FM_WT_VAULT_KEYS: `k1:${key}` };
+
+  const config = resolveConfig({
+    env: { ...GATEWAY_ENV, ...setup, FM_WT_TENANT_PARAMS: "tenants.json", FM_WT_TENANT_TOKEN_SECRET: TENANT_MASTER },
+    cwd: dir,
+  });
+  assert.equal(config.gateway?.tenants?.params.namespace, "firstmate-tenants");
+  assert.equal(config.gateway?.tenants?.params.maxTenants, 5);
+  assert.equal(config.gateway?.tenants?.internalPort, 8788);
+  assert.match(config.gateway?.tenants?.tokens.credentialToken("uaaaaaaa") ?? "", /^uaaaaaaa\./);
+
+  const withPort = resolveConfig({
+    env: { ...GATEWAY_ENV, ...setup, FM_WT_TENANT_PARAMS: "tenants.json", FM_WT_TENANT_TOKEN_SECRET: TENANT_MASTER, FM_WT_INTERNAL_PORT: "9788" },
+    cwd: dir,
+  });
+  assert.equal(withPort.gateway?.tenants?.internalPort, 9788);
+
+  for (const [env, message] of [
+    [{ FM_WT_TENANT_PARAMS: "tenants.json", FM_WT_TENANT_TOKEN_SECRET: TENANT_MASTER }, /FM_WT_TENANT_PARAMS needs FM_WT_CATALOG/],
+    [{ ...setup, FM_WT_TENANT_PARAMS: "tenants.json" }, /needs FM_WT_TENANT_TOKEN_SECRET/],
+    [{ ...setup, FM_WT_TENANT_PARAMS: "tenants.json", FM_WT_TENANT_TOKEN_SECRET: "too-short" }, /at least 32 characters/],
+    [{ ...setup, FM_WT_TENANT_PARAMS: "missing.json", FM_WT_TENANT_TOKEN_SECRET: TENANT_MASTER }, /cannot read the tenant parameters/],
+    [{ ...setup, FM_WT_TENANT_PARAMS: "tenants.json", FM_WT_TENANT_TOKEN_SECRET: TENANT_MASTER, FM_WT_INTERNAL_PORT: "0" }, /FM_WT_INTERNAL_PORT/],
+  ] as const) {
+    assert.throws(
+      () => resolveConfig({ env: { ...GATEWAY_ENV, ...env }, cwd: dir }),
+      (error: unknown) => error instanceof ConfigError && message.test(error.message) && !error.message.includes(TENANT_MASTER),
+      String(message),
+    );
+  }
+
+  // The token master is environment-only: the config file cannot supply it.
+  writeFileSync(
+    join(dir, "walkie-talkie.config.json"),
+    JSON.stringify({ tenantParams: "tenants.json", tenantTokenSecret: TENANT_MASTER, catalog: "catalog.json" }),
+  );
+  assert.throws(
+    () => resolveConfig({ env: { ...GATEWAY_ENV, FM_WT_VAULT_KEYS: `k1:${key}` }, cwd: dir }),
+    /needs FM_WT_TENANT_TOKEN_SECRET/,
+  );
 });

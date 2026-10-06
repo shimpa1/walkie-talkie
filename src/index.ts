@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,10 @@ import { PushStore } from "./push-store.js";
 import { createGatewayHandler } from "./gateway.js";
 import { openGatewayStore } from "./gateway-store.js";
 import { GithubOAuth } from "./github-oauth.js";
+import { inClusterKube } from "./kube.js";
+import { TenantReconciler } from "./reconciler.js";
+import { createDeliveryHandler } from "./tenant-delivery.js";
+import { runTenantsCommand } from "./tenants-cli.js";
 import { FirstmateEventSource, PushService } from "./push-service.js";
 import { describeBind, listenOn, startServer } from "./server.js";
 import { runVaultCommand } from "./vault-cli.js";
@@ -70,22 +74,63 @@ async function runGateway(config: AppConfig, log: (line: string) => void): Promi
     clientSecret: gateway.githubClientSecret,
     redirectUri: `${gateway.publicOrigin}/auth/github/callback`,
   });
-  const server = listenOn(createServer(createGatewayHandler({ config, store, oauth, log })), config, (port) => {
+  const purge = setInterval(() => store.purgeExpired(Date.now()), GATEWAY_PURGE_INTERVAL_MS);
+  purge.unref();
+
+  // Per-user firstmates: credential delivery on the internal port, and the
+  // reconciler that keeps their cluster objects matching the store.
+  let internal: Server | null = null;
+  let reconciler: TenantReconciler | null = null;
+  const provisioning = gateway.tenants;
+  if (provisioning !== null && gateway.catalog !== null && gateway.vault !== null) {
+    if (provisioning.internalPort === config.port) {
+      throw new ConfigError("FM_WT_INTERNAL_PORT must differ from FM_WT_PORT: the internal port is never public");
+    }
+    const delivery = createDeliveryHandler({
+      store,
+      vault: gateway.vault,
+      catalog: gateway.catalog,
+      tokens: provisioning.tokens,
+      now: Date.now,
+      log,
+    });
+    internal = listenOn(createServer(delivery), { ...config, port: provisioning.internalPort }, (port) => {
+      process.stdout.write(`walkie-talkie gateway credential delivery on ${describeBind(config, port)}\n`);
+    });
+    const kube = inClusterKube(provisioning.params.namespace);
+    if (kube === null) {
+      log("tenant provisioning: no in-cluster Kubernetes API; the reconciler is off");
+    } else {
+      reconciler = new TenantReconciler({
+        store,
+        kube,
+        params: provisioning.params,
+        catalog: gateway.catalog,
+        tokens: provisioning.tokens,
+        now: Date.now,
+        log,
+      });
+      reconciler.start();
+    }
+  }
+
+  const server = listenOn(createServer(createGatewayHandler({ config, store, oauth, log, reconciler })), config, (port) => {
     process.stdout.write(
       `walkie-talkie gateway listening on ${describeBind(config, port)}; ` +
         `${gateway.staticTenants.length} static tenant(s), ${gateway.admins.length} admin(s)\n`,
     );
   });
-  const purge = setInterval(() => store.purgeExpired(Date.now()), GATEWAY_PURGE_INTERVAL_MS);
-  purge.unref();
 
   const shutdown = (signal: NodeJS.Signals): void => {
     process.stderr.write(`walkie-talkie: ${signal}, shutting down\n`);
     clearInterval(purge);
-    server.close(() => {
-      store.close();
-      process.exit(0);
-    });
+    internal?.close();
+    void (reconciler?.stop() ?? Promise.resolve()).then(() =>
+      server.close(() => {
+        store.close();
+        process.exit(0);
+      }),
+    );
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -179,8 +224,9 @@ function main(): void {
 }
 
 const [command, ...commandArgs] = process.argv.slice(2);
-if (command === "vault") {
-  runVaultCommand(commandArgs, {
+const cli = command === "vault" ? runVaultCommand : command === "tenants" ? runTenantsCommand : null;
+if (cli !== null) {
+  cli(commandArgs, {
     env: process.env,
     cwd: process.cwd(),
     out: (line) => process.stdout.write(`${line}\n`),

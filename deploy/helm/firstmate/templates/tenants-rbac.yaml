@@ -1,0 +1,44 @@
+{{- if include "firstmate.tenants.enabled" . }}
+{{- $ns := required "gateway.tenantNamespace is required" .Values.gateway.tenantNamespace }}
+# What the gateway's reconciler may do, in the tenant namespace only: manage
+# each tenant's StatefulSet, Service, ConfigMap and token Secret, read pod
+# status, and delete a removed user's volume claim after its grace period. No
+# exec, attach, port-forward or logs; no RBAC; nothing cluster-scoped; nothing
+# in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "firstmate.gateway.fullname" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "firstmate.gateway.fullname" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "firstmate.gateway.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "firstmate.gateway.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

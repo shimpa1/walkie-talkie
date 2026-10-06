@@ -158,7 +158,7 @@ test("removing a user deletes their credentials and model choice", () => {
   const vault = Vault.fromSettings(`k1:${K1}`, "k1");
   store.putCredential(alice.id, "A_KEY", "a", vault.seal(alice.id, "A_KEY", plain(CANARY)), null, now);
   store.setModelChoice(alice.id, { harness: "opencode", provider: "a", model: "m", routineModel: null }, now);
-  store.deleteUser(alice.id);
+  store.deleteUser(alice.id, now);
   assert.deepEqual(store.listCredentials(alice.id), []);
   assert.equal(store.modelChoice(alice.id), null);
   store.close();

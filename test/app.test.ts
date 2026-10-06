@@ -133,6 +133,7 @@ async function bootApp(
   fetchImpl: (path: string, init?: RequestInit) => Promise<Response>,
   search = "",
   windowExtras: Record<string, unknown> = {},
+  globalExtras: Record<string, unknown> = {},
 ): Promise<AppHarness> {
   bootCount += 1;
   const boot = bootCount;
@@ -223,6 +224,7 @@ async function bootApp(
       const entry = intervals[id - 1];
       if (entry) entry.cleared = true;
     }],
+    ...Object.entries(globalExtras),
   ];
   for (const [name, value] of globals) {
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
@@ -2182,6 +2184,120 @@ test("a user with a declared firstmate is not offered Setup", async () => {
     await waitFor(() => getElement("account-line").textContent.startsWith("Signed in"));
     assert.equal(getElement("setup-tab").hidden, true);
     assert.equal(gateway.requests.some((request) => request.path === "/api/catalog"), false);
+  } finally {
+    await server.close();
+  }
+});
+
+/**
+ * A browser's push support for the app: a service worker registration whose
+ * push manager holds at most one subscription, made with some key.
+ */
+function fakePushDevice(initialKey: Uint8Array | null): {
+  globals: Record<string, unknown>;
+  window: Record<string, unknown>;
+  log: string[];
+  current: () => { endpoint: string; key: Uint8Array } | null;
+} {
+  const log: string[] = [];
+  let next = 1;
+  let current: { endpoint: string; key: Uint8Array } | null = null;
+  const subscription = (endpoint: string, key: Uint8Array) => ({
+    endpoint,
+    options: { applicationServerKey: key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) },
+    toJSON: () => ({ endpoint, keys: { p256dh: "p256dh-key", auth: "auth-secret" } }),
+    unsubscribe: async () => {
+      log.push(`unsubscribe ${endpoint}`);
+      if (current?.endpoint === endpoint) current = null;
+      return true;
+    },
+  });
+  if (initialKey !== null) current = { endpoint: "https://push.example/old", key: initialKey };
+  const registration = {
+    pushManager: {
+      getSubscription: async () => (current === null ? null : subscription(current.endpoint, current.key)),
+      subscribe: async (options: { applicationServerKey: Uint8Array }) => {
+        current = { endpoint: `https://push.example/new-${next++}`, key: new Uint8Array(options.applicationServerKey) };
+        log.push(`subscribe ${Buffer.from(current.key).toString("base64url")}`);
+        return subscription(current.endpoint, current.key);
+      },
+    },
+  };
+  const notification = { permission: "granted", requestPermission: async () => "granted" };
+  return {
+    globals: {
+      navigator: { serviceWorker: { ready: Promise.resolve(registration), controller: null, addEventListener: () => {}, register: async () => {} } },
+      Notification: notification,
+    },
+    window: { PushManager: function PushManager() {}, Notification: notification },
+    log,
+    current: () => current,
+  };
+}
+
+/** A gateway double whose firstmate serves this push key and records push writes. */
+function pushRoutes(publicKey: Uint8Array, writes: string[]): GatewayRoutes {
+  return (path, init) => {
+    if (path === "/api/push/config") return jsonResponse({ publicKey: Buffer.from(publicKey).toString("base64url") });
+    if (path === "/api/push/subscribe" || path === "/api/push/unsubscribe") {
+      writes.push(`${path} ${String(init?.body)}`);
+      return jsonResponse({ ok: true });
+    }
+    return null;
+  };
+}
+
+test("a device that switches accounts moves its push subscription to the new user's own firstmate", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const previousKey = new Uint8Array(65).fill(1);
+  const aliceKey = new Uint8Array(65).fill(2);
+  const device = fakePushDevice(previousKey);
+  const writes: string[] = [];
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice" }, pushRoutes(aliceKey, writes));
+  try {
+    await bootApp(new MemoryStorage(), gateway.fetchImpl, "", device.window, device.globals);
+    await waitFor(() => writes.length === 1);
+    assert.deepEqual(device.log, ["unsubscribe https://push.example/old", `subscribe ${Buffer.from(aliceKey).toString("base64url")}`]);
+    assert.match(writes[0] ?? "", /^\/api\/push\/subscribe .*"endpoint":"https:\/\/push\.example\/new-1"/);
+    assert.deepEqual([...(device.current()?.key ?? [])], [...aliceKey]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a subscription already made with the user's own firstmate key is left alone", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const aliceKey = new Uint8Array(65).fill(2);
+  const device = fakePushDevice(aliceKey);
+  const writes: string[] = [];
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice" }, pushRoutes(aliceKey, writes));
+  try {
+    await bootApp(new MemoryStorage(), gateway.fetchImpl, "", device.window, device.globals);
+    await waitFor(() => gateway.requests.some((request) => request.path === "/api/push/config"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(device.log, []);
+    assert.deepEqual(writes, []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("signing out stops this device's notifications from the signed-out user's firstmate", async () => {
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const aliceKey = new Uint8Array(65).fill(2);
+  const device = fakePushDevice(aliceKey);
+  const writes: string[] = [];
+  const gateway = gatewayDouble(server, { signedIn: true, admin: false, login: "alice" }, pushRoutes(aliceKey, writes));
+  try {
+    const { getElement } = await bootApp(new MemoryStorage(), gateway.fetchImpl, "?view=settings", device.window, device.globals);
+    await waitFor(() => getElement("account-line").textContent.startsWith("Signed in with GitHub"));
+    getElement("sign-out").dispatch("click");
+    await waitFor(() => gateway.requests.some((request) => request.path === "/auth/logout"));
+    assert.deepEqual(writes, ['/api/push/unsubscribe {"endpoint":"https://push.example/old"}']);
+    assert.deepEqual(device.log, ["unsubscribe https://push.example/old"]);
+    const order = gateway.requests.map((request) => request.path);
+    assert.ok(order.indexOf("/api/push/unsubscribe") < order.indexOf("/auth/logout"), "the server is told while still signed in");
+    assert.equal(device.current(), null);
   } finally {
     await server.close();
   }

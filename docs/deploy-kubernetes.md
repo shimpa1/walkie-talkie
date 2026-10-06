@@ -44,6 +44,7 @@ path when you want a single VM.
 | `ConfigMap` (optional) | Agent configuration (`agents.enabled`): the opencode provider/model catalog and firstmate's dispatch profiles. |
 | `ServiceAccount` | Pod identity; no API permissions are granted. |
 | Gateway objects (optional) | `gateway.enabled`: the multi-user gateway's Deployment, store PVC, two Services, ServiceAccount, network policies and the tenant-params ConfigMap with the provider catalog (see [Multi-user gateway](#multi-user-gateway)). |
+| Tenant namespace objects (optional) | `tenants.enabled`: the per-user firstmates' namespace with its quota, limit range, network policies and the gateway's Role there (see [Per-user firstmates](#per-user-firstmates)). |
 
 The two containers share the home volume:
 
@@ -605,8 +606,8 @@ move the HTTPRoute backend.
 | `ConfigMap` `firstmate-tenant-params` | `catalog.json`: the provider and model catalog from `tenants.catalog`, mounted read-only at `/etc/walkie-talkie/tenant-params` (`FM_WT_CATALOG`). A catalog change restarts the gateway. |
 | `PersistentVolumeClaim` `firstmate-gateway-data` (1Gi) | The gateway's SQLite store: users, sessions, invites, the audit log, users' encrypted keys and their model choices. It is annotated `helm.sh/resource-policy: keep`, so turning the gateway off, or uninstalling, keeps the users. |
 | `Service` `firstmate-gateway` (:8787) | The public port, and the HTTPRoute's backend while the gateway is on. |
-| `Service` `firstmate-gateway-internal` (:8788) | Credential delivery to per-user firstmates, which come in a later phase. Nothing listens there yet, and it is never on the HTTPRoute. |
-| `ServiceAccount` `firstmate-gateway` | The gateway's own identity. It has no token mounted and no API permissions. |
+| `Service` `firstmate-gateway-internal` (:8788) | Credential delivery to per-user firstmates (see [Per-user firstmates](#per-user-firstmates)). With `tenants.enabled: false` nothing listens there. It is never on the HTTPRoute. |
+| `ServiceAccount` `firstmate-gateway` | The gateway's own identity. Its pod mounts no token and has no API permissions, unless `tenants.enabled`: then it mounts one, bound to a Role in the tenant namespace only. |
 | `NetworkPolicy` `firstmate-gateway` | The gateway's public port accepts traffic only from the Gateway's namespace, and its internal port only from `gateway.tenantNamespace`. |
 | `NetworkPolicy` `firstmate` | The firstmate pod's walkie-talkie port accepts traffic only from gateway pods, so nothing can bypass the gateway. While the gateway's policies render, this replaces the plain `networkPolicy`. |
 
@@ -636,6 +637,7 @@ pod.
 | `gateway.persistence.*` | 1Gi `ReadWriteOnce`, cluster default class | The store claim. |
 | `gateway.networkPolicy.enabled` | `true` | The two policies above. This needs a CNI that enforces NetworkPolicy and lets kubelet probes through. |
 | `tenants.catalog` | Anthropic, OpenAI, OpenRouter, Google, DeepSeek; opencode; optional GitHub token | What users choose from in **Setup** (see [Provider catalog](#provider-catalog)). |
+| `tenants.enabled` and the rest of `tenants.*` | `false` | Per-user firstmates (see [Per-user firstmates](#per-user-firstmates)). |
 
 The chart has **no field for a secret value**. The OAuth client secret, the
 vault keyring, the tenant-token master, the static tenants' tokens and the
@@ -645,8 +647,9 @@ legacy token reach the gateway only as `secretKeyRef`. A value given inline
 templates reject it again when schema validation is skipped. That happens even
 while the gateway is disabled.
 
-The gateway also mounts the tenant-token master now, although only a later
-phase reads it. The vault keyring encrypts users' keys from the start. The keys must therefore exist in the
+The gateway also mounts the tenant-token master, which only per-user
+firstmates (`tenants.enabled`) use. The vault keyring encrypts users' keys from
+the start. The keys must therefore exist in the
 Secret before the gateway is enabled; otherwise the pod stays in
 `CreateContainerConfigError`.
 
@@ -721,6 +724,65 @@ tenants:
 4. Once it reports every credential current, remove `k1` from
    `WT_VAULT_KEYS`.
 
+### Per-user firstmates
+
+*Written 2026-10-05. Merged with `tenants.enabled: false`; enabling it is a
+separate deploy decision, after the gateway is on and the CNI check below has
+passed.*
+
+`tenants.enabled: true` (with `gateway.enabled` and
+`gateway.networkPolicy.enabled`, or the render fails) lets the gateway run a
+firstmate for every user who sets one up. The chart adds the namespace and its
+isolation; the gateway's reconciler creates each user's objects in it when they
+start their firstmate with `POST /api/me/firstmate/start`, and scales them to
+zero on `POST /api/me/firstmate/stop` (see the README's "Per-user firstmates").
+
+| Resource | Purpose |
+| --- | --- |
+| `Namespace` `firstmate-tenants` (`gateway.tenantNamespace`) | Pod Security labels `enforce`, `audit` and `warn` set to `restricted`. Annotated `helm.sh/resource-policy: keep`: deleting it would delete every user's home. |
+| `ServiceAccount` `fm-tenant` | The identity every tenant pod runs as. No token, no RBAC. |
+| `ResourceQuota` `firstmate-tenants` | `maxTenants` × one tenant pod: `pods`, `requests.cpu`, `requests.memory`, `limits.memory`, `requests.storage`, `persistentvolumeclaims`. With the defaults: 5 pods, 1500m, 2880Mi, 11520Mi, 50Gi, 5 claims. |
+| `LimitRange` `firstmate-tenants` | Defaults for a container that names none (the sidecar's resources), a per-container memory ceiling (the firstmate container's limit), and a per-claim storage ceiling. |
+| `Role` / `RoleBinding` `firstmate-gateway` (tenant namespace) | The gateway's ServiceAccount may get, list, watch, create, patch, update and delete StatefulSets, Services, ConfigMaps and Secrets; get, list, watch and delete PVCs; and get, list and watch pods. No exec, attach, port-forward or logs, no RBAC, nothing cluster-scoped, nothing in the release namespace. |
+| `NetworkPolicy` `firstmate-tenants-default-deny` | Denies all ingress and egress in the namespace. |
+| `NetworkPolicy` `firstmate-tenants-from-gateway` | A tenant's walkie-talkie port (8787) only from gateway pods. |
+| `NetworkPolicy` `firstmate-tenants-egress` | DNS to `kube-dns`; the gateway's internal port (8788); TCP 443, 80 and 22 to `0.0.0.0/0` and `::/0` except private, CGNAT, link-local and loopback ranges, so never the Kubernetes API, another tenant, another workload or the metadata endpoint. |
+| `tenants.json` in `firstmate-tenant-params` | How each tenant runs: images, resources, storage, uid/gid, scheduling, harness command, the gateway's internal URL. The gateway reads it at start-up (`FM_WT_TENANT_PARAMS`) and restarts when it changes. |
+
+Each tenant the reconciler creates is a `StatefulSet`, `Service`, `ConfigMap`
+and token `Secret` named after an opaque id (`fm-<tid>…`), plus its PVC
+`home-fm-<tid>-0`. Its pods run as uid 1000 with no privilege escalation, no
+capabilities, `RuntimeDefault` seccomp, no ServiceAccount token and no service
+links. No provider key or GitHub token is ever in a Secret: the runtime pulls
+them from the gateway's internal port at start (D4), so the runtime image must be
+a build whose entrypoint does that (`deploy/kubernetes/firstmate/entrypoint.sh`,
+step 2c). The atus runtime image `6eb5b4543933` predates it; pin a newer build
+in `tenants.image.firstmate.tag`.
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `tenants.enabled` | `false` | Render the above and give the gateway its token and parameters. |
+| `tenants.maxTenants` | `5` | Cap on users with a managed firstmate (approving, inviting or starting past it is refused; removed users' retained home volumes count) and the quota multiplier. |
+| `tenants.image.firstmate` / `.walkieTalkie` | `firstmate.image` / the gateway image | Tenant images, pinned to immutable tags (`latest` fails the render). |
+| `tenants.imagePullSecrets` | `[]` | Pull Secrets that exist in the tenant namespace. |
+| `tenants.harnessCommand` | `firstmate.harnessCommand` | Starts each tenant's primary harness. The model comes from the generated `opencode.json`. |
+| `tenants.resources.{firstmate,walkieTalkie,init}` | 250m/512Mi requests, 2Gi and 4Gi ephemeral limits; 50m/64Mi, 256Mi; 10m/16Mi, 64Mi | Per-tenant resources. CPU in `m` or cores and memory in `Mi`/`Gi`/`Ti`, because the quota is computed from them. |
+| `tenants.persistence.storageClass` / `.size` | cluster default / `10Gi` | Each tenant's home claim. A size or class change applies to tenants created afterwards; existing ones keep their claim template. |
+| `tenants.securityContext.{runAsUser,runAsGroup,fsGroup}` | `1000` | The ids tenant pods run as; the rest of the restricted posture is fixed. |
+| `tenants.nodeSelector`, `.tolerations`, `.affinity`, `.priorityClassName` | none | Tenant pod scheduling. |
+| `tenants.networkPolicy.dns` | `kube-system`, `k8s-app: kube-dns` | Where tenants resolve names. |
+| `tenants.networkPolicy.egressPorts` | `443, 80, 22` | Internet ports tenants may use. |
+| `tenants.networkPolicy.excludeCidrs` / `excludeCidrsV6` / `extraExcludeCidrs` | RFC 1918, `100.64.0.0/10`, link-local, loopback; `fc00::/7`, `fe80::/10`; none | Ranges tenants may never reach. Add the cluster's pod and service CIDRs to `extraExcludeCidrs` if they fall outside the defaults. |
+
+To see exactly what the gateway applies for each user, run in its container:
+
+```sh
+node dist/src/index.js tenants render [--user <login>]
+```
+
+It prints the objects as JSON documents (valid YAML) and changes nothing. The
+two tokens in each Secret are printed as `<redacted>`.
+
 ### One-time setup (outside the repo)
 
 Two steps cannot be expressed in the repo. Both happen once, before the enable
@@ -775,7 +837,8 @@ kubectl -n kube-system get daemonsets
 - **Calico or Cilium:** both enforce NetworkPolicy, and both admit node-local
   kubelet probes by default.
 - **Flannel alone:** it enforces nothing. The policies would be inert, though
-  harmless. Phase 5's tenant isolation must not be deployed on such a cluster.
+  harmless. Per-user firstmates (`tenants.enabled`) must not be enabled on such
+  a cluster: their isolation is network policy.
 
 The policies also have to admit kubelet probes. If they did not, the firstmate
 pod would go un-Ready behind its new policy. If the CNI blocks probes, set

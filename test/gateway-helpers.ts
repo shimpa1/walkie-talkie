@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Catalog } from "../src/catalog.js";
 import type { AppConfig } from "../src/config.js";
 import { LOGIN_COOKIE, SESSION_COOKIE } from "../src/cookies.js";
-import type { GatewayConfig, StaticTenant } from "../src/gateway-config.js";
+import type { GatewayConfig, StaticTenant, TenantProvisioning } from "../src/gateway-config.js";
 import { createGatewayHandler, defaultSignInLimits } from "../src/gateway.js";
 import { GatewayStore, type AuditEntry } from "../src/gateway-store.js";
 import { GithubOAuth, type GithubIdentity } from "../src/github-oauth.js";
@@ -238,6 +238,9 @@ export interface GatewayOptions {
   vault?: Vault | null;
   keyChecker?: KeyChecker;
   keyCheckLimits?: { perUser: RateLimiter; global: RateLimiter };
+  tenants?: TenantProvisioning | null;
+  tenantUpstream?: (tid: string) => string;
+  reconciler?: { kick: () => void };
 }
 
 export async function startGateway(options: GatewayOptions): Promise<GatewayHarness> {
@@ -256,6 +259,7 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
     accessRequests: options.accessRequests ?? true,
     catalog: options.catalog ?? null,
     vault: options.vault ?? null,
+    tenants: options.tenants ?? null,
   };
   const config: AppConfig = {
     mode: "gateway",
@@ -303,6 +307,8 @@ export async function startGateway(options: GatewayOptions): Promise<GatewayHarn
       ...(options.proxyTimeoutMs !== undefined ? { proxyTimeoutMs: options.proxyTimeoutMs } : {}),
       ...(options.keyChecker !== undefined ? { keyChecker: options.keyChecker } : {}),
       ...(options.keyCheckLimits !== undefined ? { keyCheckLimits: options.keyCheckLimits } : {}),
+      ...(options.tenantUpstream !== undefined ? { tenantUpstream: options.tenantUpstream } : {}),
+      ...(options.reconciler !== undefined ? { reconciler: options.reconciler } : {}),
     }),
   );
   const url = await listen(server);

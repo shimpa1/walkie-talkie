@@ -1,0 +1,106 @@
+{{- if include "firstmate.tenants.enabled" . }}
+{{- $ns := required "gateway.tenantNamespace is required" .Values.gateway.tenantNamespace }}
+{{- $np := .Values.tenants.networkPolicy }}
+{{- $ports := required "tenants.networkPolicy.egressPorts is required" $np.egressPorts }}
+# Nothing in the tenant namespace sends or receives anything unless a policy
+# below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstmate.fullname" . }}-tenants-default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# A tenant's walkie-talkie port, from the gateway's pods only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstmate.fullname" . }}-tenants-from-gateway
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: firstmate-tenant
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "firstmate.gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.walkieTalkie.port }}
+---
+# What a tenant may reach: DNS, the gateway's internal credential port, and the
+# internet (model providers, GitHub, package registries) on the declared ports,
+# never a private, link-local or loopback address, so not the Kubernetes API,
+# another tenant, another workload or the cloud metadata endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstmate.fullname" . }}-tenants-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "tenants.networkPolicy.dns.namespace is required" $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml (required "tenants.networkPolicy.dns.podLabels is required" $np.dns.podLabels) | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "firstmate.gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.internalPort }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range (concat $np.excludeCidrs (default (list) $np.extraExcludeCidrs)) }}
+              {{- if not (contains ":" .) }}
+              - {{ . }}
+              {{- end }}
+              {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            except:
+              {{- range (concat $np.excludeCidrsV6 (default (list) $np.extraExcludeCidrs)) }}
+              {{- if contains ":" . }}
+              - {{ . }}
+              {{- end }}
+              {{- end }}
+      ports:
+        {{- range $port := $ports }}
+        - protocol: TCP
+          port: {{ $port }}
+        {{- end }}
+{{- end }}

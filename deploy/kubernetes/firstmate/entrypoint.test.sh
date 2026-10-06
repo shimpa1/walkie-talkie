@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Exercise deploy/kubernetes/firstmate/entrypoint.sh against a fake herdr so the
 # harness-start, harness-supervision, and credential-environment paths are
-# verified without a cluster and without driving any real Herdr lifecycle.
-# Prints "ok" on success.
+# verified without a cluster and without driving any real Herdr lifecycle. A
+# gateway-managed firstmate's credential fetch runs against a fake gateway (a
+# small local HTTP server) with the same fake herdr. Prints "ok" on success.
 #
 # Usage: bash deploy/kubernetes/firstmate/entrypoint.test.sh
 set -euo pipefail
@@ -171,6 +172,9 @@ case "${args[0]:-} ${args[1]:-}" in
     ;;
   "server "*|"server")
     env | sort > "${FAKE_HERDR_SERVER_ENV:?}"
+    if [ -n "${FAKE_ORDER_LOG:-}" ]; then
+      printf 'server\n' >> "$FAKE_ORDER_LOG"
+    fi
     exec sleep 300
     ;;
   *)
@@ -415,5 +419,229 @@ grep -q 'retained husk with no live terminal' "$EP3_ERR" \
 if grep -q 'a harness is already live' "$EP3_ERR"; then
   fail "entrypoint treated the retained husk as a live harness"
 fi
+
+# A per-user firstmate run by the multi-user gateway fetches its credentials
+# from the gateway's internal port before the herdr server starts: the token
+# goes in the Authorization header and is unset before anything inherits it, a
+# failed fetch is retried, an answer without the provider key is refused rather
+# than starting a keyless harness, only declared names are exported, a value
+# ending in `=` (base64 padding) arrives intact, the token never appears on
+# curl's command line, and no token or key is ever printed.
+if ! command -v python3 >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+  echo "skip: python3 and curl are required for the credential-fetch checks" >&2
+  echo "ok"
+  exit 0
+fi
+
+HOME4="$TMP/home4"
+HERDR_LOG4="$TMP/herdr4.log"
+PANE_LOG4="$TMP/pane4.log"
+SERVER_ENV4="$TMP/server4.env"
+EP4_ERR="$TMP/ep4.err"
+GATEWAY_DIR="$TMP/gateway"
+ORDER_LOG="$TMP/order.log"
+mkdir -p "$HOME4/bin" "$HOME4/config" "$HOME4/state" "$HOME4/data" "$HOME4/projects" "$GATEWAY_DIR"
+printf '#!/bin/sh\n' > "$HOME4/bin/fm-inbox.sh"
+: > "$HERDR_LOG4"
+: > "$PANE_LOG4"
+: > "$ORDER_LOG"
+printf 'fail\n' > "$GATEWAY_DIR/mode"
+
+CRED_TOKEN="uabc2345.test-credential-token-$$"
+PROVIDER_KEY="sk-ant-test-delivered-key-$$="
+GITHUB_KEY="github_pat_test_delivered-$$"
+
+# A curl in front of the real one records every command line it is given.
+CURL_SPY="$TMP/curl-spy"
+CURL_ARGV_LOG="$TMP/curl-argv.log"
+REAL_CURL="$(command -v curl)"
+mkdir -p "$CURL_SPY"
+: > "$CURL_ARGV_LOG"
+cat > "$CURL_SPY/curl" <<FAKE_CURL
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CURL_ARGV_LOG"
+exec "$REAL_CURL" "\$@"
+FAKE_CURL
+chmod +x "$CURL_SPY/curl"
+
+cat > "$GATEWAY_DIR/gateway.py" <<'FAKE_GATEWAY'
+import http.server
+import json
+import os
+import sys
+
+state = sys.argv[1]
+token = os.environ["FAKE_GATEWAY_TOKEN"]
+order = os.environ["FAKE_ORDER_LOG"]
+
+
+class Gateway(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        with open(os.path.join(state, "mode")) as handle:
+            mode = handle.read().strip()
+        authorized = self.headers.get("Authorization") == "Bearer " + token
+        with open(os.path.join(state, "requests.log"), "a") as handle:
+            handle.write("%s %s %s\n" % (self.path, "auth-ok" if authorized else "auth-bad", mode))
+        with open(order, "a") as handle:
+            handle.write("fetch:%s\n" % mode)
+        if self.path != "/internal/v1/credentials" or not authorized:
+            self.send_response(401)
+            self.end_headers()
+            return
+        if mode == "fail":
+            self.send_response(503)
+            self.end_headers()
+            return
+        env = {"GH_TOKEN": os.environ["FAKE_GITHUB_KEY"], "GITHUB_TOKEN": os.environ["FAKE_GITHUB_KEY"]}
+        if mode == "ok":
+            env["ANTHROPIC_API_KEY"] = os.environ["FAKE_PROVIDER_KEY"]
+            env["UNDECLARED_NAME"] = "should-not-be-exported"
+        body = json.dumps({"env": env}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Gateway)
+with open(os.path.join(state, "port"), "w") as handle:
+    handle.write(str(server.server_address[1]))
+server.serve_forever()
+FAKE_GATEWAY
+
+FAKE_GATEWAY_TOKEN="$CRED_TOKEN" FAKE_ORDER_LOG="$ORDER_LOG" \
+  FAKE_PROVIDER_KEY="$PROVIDER_KEY" FAKE_GITHUB_KEY="$GITHUB_KEY" \
+  python3 "$GATEWAY_DIR/gateway.py" "$GATEWAY_DIR" &
+GATEWAY_PID=$!
+cleanup_gateway() {
+  kill "$GATEWAY_PID" 2>/dev/null || true
+  wait "$GATEWAY_PID" 2>/dev/null || true
+}
+for _ in $(seq 1 100); do
+  [ -s "$GATEWAY_DIR/port" ] && break
+  sleep 0.05
+done
+[ -s "$GATEWAY_DIR/port" ] || { cleanup_gateway; fail "the fake gateway did not start"; }
+GATEWAY_URL="http://127.0.0.1:$(cat "$GATEWAY_DIR/port")/internal/v1/credentials"
+gateway_requests() {
+  if [ -f "$GATEWAY_DIR/requests.log" ]; then grep -c '' "$GATEWAY_DIR/requests.log"; else echo 0; fi
+}
+
+PATH="$CURL_SPY:$FAKE_BIN:$PATH" \
+  HOME="$HOME4" \
+  FM_HOME="$HOME4" \
+  FIRSTMATE_SEED_DIR="$SEED_DIR" \
+  HERDR_SESSION=firstmate \
+  FM_HARNESS_COMMAND="$HARNESS_CMD" \
+  FM_HARNESS_SUPERVISION_INTERVAL=0.2 \
+  FM_HARNESS_SUPERVISION_GRACE=3 \
+  FM_READY_FILE="$TMP/ready4" \
+  FM_TENANT_CREDENTIALS_URL="$GATEWAY_URL" \
+  FM_TENANT_CREDENTIALS_TOKEN="$CRED_TOKEN" \
+  FM_TENANT_CREDENTIAL_ENVS="ANTHROPIC_API_KEY GH_TOKEN GITHUB_TOKEN" \
+  FM_TENANT_REQUIRED_ENV=ANTHROPIC_API_KEY \
+  FM_TENANT_CREDENTIALS_RETRY_DELAY=1 \
+  FM_TENANT_CREDENTIALS_RETRY_MAX=1 \
+  FAKE_ORDER_LOG="$ORDER_LOG" \
+  FAKE_HERDR_LOG="$HERDR_LOG4" \
+  FAKE_HERDR_PANE_LOG="$PANE_LOG4" \
+  FAKE_HERDR_SERVER_ENV="$SERVER_ENV4" \
+  bash "$ENTRYPOINT" >"$TMP/ep4.out" 2>"$EP4_ERR" &
+EP_PID=$!
+
+# The gateway is down: the entrypoint retries and starts nothing meanwhile.
+for _ in $(seq 1 100); do
+  [ "$(gateway_requests)" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(gateway_requests)" -ge 2 ] || { cleanup_gateway; fail "entrypoint did not retry a failed credential fetch"; }
+grep -q '^server$' "$ORDER_LOG" && { cleanup_gateway; fail "the herdr server started before the credentials were fetched"; }
+[ ! -e "$TMP/ready4" ] || { cleanup_gateway; fail "the pod reported ready while its credentials were missing"; }
+grep -q "could not fetch this firstmate's credentials" "$EP4_ERR" \
+  || { cleanup_gateway; fail "entrypoint did not report the failed fetch"; }
+
+# The gateway answers without the provider key: refused, never a keyless harness.
+printf 'keyless\n' > "$GATEWAY_DIR/mode"
+for _ in $(seq 1 100); do
+  grep -q 'refusing to start a keyless harness' "$EP4_ERR" && break
+  sleep 0.1
+done
+grep -q 'refusing to start a keyless harness' "$EP4_ERR" \
+  || { cleanup_gateway; fail "entrypoint accepted a delivery without the provider key"; }
+grep -q '^server$' "$ORDER_LOG" && { cleanup_gateway; fail "the herdr server started on a keyless delivery"; }
+[ ! -e "$TMP/ready4" ] || { cleanup_gateway; fail "the pod reported ready on a keyless delivery"; }
+
+# The gateway delivers: the server starts after the fetch, with the keys.
+printf 'ok\n' > "$GATEWAY_DIR/mode"
+for _ in $(seq 1 100); do
+  grep -q '^pane_run ' "$PANE_LOG4" 2>/dev/null && break
+  kill -0 "$EP_PID" 2>/dev/null || break
+  sleep 0.1
+done
+cleanup_gateway
+grep -q '^pane_run ' "$PANE_LOG4" || fail "entrypoint never started the harness after the credentials arrived"
+first_server=$(grep -n '^server$' "$ORDER_LOG" | head -1 | cut -d: -f1)
+first_ok=$(grep -n '^fetch:ok$' "$ORDER_LOG" | head -1 | cut -d: -f1)
+[ -n "$first_server" ] && [ -n "$first_ok" ] && [ "$first_ok" -lt "$first_server" ] \
+  || fail "the herdr server did not start after the credential fetch"
+if grep -q 'auth-bad' "$GATEWAY_DIR/requests.log"; then
+  fail "entrypoint presented the wrong credential token"
+fi
+grep -q 'internal/v1/credentials' "$CURL_ARGV_LOG" || fail "the credential fetch did not go through curl"
+if grep -qF "$CRED_TOKEN" "$CURL_ARGV_LOG"; then
+  fail "the credential token was on curl's command line"
+fi
+grep -q "^ANTHROPIC_API_KEY=$PROVIDER_KEY\$" "$SERVER_ENV4" \
+  || fail "the delivered provider key did not reach the herdr server environment"
+grep -q "^GH_TOKEN=$GITHUB_KEY\$" "$SERVER_ENV4" \
+  || fail "the delivered GitHub token did not reach the herdr server environment"
+grep -q "^GITHUB_TOKEN=$GITHUB_KEY\$" "$SERVER_ENV4" \
+  || fail "the delivered GitHub token did not reach GITHUB_TOKEN"
+if grep -q '^FM_TENANT_CREDENTIALS_TOKEN=' "$SERVER_ENV4"; then
+  fail "the credential token leaked into the herdr server environment"
+fi
+if grep -q '^UNDECLARED_NAME=' "$SERVER_ENV4"; then
+  fail "a credential under an undeclared name was exported"
+fi
+[ -e "$TMP/ready4" ] || fail "entrypoint did not mark the pod ready once the server ran"
+for secret in "$CRED_TOKEN" "$PROVIDER_KEY" "$GITHUB_KEY"; do
+  if grep -qF "$secret" "$EP4_ERR" "$TMP/ep4.out" "$HERDR_LOG4"; then
+    fail "a credential or token was printed"
+  fi
+done
+
+kill -TERM "$EP_PID" 2>/dev/null || true
+wait "$EP_PID" 2>/dev/null || true
+EP_PID=
+
+# The URL without its token is a broken deployment: exit, never start keyless.
+HOME5="$TMP/home5"
+mkdir -p "$HOME5/bin" "$HOME5/config" "$HOME5/state" "$HOME5/data" "$HOME5/projects"
+printf '#!/bin/sh\n' > "$HOME5/bin/fm-inbox.sh"
+: > "$TMP/order5.log"
+set +e
+PATH="$FAKE_BIN:$PATH" \
+  HOME="$HOME5" \
+  FM_HOME="$HOME5" \
+  FIRSTMATE_SEED_DIR="$SEED_DIR" \
+  HERDR_SESSION=firstmate \
+  FM_HARNESS_COMMAND="$HARNESS_CMD" \
+  FM_TENANT_CREDENTIALS_URL="http://127.0.0.1:9/internal/v1/credentials" \
+  FM_TENANT_REQUIRED_ENV=ANTHROPIC_API_KEY \
+  FAKE_ORDER_LOG="$TMP/order5.log" \
+  FAKE_HERDR_LOG="$TMP/herdr5.log" \
+  FAKE_HERDR_PANE_LOG="$TMP/pane5.log" \
+  FAKE_HERDR_SERVER_ENV="$TMP/server5.env" \
+  bash "$ENTRYPOINT" >"$TMP/ep5.out" 2>"$TMP/ep5.err"
+ep5_status=$?
+set -e
+[ "$ep5_status" -ne 0 ] || fail "entrypoint ran without its credential token"
+grep -q '^server$' "$TMP/order5.log" && fail "the herdr server started without a credential token"
+grep -q 'FM_TENANT_CREDENTIALS_TOKEN is empty' "$TMP/ep5.err" \
+  || fail "entrypoint did not explain the missing credential token"
 
 echo "ok"

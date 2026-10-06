@@ -1,0 +1,74 @@
+{{- if include "firstmate.tenants.enabled" . }}
+{{- $ns := required "gateway.tenantNamespace is required" .Values.gateway.tenantNamespace }}
+{{- $t := .Values.tenants }}
+{{- $pod := include "firstmate.tenants.podFootprint" . | fromJson }}
+{{- $n := int $t.maxTenants }}
+{{- if lt $n 1 }}
+{{- fail "tenants.maxTenants must be at least 1" }}
+{{- end }}
+{{- $storage := include "firstmate.tenants.mebibytes" (dict "q" $t.persistence.size "what" "tenants.persistence.size") | atoi }}
+# Per-user firstmates live here, under the Pod Security "restricted" profile.
+# Kept on uninstall: deleting it would delete every user's home volume.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    helm.sh/resource-policy: keep
+---
+# The one identity every tenant pod runs as: no token mounted, no RBAC.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fm-tenant
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# The hard backstop behind tenants.maxTenants: maxTenants x one tenant.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "firstmate.fullname" . }}-tenants
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  hard:
+    pods: {{ $n | quote }}
+    requests.cpu: {{ printf "%dm" (mul $n (index $pod "requests.cpu")) | quote }}
+    requests.memory: {{ printf "%dMi" (mul $n (index $pod "requests.memory")) | quote }}
+    limits.memory: {{ printf "%dMi" (mul $n (index $pod "limits.memory")) | quote }}
+    requests.storage: {{ printf "%dMi" (mul $n $storage) | quote }}
+    persistentvolumeclaims: {{ $n | quote }}
+---
+# Defaults for any container that names none, and per-object ceilings no
+# tenant needs to exceed.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "firstmate.fullname" . }}-tenants
+  namespace: {{ $ns }}
+  labels:
+    {{- include "firstmate.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: {{ $t.resources.walkieTalkie.limits.memory | quote }}
+      defaultRequest:
+        cpu: {{ $t.resources.walkieTalkie.requests.cpu | quote }}
+        memory: {{ $t.resources.walkieTalkie.requests.memory | quote }}
+      max:
+        memory: {{ $t.resources.firstmate.limits.memory | quote }}
+    - type: PersistentVolumeClaim
+      max:
+        storage: {{ $t.persistence.size | quote }}
+{{- end }}

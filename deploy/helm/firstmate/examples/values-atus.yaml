@@ -222,3 +222,13 @@ gateway:
   persistence:
     storageClass: beta3
     size: 1Gi
+
+# Per-user firstmates (docs/deploy-kubernetes.md, "Per-user firstmates"). Off:
+# enabling them is a separate deploy decision that needs the gateway on, the
+# read-only CNI NetworkPolicy check passed, and `tenants.image.firstmate.tag`
+# pinned to a runtime build whose entrypoint fetches credentials from the
+# gateway (the image above predates it). Tenant homes use the same class.
+tenants:
+  enabled: false
+  persistence:
+    storageClass: beta3

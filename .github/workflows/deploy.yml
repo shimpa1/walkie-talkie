@@ -90,5 +90,56 @@ jobs:
             exit 1
           fi
 
+      - name: Per-user firstmates render their namespace, isolation and quota
+        run: |
+          chart=deploy/helm/firstmate
+          helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
+            --set gateway.enabled=true --set gateway.githubClientId=Ov23liExample \
+            --set tenants.enabled=true \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/tenants.yaml
+          python3 - /tmp/tenants.yaml <<'CHECK'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+          def one(kind, name):
+              found = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name]
+              assert len(found) == 1, f"{kind}/{name} renders once"
+              return found[0]
+          ns = one("Namespace", "firstmate-tenants")
+          for mode in ("enforce", "audit", "warn"):
+              assert ns["metadata"]["labels"][f"pod-security.kubernetes.io/{mode}"] == "restricted", mode
+          hard = one("ResourceQuota", "firstmate-tenants")["spec"]["hard"]
+          assert hard["pods"] == "5" and hard["requests.cpu"] == "1500m", hard
+          one("LimitRange", "firstmate-tenants")
+          rules = one("Role", "firstmate-gateway")["rules"]
+          granted = {r: set(rule["verbs"]) for rule in rules for r in rule["resources"]}
+          assert not any("/" in r or r == "*" for r in granted), granted
+          assert "*" not in set().union(*granted.values()), granted
+          one("RoleBinding", "firstmate-gateway")
+          assert not [d for d in docs if d["kind"] in ("ClusterRole", "ClusterRoleBinding")]
+          policies = [d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"].get("namespace") == "firstmate-tenants"]
+          assert len(policies) == 3, [p["metadata"]["name"] for p in policies]
+          deny = one("NetworkPolicy", "firstmate-tenants-default-deny")["spec"]
+          assert deny["podSelector"] == {} and sorted(deny["policyTypes"]) == ["Egress", "Ingress"], deny
+          blocks = [peer["ipBlock"] for rule in one("NetworkPolicy", "firstmate-tenants-egress")["spec"]["egress"]
+                    for peer in rule["to"] if "ipBlock" in peer]
+          v4 = [b for b in blocks if b["cidr"] == "0.0.0.0/0"]
+          assert len(v4) == 1 and {"10.0.0.0/8", "169.254.0.0/16"} <= set(v4[0]["except"]), blocks
+          CHECK
+          # Off (the atus values as committed), none of it renders.
+          helm template firstmate $chart -n firstmate -f $chart/examples/values-atus.yaml \
+            --set credentials.create.walkieTalkieToken=tok >/tmp/tenants-off.yaml
+          if grep -Eq 'firstmate-tenants|kind: (Role|RoleBinding|ResourceQuota|LimitRange|Namespace)$' /tmp/tenants-off.yaml; then
+            echo "tenant objects rendered while tenants are off" >&2
+            exit 1
+          fi
+          for bad in "--set tenants.enabled=true" \
+            "-f $chart/examples/values-atus.yaml --set gateway.enabled=true --set gateway.githubClientId=x --set tenants.enabled=true --set gateway.networkPolicy.enabled=false"; do
+            # shellcheck disable=SC2086 # the flags are word-split on purpose
+            if helm template firstmate $chart -n firstmate $bad >/dev/null 2>&1; then
+              echo "tenants rendered without their isolation: $bad" >&2
+              exit 1
+            fi
+          done
+
       - name: Entrypoint harness-start test
         run: bash deploy/kubernetes/firstmate/entrypoint.test.sh

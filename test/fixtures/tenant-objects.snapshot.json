@@ -1,0 +1,418 @@
+{
+  "secret": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "metadata": {
+      "name": "fm-uk7m2p9q-tokens",
+      "namespace": "firstmate-tenants",
+      "labels": {
+        "app.kubernetes.io/name": "firstmate-tenant",
+        "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+        "app.kubernetes.io/component": "tenant",
+        "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+      }
+    },
+    "type": "Opaque",
+    "data": {
+      "api": "YXBpLXRva2Vu",
+      "credentials": "dWs3bTJwOXEuY3JlZGVudGlhbC10b2tlbg=="
+    }
+  },
+  "configMap": {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+      "name": "fm-uk7m2p9q-agents",
+      "namespace": "firstmate-tenants",
+      "labels": {
+        "app.kubernetes.io/name": "firstmate-tenant",
+        "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+        "app.kubernetes.io/component": "tenant",
+        "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+      }
+    },
+    "data": {
+      "opencode.json": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"small_model\": \"anthropic/claude-haiku-4-5\",\n  \"enabled_providers\": [\n    \"anthropic\"\n  ],\n  \"provider\": {\n    \"anthropic\": {\n      \"options\": {\n        \"apiKey\": \"{env:ANTHROPIC_API_KEY}\"\n      }\n    }\n  }\n}\n",
+      "crew-dispatch.json": "{\n  \"rules\": [\n    {\n      \"when\": \"Mechanical or routine implementation, or other work with a settled plan and a bounded path.\",\n      \"use\": [\n        {\n          \"harness\": \"opencode\",\n          \"model\": \"anthropic/claude-haiku-4-5\"\n        }\n      ]\n    }\n  ],\n  \"default\": [\n    {\n      \"harness\": \"opencode\",\n      \"model\": \"anthropic/claude-sonnet-5-5\"\n    }\n  ]\n}\n"
+    }
+  },
+  "service": {
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+      "name": "fm-uk7m2p9q",
+      "namespace": "firstmate-tenants",
+      "labels": {
+        "app.kubernetes.io/name": "firstmate-tenant",
+        "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+        "app.kubernetes.io/component": "tenant",
+        "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+      }
+    },
+    "spec": {
+      "type": "ClusterIP",
+      "selector": {
+        "app.kubernetes.io/name": "firstmate-tenant",
+        "walkie-talkie.atus.hr/tenant": "uk7m2p9q"
+      },
+      "ports": [
+        {
+          "name": "http",
+          "port": 8787,
+          "targetPort": "walkie-talkie",
+          "protocol": "TCP"
+        }
+      ]
+    }
+  },
+  "statefulSet": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "fm-uk7m2p9q",
+      "namespace": "firstmate-tenants",
+      "labels": {
+        "app.kubernetes.io/name": "firstmate-tenant",
+        "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+        "app.kubernetes.io/component": "tenant",
+        "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+      }
+    },
+    "spec": {
+      "serviceName": "fm-uk7m2p9q",
+      "replicas": 1,
+      "podManagementPolicy": "Parallel",
+      "updateStrategy": {
+        "type": "RollingUpdate"
+      },
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "firstmate-tenant",
+          "walkie-talkie.atus.hr/tenant": "uk7m2p9q"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "firstmate-tenant",
+            "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+            "app.kubernetes.io/component": "tenant",
+            "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+          },
+          "annotations": {
+            "walkie-talkie.atus.hr/config-version": "3",
+            "checksum/agents": "c86b768844eae253ed32db6153965665bd7da7a14d59face3f5dd34dc8930683"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "fm-tenant",
+          "automountServiceAccountToken": false,
+          "enableServiceLinks": false,
+          "securityContext": {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": true,
+            "fsGroup": 1000,
+            "fsGroupChangePolicy": "OnRootMismatch",
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "terminationGracePeriodSeconds": 30,
+          "initContainers": [
+            {
+              "name": "install-herdr",
+              "image": "shimpa/firstmate-runtime:0123456789ab",
+              "imagePullPolicy": "IfNotPresent",
+              "command": [
+                "cp",
+                "/usr/local/bin/herdr",
+                "/opt/herdr/herdr"
+              ],
+              "volumeMounts": [
+                {
+                  "name": "herdr-bin",
+                  "mountPath": "/opt/herdr"
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "16Mi"
+                },
+                "limits": {
+                  "memory": "64Mi"
+                }
+              },
+              "securityContext": {
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ],
+          "containers": [
+            {
+              "name": "firstmate",
+              "image": "shimpa/firstmate-runtime:0123456789ab",
+              "imagePullPolicy": "IfNotPresent",
+              "env": [
+                {
+                  "name": "HOME",
+                  "value": "/home/firstmate"
+                },
+                {
+                  "name": "FM_HOME",
+                  "value": "/home/firstmate"
+                },
+                {
+                  "name": "FM_BIN",
+                  "value": "/home/firstmate/bin"
+                },
+                {
+                  "name": "HERDR_SESSION",
+                  "value": "firstmate"
+                },
+                {
+                  "name": "FM_HARNESS_COMMAND",
+                  "value": "OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode --prompt \"$FM_PRIMARY_SESSION_START_PROMPT\""
+                },
+                {
+                  "name": "FM_READY_FILE",
+                  "value": "/tmp/firstmate-ready"
+                },
+                {
+                  "name": "FM_TENANT_CREDENTIALS_URL",
+                  "value": "http://firstmate-gateway-internal.firstmate.svc:8788/internal/v1/credentials"
+                },
+                {
+                  "name": "FM_TENANT_CREDENTIALS_TOKEN",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "fm-uk7m2p9q-tokens",
+                      "key": "credentials"
+                    }
+                  }
+                },
+                {
+                  "name": "FM_TENANT_CREDENTIAL_ENVS",
+                  "value": "ANTHROPIC_API_KEY GH_TOKEN GITHUB_TOKEN"
+                },
+                {
+                  "name": "FM_TENANT_REQUIRED_ENV",
+                  "value": "ANTHROPIC_API_KEY"
+                }
+              ],
+              "readinessProbe": {
+                "exec": {
+                  "command": [
+                    "test",
+                    "-e",
+                    "/tmp/firstmate-ready"
+                  ]
+                },
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3
+              },
+              "volumeMounts": [
+                {
+                  "name": "home",
+                  "mountPath": "/home/firstmate"
+                },
+                {
+                  "name": "agents",
+                  "mountPath": "/home/firstmate/config/crew-dispatch.json",
+                  "subPath": "crew-dispatch.json",
+                  "readOnly": true
+                },
+                {
+                  "name": "agents",
+                  "mountPath": "/home/firstmate/.config/opencode/opencode.json",
+                  "subPath": "opencode.json",
+                  "readOnly": true
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "250m",
+                  "memory": "512Mi"
+                },
+                "limits": {
+                  "memory": "2Gi",
+                  "ephemeral-storage": "4Gi"
+                }
+              },
+              "securityContext": {
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            },
+            {
+              "name": "walkie-talkie",
+              "image": "shimpa/walkie-talkie:ba9876543210",
+              "imagePullPolicy": "IfNotPresent",
+              "ports": [
+                {
+                  "name": "walkie-talkie",
+                  "containerPort": 8787,
+                  "protocol": "TCP"
+                }
+              ],
+              "env": [
+                {
+                  "name": "FM_HOME",
+                  "value": "/home/firstmate"
+                },
+                {
+                  "name": "FM_BIN",
+                  "value": "/home/firstmate/bin"
+                },
+                {
+                  "name": "HERDR_SESSION",
+                  "value": "firstmate"
+                },
+                {
+                  "name": "FM_WT_HOST",
+                  "value": "0.0.0.0"
+                },
+                {
+                  "name": "FM_WT_PORT",
+                  "value": "8787"
+                },
+                {
+                  "name": "FM_WT_ALLOW_PUBLIC_BIND",
+                  "value": "1"
+                },
+                {
+                  "name": "FM_WT_TOKEN",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "fm-uk7m2p9q-tokens",
+                      "key": "api"
+                    }
+                  }
+                },
+                {
+                  "name": "FM_WT_HERDR_BIN",
+                  "value": "/opt/herdr/herdr"
+                },
+                {
+                  "name": "XDG_CONFIG_HOME",
+                  "value": "/home/firstmate/.config"
+                },
+                {
+                  "name": "FM_WT_PUSH_STORE",
+                  "value": "/home/firstmate/.walkie-talkie/push.json"
+                }
+              ],
+              "livenessProbe": {
+                "tcpSocket": {
+                  "port": "walkie-talkie"
+                },
+                "initialDelaySeconds": 10,
+                "periodSeconds": 20,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3
+              },
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": "walkie-talkie"
+                },
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3
+              },
+              "volumeMounts": [
+                {
+                  "name": "home",
+                  "mountPath": "/home/firstmate"
+                },
+                {
+                  "name": "herdr-bin",
+                  "mountPath": "/opt/herdr",
+                  "readOnly": true
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "50m",
+                  "memory": "64Mi"
+                },
+                "limits": {
+                  "memory": "256Mi"
+                }
+              },
+              "securityContext": {
+                "runAsNonRoot": true,
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              }
+            }
+          ],
+          "volumes": [
+            {
+              "name": "agents",
+              "configMap": {
+                "name": "fm-uk7m2p9q-agents"
+              }
+            },
+            {
+              "name": "herdr-bin",
+              "emptyDir": {}
+            }
+          ]
+        }
+      },
+      "volumeClaimTemplates": [
+        {
+          "metadata": {
+            "name": "home",
+            "labels": {
+              "app.kubernetes.io/name": "firstmate-tenant",
+              "walkie-talkie.atus.hr/tenant": "uk7m2p9q",
+              "app.kubernetes.io/component": "tenant",
+              "app.kubernetes.io/managed-by": "walkie-talkie-gateway"
+            }
+          },
+          "spec": {
+            "accessModes": [
+              "ReadWriteOnce"
+            ],
+            "storageClassName": "beta3",
+            "resources": {
+              "requests": {
+                "storage": "10Gi"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

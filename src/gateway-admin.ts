@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { clearCookie, SESSION_COOKIE } from "./cookies.js";
 import { GatewayStore, type UserRecord } from "./gateway-store.js";
+import type { FirstmateState } from "./reconciler.js";
 import { readBody, sendError, sendJson } from "./http-util.js";
 
 /**
@@ -20,7 +21,12 @@ export interface AccountContext {
   isAdmin: (githubId: number) => boolean;
   /** Admins and static tenant owners: managed in configuration, not here. */
   isDeclared: (githubId: number) => boolean;
-  hasFirstmate: (githubId: number) => boolean;
+  /** "ready" for a declared firstmate, else the managed one's lifecycle state. */
+  firstmateState: (user: UserRecord) => FirstmateState | "ready";
+  /** Whether another user may be admitted under the tenant cap. */
+  admissionOpen: () => boolean;
+  /** A user's firstmate should change (removed, suspended, resumed): reconcile soon. */
+  kick: () => void;
   log: (line: string) => void;
 }
 
@@ -76,7 +82,7 @@ function userView(ctx: AccountContext, user: UserRecord, sessions?: number): Rec
     state: user.state,
     admin: ctx.isAdmin(user.githubId),
     declared: ctx.isDeclared(user.githubId),
-    firstmate: ctx.hasFirstmate(user.githubId) ? "ready" : "none",
+    firstmate: ctx.firstmateState(user),
     created_at: new Date(user.createdAt).toISOString(),
     last_login_at: user.lastLoginAt === null ? null : new Date(user.lastLoginAt).toISOString(),
     ...(sessions !== undefined ? { sessions } : {}),
@@ -156,14 +162,16 @@ export async function handleAccountRoute(
       }
     }
     if (verb === undefined) {
-      store.deleteUser(target.id);
+      store.deleteUser(target.id, at);
       store.audit({ at, actor: me.id, action: "user.removed", subject: target.id, detail: { github_id: target.githubId } });
       ctx.log(`user ${target.id} removed by ${me.id}`);
+      ctx.kick();
       return sendJson(res, 200, JSON.stringify({ removed: true }));
     }
     const state = verb === "suspend" ? "suspended" : "active";
     store.setUserState(target.id, state);
     store.audit({ at, actor: me.id, action: verb === "suspend" ? "user.suspended" : "user.resumed", subject: target.id, detail: null });
+    ctx.kick();
     const updated = store.userById(target.id);
     return sendJson(res, 200, JSON.stringify({ user: updated === null ? null : userView(ctx, updated) }));
   }
@@ -185,6 +193,7 @@ export async function handleAccountRoute(
     const login = typeof body.login === "string" ? body.login.trim().replace(/^@/, "") : "";
     if (!GITHUB_LOGIN.test(login)) return sendError(res, 400, "login must be a GitHub login");
     if (store.userByLogin(login) !== null) return sendError(res, 409, "that GitHub account is already a user");
+    if (!ctx.admissionOpen()) return sendError(res, 409, "capacity_reached");
     const at = ctx.now();
     const invite = store.createInvite(login, me.id, at);
     store.audit({ at, actor: me.id, action: "invite.created", subject: invite.id, detail: { login: invite.login } });
@@ -227,6 +236,7 @@ export async function handleAccountRoute(
     const githubId = Number(requestMatch[1]);
     const at = ctx.now();
     if (requestMatch[2] === "approve") {
+      if (!ctx.admissionOpen()) return sendError(res, 409, "capacity_reached");
       const user = store.approveAccessRequest(githubId, at);
       if (user === null) return sendError(res, 404, "no such pending request");
       store.audit({ at, actor: me.id, action: "access.approved", subject: user.id, detail: { github_id: githubId } });

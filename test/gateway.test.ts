@@ -164,7 +164,7 @@ test("a declared admin signs in, gets a __Host- session cookie, and is reported 
       schema: "walkie-talkie-session.v1",
       mode: "gateway",
       signed_in: true,
-      user: { login: "captain", admin: true, firstmate: "ready", setup: false },
+      user: { login: "captain", admin: true, firstmate: "ready", firstmate_state: "running", setup: false },
       legacy_bearer: false,
     });
 
@@ -183,7 +183,7 @@ test("a declared tenant owner who is not an admin signs in as a plain user", asy
     const result = await signIn(w.gateway, w.github, CREW);
     assert.ok(result.session);
     const session = await json(await fetch(`${w.gateway.url}/auth/session`, { headers: sessionHeaders(result.session) }));
-    assert.deepEqual(session.user, { login: "crew-member", admin: false, firstmate: "ready", setup: false });
+    assert.deepEqual(session.user, { login: "crew-member", admin: false, firstmate: "ready", firstmate_state: "running", setup: false });
   } finally {
     await w.close();
   }
@@ -487,7 +487,7 @@ test("an admin with no firstmate yet is told so instead of being routed anywhere
     const { session } = await signIn(w.gateway, w.github, { id: 4004, login: "second-admin" });
     assert.ok(session);
     const info = await json(await fetch(`${w.gateway.url}/auth/session`, { headers: sessionHeaders(session) }));
-    assert.deepEqual(info.user, { login: "second-admin", admin: true, firstmate: "none", setup: false });
+    assert.deepEqual(info.user, { login: "second-admin", admin: true, firstmate: "none", firstmate_state: "none", setup: false });
     const response = await fetch(`${w.gateway.url}/api/status`, { headers: sessionHeaders(session) });
     assert.equal(response.status, 409);
     assert.deepEqual(await json(response), { error: "firstmate_not_provisioned" });
