@@ -464,6 +464,7 @@ gateway PVC and tenant namespace have `helm.sh/resource-policy: keep`.
 | Push routes return `503` | Inspect startup for push-store write failures; configure a writable path on the home mount and roll the static sidecar |
 | Live sessions missing / terminal-only history | Check shared home/session socket, CLI copy, session id mapping and OpenCode DB path; threads remain available |
 | Queue waits; firstmate card says unknown | Failed live/readiness read is unknown. Check watcher beacon and herdr access; a cross-container pid alone cannot prove the agent is down |
+| Health says `can_receive: true` but raw lock is `stale` with `live_harness: false` and consumer `unknown` | Expected when `diagnostic_scope` is `walkie-talkie-process-namespace`: the lock PID is not observable from this container, so the raw fields do not mean firstmate is dead. Use `can_receive`/`can_receive_basis` or `/api/firstmate`; see the [`/api/health` correction](../README.md#endpoints) for the contract |
 | Purge stays pending | StatefulSet must disappear before claim deletion; check claim finalizers/CSI and gateway reconcile errors. Retained row remains until claim absence is confirmed |
 | Secret changed but behavior unchanged | Secret environment is loaded at process start. Deploy the appropriate rotation/annotation change |
 | Vault re-seal failure | Restore required key ids, restart and confirm successful transactional re-seal before removing old keys |

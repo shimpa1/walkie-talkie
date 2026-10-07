@@ -2068,7 +2068,13 @@ async function loadHealth() {
     const payload = await response.json();
     const ready = payload && typeof payload === "object" ? payload : null;
     const canReceive = ready && ready.can_receive === true ? "yes" : ready && ready.can_receive === false ? "no" : "unknown";
-    setBanner(`firstmate reachable — can receive: ${canReceive}`, canReceive === "yes" ? "ok" : "warn", "health");
+    const diagnostic =
+      ready && ready.can_receive === true &&
+      ready.can_receive_basis === "herdr-primary-agent-and-watcher-beacon" &&
+      ready.diagnostic_scope === "walkie-talkie-process-namespace"
+        ? " · PID not observable from this container"
+        : "";
+    setBanner(`firstmate reachable — can receive: ${canReceive}${diagnostic}`, canReceive === "yes" ? "ok" : "warn", "health");
   } catch (error) {
     setBanner(`firstmate not reachable: ${error.message}`, "bad", "health");
   }
