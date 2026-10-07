@@ -4,6 +4,10 @@ This guide installs firstmate and its walkie-talkie phone companion into a
 Kubernetes cluster with the Helm chart in
 [`deploy/helm/firstmate`](../deploy/helm/firstmate).
 
+For the current-state documentation set, start at [docs/README.md](README.md).
+This guide owns installation details; [operations](operations.md) covers
+routine upgrades, rotations, backups, rollback limits and troubleshooting.
+
 The deployment **adds** a Kubernetes path; it does not replace firstmate's
 normal host-based use. The firstmate container runs on its **herdr** session
 backend, so firstmate behaves as it does on a workstation and its session stays
@@ -101,8 +105,7 @@ have them:
     [`deploy/kubernetes/firstmate/Dockerfile`](../deploy/kubernetes/firstmate/Dockerfile)
     (or supply your own image meeting the same contract);
   - the **walkie-talkie service** — built from the repository-root `Dockerfile`
-    provided by the sibling Docker/Compose deploy slice (a prerequisite: merge
-    that slice first).
+    in this repository.
 - **Credentials**: a walkie-talkie bearer token, a GitHub token, and the
   provider credentials your primary harness reads from the environment — for
   the default opencode harness `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`, for
@@ -189,17 +192,19 @@ docker build \
   -t registry.example.com/firstmate-runtime:0.1.0 deploy/kubernetes/firstmate
 ```
 
-walkie-talkie: build it from the repository-root `Dockerfile` provided by the
-sibling Docker/Compose deploy slice (a prerequisite) and push it to your
-registry as well.
+walkie-talkie: build it from the repository-root `Dockerfile` and push it to
+your registry as well.
 
 Then set `firstmate.image.repository`/`tag` and
 `walkieTalkie.image.repository`/`tag` to your pushed images.
 
 ## Credentials
 
-Every credential reaches a container through a Secret with `secretKeyRef`; none
-is inlined into the pod spec. There are two modes.
+For the static firstmate, chart-managed credentials reach containers through
+Secret references rather than inline pod values. There are two modes below.
+Managed tenants instead pull user provider keys and PATs from the gateway at
+startup; only their internal tokens are in Kubernetes Secrets. See
+[operations](operations.md#oauth-registration-and-secrets) for the full map.
 
 **Existing Secret (recommended for GitOps).** Create the Secret yourself and
 point the chart at it:
@@ -242,7 +247,9 @@ If you omit the walkie-talkie token, the chart generates one and prints it in
 the release notes. Set it explicitly for a token you control. Do not commit
 real tokens to a values file.
 
-**GitHub token from a Doppler-synced Secret.** To keep the GitHub PAT in a
+### GitHub token from a Doppler-synced Secret
+
+To keep the GitHub PAT in a
 secret manager rather than the chart's credential Secret, carry it as a key
 named `GH_TOKEN` in a Secret you already sync into the namespace (the atus
 deployment uses the Doppler operator's `firstmate-doppler-secrets`), inject
@@ -535,6 +542,12 @@ scope.
 
 ### Storage notes
 
+The home PVC does not by itself preserve static push state. Set
+`walkieTalkie.extraEnv` with `FM_WT_PUSH_STORE` pointing at a writable path
+under `firstmate.home`; the static chart leaves the `/app`-relative default
+unchanged. Managed sidecars already use their own home-based push path. See
+[push persistence](operations.md#persistence-backups-and-rollback).
+
 The home defaults to a `ReadWriteOnce` claim from `volumeClaimTemplates`, so it
 survives pod restarts and rescheduling within one replica. With a
 `volumeBindingMode: WaitForFirstConsumer` StorageClass, the pod schedules before
@@ -603,7 +616,7 @@ move the HTTPRoute backend.
 
 | Resource (release `firstmate`) | Purpose |
 | --- | --- |
-| `Deployment` `firstmate-gateway` (1 replica, `Recreate`) | The walkie-talkie image in gateway mode. It mounts no ServiceAccount token, runs as uid 1000 with a read-only root filesystem, and is probed on `/healthz`. |
+| `Deployment` `firstmate-gateway` (1 replica, `Recreate`) | The walkie-talkie image in gateway mode. It mounts no ServiceAccount token unless provisioning is enabled, runs as uid 1000 with a read-only root filesystem, and is probed on `/healthz`. |
 | `ConfigMap` `firstmate-tenant-params` | `catalog.json`: the provider and model catalog from `tenants.catalog`, mounted read-only at `/etc/walkie-talkie/tenant-params` (`FM_WT_CATALOG`). A catalog change restarts the gateway. |
 | `PersistentVolumeClaim` `firstmate-gateway-data` (1Gi) | The gateway's SQLite store: users, sessions, invites, the audit log, users' encrypted keys and their model choices. It is annotated `helm.sh/resource-policy: keep`, so turning the gateway off, or uninstalling, keeps the users. |
 | `Service` `firstmate-gateway` (:8787) | The public port, and the HTTPRoute's backend while the gateway is on. |
@@ -640,8 +653,8 @@ pod.
 | `tenants.catalog` | Anthropic, OpenAI, OpenRouter, Google, DeepSeek; opencode; optional GitHub token | What users choose from in **Setup** (see [Provider catalog](#provider-catalog)). |
 | `tenants.enabled` and the rest of `tenants.*` | `false` | Per-user firstmates (see [Per-user firstmates](#per-user-firstmates)). |
 
-The chart has **no field for a secret value**. The OAuth client secret, the
-vault keyring, the tenant-token master, the static tenants' tokens and the
+The gateway values have **no field for a secret value**. The OAuth client
+secret, the vault keyring, the tenant-token master, the static tenants' tokens and the
 legacy token reach the gateway only as `secretKeyRef`. A value given inline
 (for example `gateway.githubClientSecret`, `gateway.secrets.vaultKeys` or
 `staticTenants[].token`) fails the render. The values schema rejects it, and the
@@ -710,7 +723,10 @@ tenants:
 
 ### Vault key rotation
 
-A rotation is a Doppler change and a values change. No command is run.
+A normal rotation is a Doppler change and a values change; startup re-seals
+the rows without a manual CLI invocation. Confirm successful re-seal before
+removing an old key, and keep keys needed for encrypted backups. See the
+[rotation procedure](operations.md#rotation-procedures).
 
 1. In the gateway's Doppler config, append a new key to `WT_VAULT_KEYS`:
    `k1:<old>,k2:<openssl rand -base64 32>`.
@@ -763,9 +779,10 @@ Lifecycle, all in the app:
 
 - **Start / Stop**: the user, under Setup. Stopping keeps the home, Secret and
   agents config.
-- **Key or model change**: the firstmate restarts onto it. A key change bumps
-  its config version, and a model change changes its agents config. The app
-  warns that work in flight restarts with it.
+- **Delivered key or model change**: a running firstmate restarts onto it.
+  Changing its chosen provider key or GitHub token bumps its config version;
+  changing an unused provider's key does not. A model change changes its agents
+  config. The app warns that work in flight restarts with it.
 - **Key deleted**: deleting the chosen provider's key stops the firstmate,
   since it cannot run without it; the app asks for a second tap first. Start
   answers `key_required` until a key for that provider is saved again.
@@ -829,8 +846,9 @@ two tokens in each Secret are printed as `<redacted>`.
 
 ### One-time setup (outside the repo)
 
-Two steps cannot be expressed in the repo. Both happen once, before the enable
-PR is deployed.
+OAuth registration, external secret sync, and cluster enforcement checks are
+prerequisites outside this chart. The first two are needed for the gateway;
+the full network-policy check is required before enabling managed tenants.
 
 **1. Register the GitHub OAuth App.** Register it on the captain's account
 (`shimpa1`): GitHub → Settings → Developer settings → OAuth Apps → **New OAuth
@@ -840,8 +858,10 @@ App**. GitHub has no API for creating one.
 | --- | --- |
 | Application name | `walkie-talkie (atus)` |
 | Homepage URL | `https://walkie-talkie.atus.hr` |
-| Authorization callback URL | `https://walkie-talkie.atus.hr/auth/github/callback` (exactly; this is `<gateway.publicOrigin>/auth/github/callback`) |
+| Redirect URI (older forms: Authorization callback URL) | `https://walkie-talkie.atus.hr/auth/github/callback` (exactly; this is `<gateway.publicOrigin>/auth/github/callback`) |
+| Wildcard matching | off |
 | Enable Device Flow | off |
+| Expiring user tokens | on |
 
 After registering:
 
@@ -880,8 +900,10 @@ band.
 The `k1` prefix must match `gateway.vault.activeKey`. A later key rotation adds
 `,k2:<…>` and moves `activeKey` to `k2`.
 
-**3. Check that the CNI enforces NetworkPolicy** (read-only). Identify the
-cluster's CNI:
+**3. Check that the CNI enforces NetworkPolicy.** Identifying the CNI is
+read-only; proving enforcement needs authorized disposable connectivity tests.
+See [the required path checks](operations.md#enabling-managed-firstmates).
+Identify the cluster's CNI:
 
 ```sh
 kubectl -n kube-system get daemonsets
@@ -894,8 +916,10 @@ kubectl -n kube-system get daemonsets
   a cluster: their isolation is network policy.
 
 The policies also have to admit kubelet probes. If they did not, the firstmate
-pod would go un-Ready behind its new policy. If the CNI blocks probes, set
-`gateway.networkPolicy.enabled: false` in the enable PR and fix the CNI first.
+pod would go un-Ready behind its new policy. If the CNI blocks probes, fix
+and retest it before relying on these policies. Disabling
+`gateway.networkPolicy.enabled` removes the gateway/static ingress boundary
+and is incompatible with `tenants.enabled: true`.
 
 An enforcing CNI is not enough on its own: a **cluster-wide policy can
 override** a namespace's NetworkPolicies. With Calico, a GlobalNetworkPolicy
@@ -979,6 +1003,13 @@ Rollback works at any step. Set `gateway.enabled: false` and upgrade. That:
 The firstmate pod was never modified, so there is nothing to restore. The
 gateway's store claim is kept, so re-enabling later brings back the same users,
 invites and sessions.
+
+This cutover rollback assumes managed tenants remain off. With provisioning
+enabled, also set `tenants.enabled: false` when disabling the gateway, or the
+chart refuses the combination. Disabling its chart switch does not stop dynamically
+created tenant workloads. Stop/review them first and check store/schema and
+secret compatibility before rolling images back; see
+[rollback limits](operations.md#persistence-backups-and-rollback).
 
 After a rollback, a phone talks to the firstmate pod directly again and needs
 the walkie-talkie token:
