@@ -77,15 +77,15 @@ firstmate:
 walkieTalkie:
   image:
     repository: shimpa/walkie-talkie
-    # Commit 36ac8b8: main at the merge of PR #30, a Status screen that stays
-    # current on the installed phone app (network-first service worker, refresh
-    # on foreground/pageshow, no polling while hidden, reload into a new deploy
-    # on resume). Deployed 2026-10-04. The previous running image was
-    # d9702fcbf9d9, built from commit d9702fc (PR #28).
+    # Commit f81a7a4: main at the merge of PR #42 (raw cross-container health
+    # diagnostics labeled as not observable from this container), which also
+    # carries PR #41 (wide-screen layout from 720px up; phones unchanged).
+    # Deployed 2026-10-07, the same image as gateway.image below. The previous
+    # running image was 36ac8b81ad5b, built from commit 36ac8b8 (PR #30).
     # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:36ac8b81ad5b --push .
-    tag: "36ac8b81ad5b"
+    #     -t shimpa/walkie-talkie:f81a7a42736e --push .
+    tag: "f81a7a42736e"
     pullPolicy: IfNotPresent
   # The Conversations view reads the pod's own herdr session through the herdr
   # CLI; the walkie-talkie image does not bundle it, so the chart installs it
@@ -182,18 +182,18 @@ agents:
 # Multi-user gateway (docs/deploy-kubernetes.md, "Multi-user gateway"). On:
 # the gateway runs its own Deployment in front of the firstmate pod and the
 # HTTPRoute points at it. The firstmate StatefulSet above is unchanged by any
-# of this (its sidecar image predates gateway mode and stays as it is): it
-# becomes the admin's static tenant behind the gateway. Setting `enabled: false`
+# of this: it becomes the admin's static tenant behind the gateway. Setting `enabled: false`
 # and upgrading is the rollback; the gateway's store claim is kept.
 gateway:
   enabled: true
   image:
     repository: shimpa/walkie-talkie
-    # Commit b9c3cf0: main at the merge of PR #37 (gateway mode, per-user
-    # firstmate lifecycle). Built with:
+    # Commit f81a7a4: main at the merge of PR #42, the same image as the
+    # sidecar above. The previous gateway image was b9c3cf045ff9 (PR #37).
+    # Built with:
     #   docker buildx build --platform linux/amd64 \
-    #     -t shimpa/walkie-talkie:b9c3cf045ff9 --push .
-    tag: "b9c3cf045ff9"
+    #     -t shimpa/walkie-talkie:f81a7a42736e --push .
+    tag: "f81a7a42736e"
   # The registered GitHub OAuth App "walkie-talkie (atus)" (callback
   # https://walkie-talkie.atus.hr/auth/github/callback). The client id is
   # public; the client secret is only in Doppler (walkie-talkie/gateway).

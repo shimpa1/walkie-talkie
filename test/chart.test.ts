@@ -974,7 +974,7 @@ test("tenants on: the rendered tenant parameters are what the gateway's own pars
   assert.equal(params.port, 8787);
   // The atus values pin the tenant runtime; the sidecar falls back to the gateway's image.
   assert.equal(params.images.firstmate.image, "shimpa/firstmate-runtime:b9c3cf045ff9");
-  assert.equal(params.images.walkieTalkie.image, "shimpa/walkie-talkie:b9c3cf045ff9");
+  assert.equal(params.images.walkieTalkie.image, "shimpa/walkie-talkie:f81a7a42736e");
   assert.equal(params.harnessCommand, `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt "$FM_PRIMARY_SESSION_START_PROMPT"`);
   assert.deepEqual(params.storage, { storageClass: "beta3", size: "10Gi" });
   assert.deepEqual(params.security, { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 });
