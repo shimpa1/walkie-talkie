@@ -56,6 +56,28 @@ remove this device's push subscription before clearing the local account view.
 Signing out another session revokes API access; it does not itself perform
 push unsubscription on that remote device.
 
+## Phone, tablet, and desktop layouts
+
+*Updated 2026-10-07.* The app adapts to the screen it runs on. On a phone
+(narrower than 720px) it is a single column: opening a conversation replaces
+the list, and **Back** returns to it.
+
+From tablet width up (720px and wider) the app uses the whole window, with side
+gutters that grow with the screen:
+
+- **Conversations** shows the list and the open conversation side by side.
+  Selecting an entry opens it in the right-hand pane and keeps the list in
+  view, so there is no **Back** button. The pane fills the window height, only
+  the transcript scrolls, and the message box stays pinned to the bottom of
+  the pane. With nothing open, the pane invites you to pick an entry or start a
+  new conversation.
+- **Status**, **Admin**, and **Devices** lay their cards out in a grid. On
+  laptop and wider screens (1100px and wider) the Status sections sit side by
+  side, and **Setup** and **Settings** arrange their steps and panels in two
+  columns.
+- Explanatory text and forms keep a comfortable line length instead of
+  stretching across very wide screens.
+
 ## Conversations and the message box
 
 **Conversations** combines instruction threads with live sessions. A thread
