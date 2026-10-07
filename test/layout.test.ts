@@ -95,7 +95,7 @@ test("opening a conversation hides the list only on phone widths", () => {
 });
 
 test("wide screens are fluid with list and conversation side by side", () => {
-  assert.equal(value(WIDE, "main", "max-width"), "1920px");
+  assert.equal(value(WIDE, "main", "max-width"), "none");
   assert.match(value(WIDE, ":root", "--gutter") ?? "", /^clamp\(/);
   assert.equal(value(WIDE, ".conversations", "grid-template-columns"), "minmax(240px, 300px) minmax(0, 1fr)");
   assert.equal(value(WIDE, ".conversation-back", "display"), "none");
@@ -111,6 +111,11 @@ test("wide screens are fluid with list and conversation side by side", () => {
   // Prose and forms keep a readable measure.
   assert.equal(value(WIDE, ".hint", "max-width"), "var(--measure)");
   assert.equal(value(PHONE, ":root", "--measure"), "72ch");
+});
+
+test("Status stacks its sections below laptop width and sets them side by side above it", () => {
+  assert.equal(value(WIDE, "#status-body", "grid-template-columns"), "minmax(0, 1fr)");
+  assert.match(value(LAPTOP, "#status-body", "grid-template-columns") ?? "", /^repeat\(auto-fit/);
 });
 
 test("laptop widths lay Status, Setup and Settings out in columns", () => {

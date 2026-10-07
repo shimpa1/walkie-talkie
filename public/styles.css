@@ -681,7 +681,7 @@ button.new-conversation {
   }
 
   main {
-    max-width: 1920px;
+    max-width: none;
   }
 
   #home-label {
@@ -701,6 +701,11 @@ button.new-conversation {
   .cards {
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
     align-items: start;
+  }
+
+  /* The Status container stacks its sections; only the lists inside are grids. */
+  #status-body {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   /* Status sections are short lists: let a lone card use its section's width. */
@@ -773,10 +778,6 @@ button.new-conversation {
 
   .conversation-output .msg-user {
     align-self: flex-end;
-  }
-
-  .conversation-detail .composer form {
-    max-width: none;
   }
 
   /* Status: the firstmate summary and each fleet section sit side by side. */
