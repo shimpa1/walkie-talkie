@@ -8,6 +8,7 @@ import {
   activityOf,
   correctReadiness,
   CROSS_CONTAINER_BASIS,
+  CROSS_CONTAINER_DIAGNOSTIC_SCOPE,
   queueOf,
   WATCHER_BEACON_GRACE_SECONDS,
   type PrimaryPane,
@@ -41,6 +42,12 @@ test("a lock pid invisible from this container no longer reads as cannot-receive
   const corrected = correctReadiness(CROSS_CONTAINER_READY, RUNNING_PRIMARY) as Record<string, unknown>;
   assert.equal(corrected.can_receive, true);
   assert.equal(corrected.can_receive_basis, CROSS_CONTAINER_BASIS);
+  assert.equal(corrected.diagnostic_scope, CROSS_CONTAINER_DIAGNOSTIC_SCOPE);
+  assert.equal(
+    corrected.diagnostic_note,
+    "The lock PID is not observable from this container; raw lock and wake_consumer diagnostics describe " +
+      "the walkie-talkie process namespace. Effective readiness is based on Herdr's primary agent and the watcher beacon.",
+  );
   // firstmate's own observations are kept as it reported them.
   assert.deepEqual(corrected.lock, CROSS_CONTAINER_READY.lock);
   assert.deepEqual(corrected.wake_consumer, CROSS_CONTAINER_READY.wake_consumer);
@@ -71,7 +78,12 @@ test("readiness stays false when the cross-container signals do not prove firstm
     ["no session lock", withReady({ lock: { state: "free", pid: null, live_harness: null } }), RUNNING_PRIMARY],
   ];
   for (const [name, ready, primary] of cases) {
-    assert.equal(correctReadiness(ready, primary), ready, name);
+    const result = correctReadiness(ready, primary) as Record<string, unknown>;
+    assert.equal(result, ready, name);
+    assert.equal(result.can_receive, false, name);
+    assert.equal(result.diagnostic_scope, undefined, name);
+    assert.equal(result.diagnostic_note, undefined, name);
+    assert.equal(result.can_receive_basis, undefined, name);
   }
 });
 
@@ -139,6 +151,10 @@ test("GET /api/health reports can_receive true when only the lock pid is invisib
     const body = result.body as Record<string, unknown>;
     assert.equal(body.can_receive, true);
     assert.equal(body.can_receive_basis, CROSS_CONTAINER_BASIS);
+    assert.equal(body.diagnostic_scope, CROSS_CONTAINER_DIAGNOSTIC_SCOPE);
+    assert.equal(typeof body.diagnostic_note, "string");
+    assert.deepEqual(body.lock, CROSS_CONTAINER_READY.lock);
+    assert.deepEqual(body.wake_consumer, CROSS_CONTAINER_READY.wake_consumer);
   } finally {
     await server.close();
   }

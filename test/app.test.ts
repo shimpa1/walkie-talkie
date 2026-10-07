@@ -1288,6 +1288,37 @@ test("the health banner survives a status read that answers after it", async () 
   }
 });
 
+test("the health banner labels corrected container diagnostics without implying firstmate is dead", async () => {
+  const { TOKEN_KEY } = await loadTokenMessages();
+  const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });
+  const storage = new MemoryStorage();
+  storage.setItem(TOKEN_KEY, "t");
+  const correctedHealth = (path: string): Response | null =>
+    path === "/api/health"
+      ? Response.json({
+          can_receive: true,
+          can_receive_basis: "herdr-primary-agent-and-watcher-beacon",
+          diagnostic_scope: "walkie-talkie-process-namespace",
+          lock: { state: "stale", pid: 218, live_harness: false },
+          wake_consumer: { state: "unknown", beacon_age_seconds: 1 },
+        })
+      : null;
+  try {
+    const { getElement } = await bootApp(storage, recordingFetch(server.url, [], correctedHealth));
+    const banner = getElement("connection-banner");
+    await waitFor(() => banner.textContent.includes("can receive"));
+    // Let the background status read render before closing its server; a late
+    // rejection could otherwise write an error into the next test's document.
+    await waitFor(() => getElement("home-label").textContent !== "");
+    assert.equal(banner.textContent,
+      "firstmate reachable — can receive: yes · PID not observable from this container");
+    assert.equal(banner.hidden, false);
+    assert.ok(banner.className.includes("ok"));
+  } finally {
+    await server.close();
+  }
+});
+
 test("a null health payload reads as reachable with unknown readiness, not an error", async () => {
   const { TOKEN_KEY } = await loadTokenMessages();
   const server = await startTestServer({ token: "t", herdrBin: HERDR_BIN });

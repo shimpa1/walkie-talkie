@@ -28,6 +28,10 @@ export const WATCHER_BEACON_GRACE_SECONDS = 300;
 export const DEFAULT_LIVE_READ_TIMEOUT_MS = 3_000;
 
 export const CROSS_CONTAINER_BASIS = "herdr-primary-agent-and-watcher-beacon";
+export const CROSS_CONTAINER_DIAGNOSTIC_SCOPE = "walkie-talkie-process-namespace";
+export const CROSS_CONTAINER_DIAGNOSTIC_NOTE =
+  "The lock PID is not observable from this container; raw lock and wake_consumer diagnostics describe " +
+  "the walkie-talkie process namespace. Effective readiness is based on Herdr's primary agent and the watcher beacon.";
 
 /** The primary pane as herdr reports it, or null when herdr lists none. */
 export interface PrimaryPane {
@@ -66,7 +70,13 @@ export function correctReadiness(ready: unknown, primary: PrimaryPane | null | u
   if (consumer.state !== "unknown") return ready;
   const age = consumer.beacon_age_seconds;
   if (typeof age !== "number" || age < 0 || age > WATCHER_BEACON_GRACE_SECONDS) return ready;
-  return { ...ready, can_receive: true, can_receive_basis: CROSS_CONTAINER_BASIS };
+  return {
+    ...ready,
+    can_receive: true,
+    can_receive_basis: CROSS_CONTAINER_BASIS,
+    diagnostic_scope: CROSS_CONTAINER_DIAGNOSTIC_SCOPE,
+    diagnostic_note: CROSS_CONTAINER_DIAGNOSTIC_NOTE,
+  };
 }
 
 export interface FirstmateQueue {

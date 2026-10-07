@@ -997,9 +997,18 @@ firstmate is draining notes. When that is the only reason - the lock reads
 not `down` - and herdr shows an agent running in the primary pane and the
 watcher beacon is within firstmate's 300 s guard grace, `/api/health` reports
 `can_receive: true` with `can_receive_basis:
-"herdr-primary-agent-and-watcher-beacon"`, keeping firstmate's own `lock` and
-`wake_consumer` as reported. The service never looks at firstmate's processes
-or environment.
+"herdr-primary-agent-and-watcher-beacon"`, keeping the raw `lock` and
+`wake_consumer` values as reported for compatibility. Only this successful
+correction adds `diagnostic_scope: "walkie-talkie-process-namespace"` and
+`diagnostic_note`, explaining that the lock PID is not observable from this
+container and effective readiness uses Herdr's primary agent and the watcher
+beacon. These raw fields describe the service's local process namespace;
+`lock.state: "stale"`, `live_harness: false`, and `wake_consumer.state: "unknown"`
+do not establish that firstmate is dead in the annotated case. Consumers should
+use `can_receive`/`can_receive_basis` for readiness and label those diagnostics
+“PID not observable from this container”, as the PWA health banner does.
+Missing agents, stale beacons and consumers marked `down` remain false without
+this annotation. The service never looks at firstmate's processes or environment.
 
 `GET /api/firstmate` is the one live-state view the status card and the queued
 conversations share: `{"schema": "walkie-talkie-firstmate.v1", "observed_at",
