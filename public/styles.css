@@ -11,6 +11,10 @@
   --warn: #f0b64a;
   --bad: #ff6b6b;
   --radius: 14px;
+  /* Side gutter: 16px on phones, growing with the viewport on larger screens. */
+  --gutter: 16px;
+  /* Comfortable line length for prose, forms and hints on wide screens. */
+  --measure: 72ch;
   color-scheme: dark;
 }
 
@@ -37,7 +41,8 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: calc(env(safe-area-inset-top) + 14px) 16px 10px;
+  padding: calc(env(safe-area-inset-top) + 14px) calc(var(--gutter) + env(safe-area-inset-right)) 10px
+    calc(var(--gutter) + env(safe-area-inset-left));
   position: sticky;
   top: 0;
   backdrop-filter: blur(12px);
@@ -84,7 +89,8 @@ h1 {
 .tabs {
   display: flex;
   gap: 6px;
-  padding: 10px 12px 4px;
+  padding: 10px calc(var(--gutter) - 4px + env(safe-area-inset-right)) 4px
+    calc(var(--gutter) - 4px + env(safe-area-inset-left));
   overflow-x: auto;
 }
 
@@ -110,7 +116,7 @@ h1 {
 }
 
 main {
-  padding: 12px 16px 40px;
+  padding: 12px calc(var(--gutter) + env(safe-area-inset-right)) 40px calc(var(--gutter) + env(safe-area-inset-left));
   max-width: 760px;
   margin: 0 auto;
 }
@@ -618,6 +624,11 @@ button.small {
   font-style: italic;
 }
 
+.conversation-empty {
+  display: none;
+  margin: 0;
+}
+
 .conversation-detail .composer {
   position: sticky;
   bottom: 0;
@@ -658,18 +669,158 @@ button.new-conversation {
   align-self: center;
 }
 
+/*
+ * Larger screens: phones keep the single 760px column above; from tablet width
+ * up the app is fluid with growing gutters, Conversations shows the list and the
+ * open conversation side by side, and card lists flow into a grid. Prose, hints
+ * and forms stay at a readable measure rather than stretching edge to edge.
+ */
 @media (min-width: 720px) {
-  .conversations {
-    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  :root {
+    --gutter: clamp(20px, 3vw, 48px);
   }
 
-  .conversation-detail {
+  main {
+    max-width: 1920px;
+  }
+
+  #home-label {
+    max-width: 48ch;
+  }
+
+  .hint,
+  .account-panel,
+  #settings-form,
+  #invite-form,
+  .link-form,
+  .push-panel,
+  .facts {
+    max-width: var(--measure);
+  }
+
+  .cards {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+    align-items: start;
+  }
+
+  /* Status sections are short lists: let a lone card use its section's width. */
+  #firstmate-body,
+  #status-body .cards {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  }
+
+  #firstmate-body {
+    margin-bottom: 10px;
+  }
+
+  .conversations {
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  }
+
+  .conversation-detail,
+  .conversation-empty {
     position: sticky;
     top: 92px;
   }
 
+  /* The open conversation fills the viewport height; only the transcript
+     scrolls, so the message box stays pinned to the bottom of the pane. */
+  .conversation-detail:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 92px - 16px);
+    min-height: 420px;
+  }
+
+  .conversation-detail .conversation-output {
+    flex: 1 1 auto;
+    max-height: none;
+    min-height: 0;
+  }
+
+  .conversation-detail .composer {
+    flex: none;
+  }
+
+  .conversations:not(.is-detail) .conversation-empty {
+    display: grid;
+    place-items: center;
+    min-height: 320px;
+    height: calc(100dvh - 92px - 16px);
+    max-height: 640px;
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--muted);
+    text-align: center;
+    padding: 24px;
+  }
+
   .conversation-back {
     display: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .conversations {
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  /* Keep transcript lines readable when the pane is very wide. */
+  .conversation-output .msg {
+    max-width: 120ch;
+  }
+
+  .conversation-output .msg-user {
+    align-self: flex-end;
+  }
+
+  .conversation-detail .composer form {
+    max-width: none;
+  }
+
+  /* Status: the firstmate summary and each fleet section sit side by side. */
+  #status-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    gap: 0 20px;
+    align-items: start;
+  }
+
+  #status-body > .hint {
+    grid-column: 1 / -1;
+  }
+
+  /* Setup: the numbered steps form a two-column grid under a readable intro. */
+  #view-setup.is-active {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 16px;
+    align-items: start;
+  }
+
+  #view-setup > h2,
+  #view-setup > .hint,
+  #view-setup > #setup-run {
+    grid-column: 1 / -1;
+  }
+
+  /* Settings: account and devices, token, push and service facts as panels. */
+  #view-settings.is-active {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 20px;
+    align-items: start;
+  }
+
+  #view-settings > h2,
+  #view-settings > #token-hint {
+    grid-column: 1 / -1;
+  }
+
+  #view-settings > .account-panel,
+  #view-settings > .push-panel {
+    margin-top: 0;
   }
 }
 
