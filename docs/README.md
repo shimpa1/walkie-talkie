@@ -8,7 +8,7 @@ of several independent firstmates.
 | Guide | Read it for |
 | --- | --- |
 | [Architecture](architecture.md) | Components, request flow, modes, tenant types, stores, and API boundaries |
-| [User guide](user-guide.md) | Sign-in, iPhone installation, device linking, conversations, voice, status, setup, and start/stop |
+| [User guide](user-guide.md) | Sign-in, iPhone installation, device linking, phone and desktop layouts, conversations, voice, status, setup, and start/stop |
 | [Admin guide](admin-guide.md) | Invites, access requests, users, retained homes, capacity, and audit records |
 | [Operations](operations.md) | Deployment, upgrades, values, secret sources, rotations, provisioning prerequisites, rollback, and troubleshooting |
 | [Security](security.md) | Trust boundaries, isolation, credentials, and residual risks |
