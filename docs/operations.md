@@ -286,10 +286,12 @@ Settings Disable/Enable and Send test to verify delivery after a planned change.
 
 ## Enabling managed firstmates
 
-Atus must keep `tenants.enabled: false` until its egress policy failure is
-remedied and retested. The recorded check found Calico v3.30 ingress working,
-but `akash-guard-threatintel-egress-deny` ends in unconditional `Allow`, letting
-test tenants reach the Kubernetes API and other pods despite default-deny.
+Atus keeps `tenants.enabled: false` pending the captain's decision. The
+earlier check found Calico v3.30 ingress working, but
+`akash-guard-threatintel-egress-deny` ended in unconditional `Allow`, letting
+test tenants reach the Kubernetes API and other pods despite default-deny. That
+policy was removed and egress enforcement verified on 2026-10-06 (atus record
+`2026-10-06-network-policy-apply.md`).
 Installing Calico alone is not proof that namespace isolation works.
 
 Before enabling:

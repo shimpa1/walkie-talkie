@@ -2,8 +2,9 @@
 
 This describes implemented boundaries and their limits. See
 [operations](operations.md) for secret sources, rotations and the network-policy
-enablement gate. Atus's managed provisioning is off because its egress
-isolation check failed; the chart's intended policies are not evidence of
+enablement gate. Atus's managed provisioning is off pending the captain's
+decision; its Calico egress override was removed and egress enforcement
+verified on 2026-10-06. The chart's intended policies are not evidence of
 effective cluster isolation.
 
 ## Threat model and trust
@@ -143,9 +144,10 @@ UDP/TCP 53. The gateway policy itself restricts ingress; it does not restrict
 gateway egress, which is needed for GitHub, validation, upstreams and the API.
 
 Enforcement depends on the CNI, policy tiers/global rules, other additive
-policies and network addressing. Atus's unconditional Calico global Allow
-defeats tenant egress deny; tenants must remain disabled until remediation and
-measured tests pass. Pods share cluster infrastructure and usually nodes;
+policies and network addressing. Atus's unconditional Calico global Allow,
+which defeated tenant egress deny, was removed and egress enforcement verified
+on 2026-10-06 (atus record `2026-10-06-network-policy-apply.md`); tenants stay
+disabled pending the captain's decision. Pods share cluster infrastructure and usually nodes;
 this is Kubernetes process/network isolation, not VM isolation or a separate
 kernel for each user. Same-pod/shared-home components are one trust domain.
 
