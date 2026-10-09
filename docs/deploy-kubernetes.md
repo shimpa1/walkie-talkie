@@ -935,12 +935,14 @@ kubectl get globalnetworkpolicies.crd.projectcalico.org
 **atus, 2026-10-06:** the check above ran in throwaway namespaces with the
 chart's own tenant policies. It found Calico v3.30 **enforcing ingress**: other
 tenants and non-gateway pods are refused, only tenants reach the gateway's
-internal port, and probes pass. **Egress is not enforced:** the
-GlobalNetworkPolicy `akash-guard-threatintel-egress-deny` ends in an
+internal port, and probes pass. Egress was then not enforced: the
+GlobalNetworkPolicy `akash-guard-threatintel-egress-deny` ended in an
 unconditional `Allow`, and a test tenant reached the Kubernetes API and other
-pods. Per-user firstmates must stay off on atus until that policy no longer
-allows tenant egress, for example by moving it to a tier ahead of `default`
-that ends in `Pass`, and this check passes. atus pods also resolve names
+pods. Later on 2026-10-06 that policy was removed and egress enforcement
+verified: a restricted client was blocked from the Kubernetes API Service, the
+node API and another pod while DNS resolved (atus record
+`2026-10-06-network-policy-apply.md`). Per-user firstmates stay off on atus
+pending the captain's decision. atus pods also resolve names
 through node-local DNS at `169.254.25.10`, which the atus values admit through
 `tenants.networkPolicy.dns.extraCidrs`.
 

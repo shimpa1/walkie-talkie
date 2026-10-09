@@ -228,12 +228,12 @@ gateway:
 
 # Per-user firstmates (docs/deploy-kubernetes.md, "Per-user firstmates"). Off:
 # enabling them is a separate deploy decision that needs the gateway on and the
-# CNI NetworkPolicy check passed. Tenant homes use the same class. The
-# 2026-10-06 check on atus found tenant egress NOT enforced: the cluster-wide
-# Calico GlobalNetworkPolicy akash-guard-threatintel-egress-deny ends in an
-# unconditional Allow that overrides every namespace's egress default-deny
-# (ingress isolation is enforced). Do not enable tenants until that is fixed
-# and the check passes (see "Check that the CNI enforces NetworkPolicy").
+# CNI NetworkPolicy check passed. Tenant homes use the same class. On
+# 2026-10-06 the Calico GlobalNetworkPolicy akash-guard-threatintel-egress-deny,
+# whose unconditional Allow overrode namespace egress default-deny, was removed
+# and egress enforcement verified (atus 2026-10-06-network-policy-apply.md;
+# ingress isolation was already enforced). Tenants stay off pending the
+# captain's decision (see "Check that the CNI enforces NetworkPolicy").
 tenants:
   enabled: false
   image:

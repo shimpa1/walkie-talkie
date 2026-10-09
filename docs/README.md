@@ -27,10 +27,11 @@ The legacy bearer bridge is enabled while devices migrate to GitHub sessions.
 
 Managed per-user firstmates are implemented but **disabled on atus**:
 `tenants.enabled: false`. Users without a static tenant can save setup when
-admitted, but cannot start a firstmate there. The cluster check found ingress
-isolation working and egress isolation failing because a Calico global policy
-overrides namespace restrictions. Enabling provisioning requires a remedy and
-a passing [network-policy check](operations.md#enabling-managed-firstmates).
+admitted, but cannot start a firstmate there. The Calico global policy that
+overrode namespace egress restrictions was removed and egress enforcement
+verified on 2026-10-06 (atus record `2026-10-06-network-policy-apply.md`).
+Provisioning stays off pending the captain's decision and the
+[network-policy check](operations.md#enabling-managed-firstmates).
 
 The gateway's secrets come from Doppler `walkie-talkie/gateway`, synced to
 `firstmate-gateway-secrets`. They must never be placed in `walkie-talkie/prd`
